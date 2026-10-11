@@ -1621,6 +1621,8 @@ html[data-appearance="light"] .cmd-palette { background: color-mix(in srgb, var(
 .s-select.fp-scope:hover:not(:disabled), .s-select.fp-scope.open { background: rgba(var(--wash-rgb), 0.10); }
 .fp-scope .s-chev { width: 12px; height: 12px; }
 .s-select.fp-scope:disabled { opacity: 0.45; cursor: default; }
+.fp-scope-tally { flex: none; display: flex; align-items: center; gap: 8px; margin-left: 10px; }
+.fp-scope-files { color: var(--muted); font-size: calc(11px * var(--fs)); font-variant-numeric: tabular-nums; }
 .fp-more.on { background: rgba(var(--wash-rgb), 0.1); color: var(--text); }
 .fp-menu { min-width: 230px; }
 .fp-menu .switch { margin-left: 8px; }

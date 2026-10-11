@@ -18,7 +18,7 @@ import { closeSettings, openSettings, refresh } from "./settings";
 import { projectArt, renameSession, sessionRow, sortedSummaries, toggleSidebar } from "./sidebar";
 import { newTerminal, toggleMaximize, toggleTerminal } from "./terminal";
 import { closeActiveFile, collapseFolders, copyActivePath, downloadPdf, expandFolders, findFiles, loadSuggestions, openFile, openReview, showChangesSince, showCommit, suggestedFiles, toggleChanges, toggleExpand, toggleFiles, revealActiveFile, toggleHiddenFiles, togglePane, togglePreview } from "./panels";
-import { actions, call, on, projectName, store, targetProject, tildePath } from "./store";
+import { actions, call, on, projectName, store, targetProject, tildePath, workFolder } from "./store";
 
 const HISTORY_RESULT_LIMIT = 30;
 /** Folder crumbs shown before the middle folds into `…`, and how many of the deepest stay once it does. */
@@ -449,12 +449,12 @@ function emptyState(): HTMLElement {
       : view === "projects"
         ? ["No projects match", "Try a project name or path."]
         : view === "files"
-          ? !store.thread
-            ? ["No session open", "Open a session to find files in its folder."]
+          ? !workFolder()
+            ? ["No project open", "Add a project to find files in its folder."]
             : !palette!.input.value.trim()
               ? suggesting
                 ? ["Loading files…", ""]
-                : ["No files here", "This session's folder is empty."]
+                : ["No files here", "This folder is empty."]
               : foundFor !== palette!.input.value.trim()
                 ? ["Searching…", ""]
                 : ["No files match", "Try part of a file's name or path."]

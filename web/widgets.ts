@@ -113,7 +113,8 @@ export function optionCard(iconName: IconName, label: string, selected: boolean,
 
 // ---------------- select ----------------
 
-export type Option = { label: string; leading?: () => HTMLElement; disabled?: boolean };
+/** `trailing`: drawn after the label, before the check (a count, filled in when it's read). */
+export type Option = { label: string; leading?: () => HTMLElement; trailing?: () => HTMLElement; disabled?: boolean };
 type SelectOpts = {
   options: Option[];
   selected: number;
@@ -124,6 +125,8 @@ type SelectOpts = {
   search?: boolean;
   mono?: boolean;
   onSelect: (index: number) => void;
+  /** Its list closed (chosen from or not). */
+  onClose?: () => void;
 };
 
 let openSelect: Popover | null = null;
@@ -153,7 +156,11 @@ export function select(opts: SelectOpts): HTMLButtonElement {
 function showMenu(trigger: HTMLElement, opts: SelectOpts) {
   const rect = trigger.getBoundingClientRect();
   const menu = el("div", `card s-menu${opts.mono ? " mono" : ""}`);
-  menu.style.width = `${Math.max(160, opts.menuWidth ?? rect.width)}px`;
+  const minWidth = Math.max(160, opts.menuWidth ?? rect.width);
+  // With something after the labels (counts), the menu grows to fit them rather than cutting the labels short.
+  const fit = opts.options.some((o) => o.trailing);
+  if (fit) (menu.style.minWidth = `${minWidth}px`), (menu.style.width = "max-content"), (menu.style.maxWidth = `${innerWidth - 16}px`);
+  else menu.style.width = `${minWidth}px`;
   let query = "";
   let highlighted = opts.selected;
   let visible: number[] = [];
@@ -169,6 +176,7 @@ function showMenu(trigger: HTMLElement, opts: SelectOpts) {
         const r = el("div", `menu-row s-menu-row${i === highlighted ? " active" : ""}${o.disabled ? " disabled" : ""}`);
         if (o.leading) r.append(o.leading());
         r.append(el("span", "grow", o.label));
+        if (o.trailing) r.append(o.trailing());
         const check = el("span", "s-check");
         if (i === opts.selected) check.append(icon("check"));
         r.append(check);
@@ -209,7 +217,8 @@ function showMenu(trigger: HTMLElement, opts: SelectOpts) {
   // Fixed to the viewport so the page's scroll box doesn't clip it; below the trigger unless only above fits.
   const host = document.getElementById("settings") ?? document.body;
   menu.style.position = "fixed";
-  menu.style.left = `${Math.min(rect.left, innerWidth - parseFloat(menu.style.width) - 8)}px`;
+  const place = () => (menu.style.left = `${Math.max(8, Math.min(rect.left, innerWidth - (menu.offsetWidth || minWidth) - 8))}px`);
+  place();
   const below = innerHeight - rect.bottom - 14;
   const above = rect.top - 14;
   const up = below < 200 && above > below;
@@ -226,9 +235,15 @@ function showMenu(trigger: HTMLElement, opts: SelectOpts) {
       if (openSelect === pop) openSelect = null;
       removeEventListener("resize", dismiss);
       scroller?.removeEventListener("scroll", dismiss);
+      grew?.disconnect();
+      opts.onClose?.();
     },
   });
   openSelect = pop;
+  // Kept inside the window once it's measured, and again as counts filled in later widen it.
+  place();
+  const grew = fit ? new ResizeObserver(place) : null;
+  grew?.observe(menu);
   const dismiss = () => pop.close();
   const scroller = trigger.closest<HTMLElement>(".s-scroll");
   addEventListener("resize", dismiss);

@@ -14,6 +14,7 @@ import chevronRight from "lucide-static/icons/chevron-right.svg" with { type: "t
 import copy from "lucide-static/icons/copy.svg" with { type: "text" };
 import file from "lucide-static/icons/file.svg" with { type: "text" };
 import filePlus from "lucide-static/icons/file-plus.svg" with { type: "text" };
+import fileDiff from "lucide-static/icons/file-diff.svg" with { type: "text" };
 import folder from "lucide-static/icons/folder.svg" with { type: "text" };
 import folderPlus from "lucide-static/icons/folder-plus.svg" with { type: "text" };
 import house from "lucide-static/icons/house.svg" with { type: "text" };
@@ -87,7 +88,7 @@ const ICONS = {
   box, calendar, clock, claude, cursor, ellipsis, laptop, list,
   bell, blocks, chartNoAxesColumn, info, image, keyboard, moon, refreshCw, rotateCcw, slidersHorizontal, sun, x,
   circleCheck, undo2, arrowLeft, arrowRight, arrowUp, bot, brain, check, chevronDown, chevronLeft, chevronRight, copy, file,
-  filePlus, folder, folderPlus, house, gitBranch, globe, monitor, openai, panelLeft, pencil, plug, plus, search, settings,
+  filePlus, fileDiff, folder, folderPlus, house, gitBranch, globe, monitor, openai, panelLeft, pencil, plug, plus, search, settings,
   squarePen, squareTerminal, star, triangleAlert, wrench, zap, maximize2, minimize2, gripVertical, trash2, messageCircle,
   panelRight, folderTree, eye, eyeClosed, bookOpen, download, code, minus, externalLink, folderOpen, copyPlus, clipboardCopy, save, arrowDown, listFilter,
   gitCompare, cloudUpload, smartphone, qrCode, cloud, gitCommitHorizontal, tag, gitBranchPlus,

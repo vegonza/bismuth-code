@@ -78,6 +78,10 @@ export function targetProject(): Project | null {
   return current ?? [...store.projects].sort((a, b) => b.lastUsedAt - a.lastUsedAt)[0] ?? null;
 }
 
+/** The folder the file explorer, editors and file links work in: the open session's, or on the new-session screen the
+ *  project the next session starts in (none while a session is on its way). */
+export const workFolder = (): string | null => store.thread?.cwd ?? (store.opening ? null : (targetProject()?.path ?? null));
+
 export function setCurrentProject(id: string | null) {
   store.currentProject = id;
   if (id) localStorage.setItem("bismuth.project", id);

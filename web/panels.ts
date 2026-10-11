@@ -7,12 +7,12 @@
 //   them, git changes coloured). Mod+E toggles it; opening a file opens the host beside it. Mod+P finds the folder's
 //   files by name (the palette's Go to file, palette.ts).
 // Both toggles sit at the window's top-right corner, open or not. What's open is kept per session, like Zeron's
-// per-chat panels; the new-session screen has neither.
+// per-chat panels; the new-session screen keeps its own per project, which a session started there begins with.
 import { Transaction, type TransactionSpec } from "@codemirror/state";
 import { isPhone } from "./phone";
 import { BRANCH, UNPUSHED, type FileContent, type FileEntry, type FileLocation, type FileRef, type GitStatus, type WriteResult } from "../shared/model";
 import { codeState, codeView, EditorView, type CodeHooks, type EditorState } from "./code";
-import { changesStore, changesView, SCOPES, type ChangesStore } from "./changes";
+import { changesStore, changesView, lineCounts, SCOPES, type ChangesStore } from "./changes";
 import { graphView } from "./graph";
 import { commitSource, reviewView, uncommittedSource } from "./review";
 import { baseSpec, changeCount, hasBase, showChangesSpec, showsChanges } from "./gitdiff";
@@ -29,7 +29,7 @@ import { dropNotebook, notebookDirty, notebookSaved, notebookText, notebookView 
 import { dropPdf, pdfBar, pdfView } from "./pdfview";
 import { canSavePdf, savePdf } from "./printpdf";
 import { onPrefs, prefs, setPrefs, type ChangesScope, type ShortcutId } from "./prefs";
-import { call, on, store, tildePath } from "./store";
+import { call, on, store, tildePath, workFolder } from "./store";
 import { reducedMotion, RESIZE_MS } from "./motion";
 import { contextMenu as openContextMenu, menuPoint, toggleSwitch, type MenuEntry, type Popover } from "./popover";
 import { dialog, select as selectMenu } from "./widgets";
@@ -54,23 +54,33 @@ const SUGGEST_MAX = 50;
 /** `preview`: the tab a single click opened, replaced by the next one until it's kept (VS Code's preview editor). */
 type SessionPanels = { files: boolean; surfaces: boolean; tabs: string[]; active: string | null; preview?: string | null };
 /** `recent`: each folder's files most recently shown, newest first (Go to file lists them before anything's typed). */
-/** `view`: what the sidebar shows, the folder's files or its git changes. */
-type Saved = { filesW: number; paneW: number; showAll: boolean; sessions: Record<string, SessionPanels>; expanded: Record<string, string[]>; recent: Record<string, string[]>; view?: SidebarView };
+/** `view`: what the sidebar shows, the folder's files or its git changes. `changedOnly`: the tree shows only what
+ *  changed (in the scope picked), for reviewing. */
+type Saved = { filesW: number; paneW: number; showAll: boolean; sessions: Record<string, SessionPanels>; expanded: Record<string, string[]>; recent: Record<string, string[]>; view?: SidebarView; changedOnly?: boolean };
 type SidebarView = "files" | "changes";
 const saved: Saved = { filesW: FILES_DEFAULT, paneW: PANE_DEFAULT, showAll: false, sessions: {}, expanded: {}, recent: {}, ...JSON.parse(localStorage.getItem("bismuth.panels") ?? "{}") };
+const nothingOpen = (s: SessionPanels | undefined) => !s || (!s.files && !s.surfaces && !s.tabs.length);
 function persist() {
   // Sessions with nothing open aren't worth keeping.
-  for (const [id, s] of Object.entries(saved.sessions)) if (!s.files && !s.surfaces && !s.tabs.length) delete saved.sessions[id];
+  for (const [id, s] of Object.entries(saved.sessions)) if (nothingOpen(s)) delete saved.sessions[id];
   localStorage.setItem("bismuth.panels", JSON.stringify(saved));
 }
 
-/** The open session's panels (made on first use; the new-session screen has none). */
+/** Whose panels show: the open session's, or on the new-session screen its project folder's (null while a session is
+ *  on its way, or with no project to show). */
+function panelsKey(): string | null {
+  if (store.thread) return store.thread.id;
+  const r = root();
+  return r ? NEW_SCREEN + r : null;
+}
+const NEW_SCREEN = "new@";
+/** The open session's panels (made on first use). */
 function session(): SessionPanels | null {
-  const id = store.thread?.id;
+  const id = panelsKey();
   return id ? (saved.sessions[id] ??= { files: false, surfaces: false, tabs: [], active: null }) : null;
 }
-/** The folder the open session works in, which the explorer shows. */
-const root = () => store.thread?.cwd ?? null;
+/** The folder the explorer shows. */
+const root = workFolder;
 
 /** Takeover: the surface host over the chat's room. Not kept: closing the host leaves it (Zeron). */
 let expanded = false;
@@ -1592,6 +1602,8 @@ let searchBtn: HTMLButtonElement;
  *  file or folder at the top. */
 let scopeRow: HTMLElement;
 let scopePick: HTMLButtonElement;
+/** Beside it: only the changed files in the tree, or every file. */
+let changedBtn: HTMLButtonElement;
 /** What the dropdown was last drawn for (it's made again when that moves). */
 let scopeDrawn = "";
 /** The sidebar's two views: the files, and the Changes view (changes.ts), picked in the head. */
@@ -1731,19 +1743,48 @@ function stripAt(): number {
   return -x / (deck.clientWidth || 1);
 }
 
-function renderScope(t: Tree) {
+/** What each scope's changes came to when last read, per folder and scope: shown at once as the menu opens. */
+const scopeTallies = new Map<string, { files: number; added: number; removed: number } | null>();
+
+/** A scope's row in the dropdown: how many files it changes and its lines added and removed, read as the menu opens
+ *  (the last count meanwhile). Nothing for "Last turn" with no session, or no turn kept. */
+function scopeTally(r: string, scope: ChangesScope): HTMLElement {
+  const box = el("span", "fp-scope-tally");
+  const since = SINCE[scope]();
+  const key = `${r}\0${scope}\0${since}`;
+  const draw = (n: { files: number; added: number; removed: number } | null | undefined) => {
+    if (n === undefined) return;
+    box.replaceChildren(...(n ? [el("span", "fp-scope-files", n.files ? `${n.files} ${n.files === 1 ? "file" : "files"}` : "None"), lineCounts(n.added, n.removed)] : []));
+  };
+  draw(scopeTallies.get(key));
+  if (since === "") return box;
+  void call("git.changes", { root: r, since })
+    .then((c) => {
+      const n = c.repo && c.turn !== false ? { files: c.files.length, added: c.files.reduce((a, f) => a + (f.added ?? 0), 0), removed: c.files.reduce((a, f) => a + (f.removed ?? 0), 0) } : null;
+      scopeTallies.set(key, n);
+      draw(n);
+    })
+    .catch(() => {});
+  return box;
+}
+
+function renderScope(r: string, t: Tree) {
+  changedBtn.classList.toggle("on", changedOnly(t));
+  changedBtn.disabled = !t.repo;
+  changedBtn.title = !t.repo ? "Not in a git repository" : saved.changedOnly ? "Show all files" : "Show only changed files";
   // Outside a repository there's nothing to compare with: the dropdown keeps its place, dimmed.
   const shown = scopeOf(t);
-  const key = `${t.repo}:${t.branched}:${shown}`;
+  const key = `${r}\0${t.repo}:${t.branched}:${shown}`;
   if (key === scopeDrawn && scopePick.isConnected) return;
   scopeDrawn = key;
   const offered = SCOPES.filter(([scope]) => scope !== "branch" || t.branched);
   const at = offered.findIndex(([scope]) => scope === shown);
   const pick = selectMenu({
-    options: offered.map(([, label]) => ({ label })),
+    options: offered.map(([scope, label]) => ({ label, trailing: () => scopeTally(r, scope) })),
     selected: at,
-    menuWidth: 168,
+    menuWidth: 236,
     onSelect: (i) => showChangesSince(offered[i][0]),
+    onClose: released,
   });
   pick.classList.add("fp-scope");
   pick.disabled = !t.repo;
@@ -1958,9 +1999,17 @@ const FOLD_MS = 160;
 
 type Row = { e: FileEntry; depth: number };
 
+/** Only what changed shows (in a repository): files with a change, and the folders holding them. */
+const changedOnly = (t: Tree) => !!saved.changedOnly && t.repo;
+/** A folder's entries the tree shows. */
+function shownIn(t: Tree, dir: string): FileEntry[] {
+  const entries = t.children.get(dir) ?? [];
+  return changedOnly(t) ? entries.filter((e) => (e.kind === "dir" ? t.gitDirs.has(e.path) : !!t.git[e.path])) : entries;
+}
+
 /** What the tree shows, top to bottom: open folders that are listed show their contents. */
 function rowsOf(t: Tree, dir: string, depth: number, out: Row[]): Row[] {
-  for (const e of t.children.get(dir) ?? []) {
+  for (const e of shownIn(t, dir)) {
     out.push({ e, depth });
     if (e.kind === "dir" && t.expanded.has(e.path) && t.children.has(e.path)) rowsOf(t, e.path, depth + 1, out);
   }
@@ -1983,7 +2032,7 @@ function renderExplorer() {
   if (!r || !explorerShown()) return;
   const t = treeOf(r);
   if (!t.ready) return void ready(r);
-  renderScope(t);
+  renderScope(r, t);
   renderTabs();
   if (sidebarView() === "changes") return changes.render(), drawTreeIdle(r, t);
   drawTree(r, t);
@@ -2004,6 +2053,7 @@ function drawTree(r: string, t: Tree) {
     box.append(el("div", "", t.errors.get("")!), retry);
     nodes.push(box);
   } else nodes.push(...group(r, t, "", 0, next));
+  if (changedOnly(t) && !shownIn(t, "").length) nodes.push(el("div", "ft-empty", "No changes"));
   rowCache = next;
   treeEl.replaceChildren(...nodes);
   treeEl.scrollTop = top;
@@ -2025,7 +2075,7 @@ function group(r: string, t: Tree, dir: string, depth: number, cache: Map<string
     };
     out.push(note);
   }
-  for (const e of t.children.get(dir) ?? []) {
+  for (const e of shownIn(t, dir)) {
     out.push(entryRow(r, t, e, depth, cache));
     if (e.kind !== "dir" || !t.expanded.has(e.path) || !t.children.has(e.path)) continue;
     const kids = el("div", "ft-kids");
@@ -2333,6 +2383,27 @@ function toggleMoreMenu(e?: MouseEvent) {
   const git = sidebarView() === "changes" ? changes.menuRows(() => moreMenu?.close()) : null;
   const rows = git ?? [eye, "-" as const, row("folderOpen", "Expand all folders", close(() => void expandFolders()), bound("expandFolders")), row("folder", "Collapse all folders", close(collapseFolders), bound("collapseFolders"))];
   moreMenu = openContextMenu(menuPoint(e, moreBtn), rows, { trigger: moreBtn, className: "fp-menu", onClose: () => ((moreMenu = null), released()) });
+}
+
+/** The tree's changed files only, or every file. Switched on, every folder holding changes opens (up to EXPAND_MAX of
+ *  them, listed shallowest first), so what changed shows whole. */
+async function toggleChangedOnly() {
+  const r = root();
+  if (!r) return;
+  const t = treeOf(r);
+  saved.changedOnly = !saved.changedOnly;
+  persist();
+  if (saved.changedOnly) {
+    const dirs = [...t.gitDirs.keys()].sort((a, b) => a.split("/").length - b.split("/").length).slice(0, EXPAND_MAX);
+    for (let depth = 1; ; depth++) {
+      const level = dirs.filter((d) => d.split("/").length === depth);
+      if (!level.length) break;
+      await Promise.all(level.filter((d) => !t.children.has(d)).map((d) => load(r, d)));
+    }
+    for (const d of dirs) t.expanded.add(d);
+    keepExpanded(r, t);
+  }
+  if (root() === r) renderExplorer();
 }
 
 /** Mod+Alt+E: every folder open, up to EXPAND_MAX of them; ignored ones stay shut. Listed level by level, then
@@ -2843,9 +2914,9 @@ function endGrace() {
 function cancelClose() {
   if (closeTimer) clearTimeout(closeTimer), (closeTimer = null);
 }
-/** The peek stays while one of its menus is open or a name is being typed in it (its search doesn't hold it: the
+/** The peek stays while one of its menus (the scope's list too) is open or a name is being typed in it (its search doesn't hold it: the
  *  pointer leaving takes the search's focus with it). */
-const holding = () => !!menu || !!moreMenu || holdDraws > 0;
+const holding = () => !!menu || !!moreMenu || scopePick.classList.contains("open") || holdDraws > 0;
 function scheduleClose() {
   if (closeTimer || holding()) return;
   closeTimer = setTimeout(() => {
@@ -2960,6 +3031,8 @@ export function initPanels(refocus: () => void) {
     b.onclick = run;
     return b;
   };
+  changedBtn = tool("fileDiff", "Show only changed files", () => void toggleChangedOnly());
+  scopeRow.append(changedBtn);
   searchBtn = tool("search", "Search", () => {
     if (findRow.hidden) openSearch();
     else closeSearch(), treeEl.focus({ preventScroll: true });
@@ -3069,8 +3142,12 @@ export function initPanels(refocus: () => void) {
   // A new session open (or none): its panels, its folder.
   let shown: string | null | undefined;
   on("header", () => {
-    const id = store.thread?.id ?? null;
+    const id = panelsKey();
     if (id === shown) return;
+    // A session just started from the new-session screen begins with the panels that were open there.
+    const was = shown && shown.startsWith(NEW_SCREEN) ? saved.sessions[shown] : null;
+    if (was && id && store.thread?.cwd === shown!.slice(NEW_SCREEN.length) && nothingOpen(saved.sessions[id]) && store.echo?.threadId === id)
+      (saved.sessions[id] = structuredClone(was)), persist();
     shown = id;
     expanded = false;
     endPeek();

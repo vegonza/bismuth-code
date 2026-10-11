@@ -8,7 +8,7 @@
 import type { FileRef } from "../shared/model";
 import { fileGlyph } from "./fileicons";
 import { contextMenu, menuItem, menuPoint } from "./popover";
-import { call, store } from "./store";
+import { call, store, workFolder } from "./store";
 
 /** A cited place: the path as written, with a 1-based line (and column, and last line) when it gives one. */
 export type Cited = { path: string; line?: number; column?: number; end?: number };
@@ -145,7 +145,7 @@ function linkTarget(href: string, base: string): Cited | null {
 /** A cited file opened (resolved first: a name, a tail, a path outside the folder). A name several files end with
  *  asks which, in a menu at `at`. */
 export function openCitedPath(c: Cited, keep = false, at?: { x: number; y: number }) {
-  const r = store.thread?.cwd;
+  const r = workFolder();
   if (!r) return;
   void resolveAll(r, [c.path]).then(() => {
     const hit = cached(r, c.path);
@@ -197,7 +197,7 @@ const BARE = /(^|[\s(“"'])((?:~|\/)(?:[\w@+\-.]+\/)+[\w@+\-.]*[\w-](?::\d+(?:-
 /** The rendered markdown's file references, linked. `base`: what a document's relative links are relative to (a
  *  Markdown file's folder; the session folder when empty). Named files are looked up from the session folder. */
 export function linkFiles(into: HTMLElement, base = "") {
-  const r = store.thread?.cwd;
+  const r = workFolder();
   if (!r) return;
   for (const a of into.querySelectorAll<HTMLAnchorElement>("a[href]")) {
     // Citations name files from the session folder; a document's own links, from where it is.
