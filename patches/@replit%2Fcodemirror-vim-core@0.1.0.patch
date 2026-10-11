@@ -1,0 +1,26 @@
+diff --git a/node_modules/@replit/codemirror-vim-core/.bun-tag-1af8551b0e0c7f8b b/.bun-tag-1af8551b0e0c7f8b
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+diff --git a/vim.js b/vim.js
+index 3cafa6bcf0c99f2ae25a5da8936d3f29445f2d6d..4b81f594ccfba716cb491378011a26c7fe0560b2 100644
+--- a/vim.js
++++ b/vim.js
+@@ -4526,7 +4526,8 @@ export function initVim(CM) {
+     var max = cm.lastLine();
+     var start, end, i = line;
+     /** @arg {number} i */
+-    function isEmpty(i) { return !cm.getLine(i); }
++    // As in Vim, the paragraph text objects (ip, ap: no dir) also stop at lines of only spaces; { and } don't.
++    function isEmpty(i) { var text = cm.getLine(i); return dir ? !text : !/\S/.test(text || ''); }
+     /** @arg {number} i @arg {number} dir @arg {boolean} [any] */
+     function isBoundary(i, dir, any) {
+       if (any) { return isEmpty(i) != isEmpty(i + dir); }
+@@ -5898,6 +5899,8 @@ export function initVim(CM) {
+         for (var i = 0; i < defaultKeymap.length; i++) {
+           if (keys == defaultKeymap[i].keys
+               && defaultKeymap[i].context === ctx) {
++            // One of the defaults: there's one fewer (noremap searches only them, counted from the end).
++            if (i >= defaultKeymap.length - defaultKeymapLength) defaultKeymapLength--;
+             defaultKeymap.splice(i, 1);
+             removeUsedKeys(keys);
+             return true;

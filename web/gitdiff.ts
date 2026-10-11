@@ -2,7 +2,7 @@
 // differs from the file as staged (git's index): green where lines were added, yellow where they changed, a red mark
 // where some went. A click on one (or "Open changes") shows every change in place, the lines replaced in red over
 // what's there now in green (@codemirror/merge's unified view), each with a revert; another hides them. Both follow
-// typing.
+// typing. The scrollbar marks where each change is.
 import { Change, Chunk, diff, getChunks, rejectChunk, unifiedMergeView, updateOriginalDoc, type DiffConfig } from "@codemirror/merge";
 import { ChangeSet, Compartment, EditorState, Prec, StateEffect, StateField, Text, type Extension, type Range, type TransactionSpec } from "@codemirror/state";
 import { BlockType, Decoration, EditorView, gutter, GutterMarker, keymap, ViewPlugin, type BlockInfo, type DecorationSet, type ViewUpdate } from "@codemirror/view";
@@ -202,6 +202,68 @@ const visibleWidth = ViewPlugin.define((view) => {
   return { update: (u) => u.geometryChanged && view.requestMeasure(measure) };
 });
 
+// ---------------- the scrollbar's marks ----------------
+
+type Mark = { kind: Kind; top: number; height: number };
+/** The track (the scroller's vertical scrollbar, in the editor) and its marks. */
+type Ruler = { top: number; height: number; width: number; marks: Mark[] };
+/** Each change marked along the scrollbar, where it is in the file (VS Code's overview ruler): behind the scrollbar
+ *  (the editor's scroller is drawn after it), so the thumb passes over the marks. */
+const scrollMarks = ViewPlugin.fromClass(
+  class {
+    dom = document.createElement("div");
+    measure = { read: () => this.read(), write: (r: Ruler | null) => this.write(r) };
+    constructor(readonly view: EditorView) {
+      this.dom.className = "cm-git-ruler";
+      this.dom.setAttribute("aria-hidden", "true");
+      view.dom.insertBefore(this.dom, view.scrollDOM);
+      view.requestMeasure(this.measure);
+    }
+    update(u: ViewUpdate) {
+      if (u.geometryChanged || u.heightChanged || u.startState.field(diffField) !== u.state.field(diffField)) this.view.requestMeasure(this.measure);
+    }
+    read(): Ruler | null {
+      const { view } = this;
+      const { base, chunks } = view.state.field(diffField);
+      const sc = view.scrollDOM;
+      const bar = sc.offsetWidth - sc.clientWidth;
+      if (!base || !chunks.length || !bar) return null;
+      // Pixels of the scrolled height to the track's.
+      const scale = sc.clientHeight / sc.scrollHeight;
+      const docTop = view.documentTop - sc.getBoundingClientRect().top + sc.scrollTop;
+      const { doc } = view.state;
+      const marks = chunks.map((c): Mark => {
+        const s = shapeOf(c, base, doc);
+        if (s.kind === "deleted") {
+          const at = s.fromB > doc.length ? view.lineBlockAt(doc.length).bottom : view.lineBlockAt(s.fromB).top;
+          return { kind: s.kind, top: (docTop + at) * scale, height: 0 };
+        }
+        const top = view.lineBlockAt(s.fromB).top;
+        const bottom = view.lineBlockAt(Math.max(s.fromB, Math.min(s.toB - 1, doc.length))).bottom;
+        return { kind: s.kind, top: (docTop + top) * scale, height: (bottom - top) * scale };
+      });
+      return { top: sc.offsetTop, height: sc.clientHeight, width: bar, marks };
+    }
+    write(r: Ruler | null) {
+      if (r) Object.assign(this.dom.style, { top: `${r.top}px`, height: `${r.height}px`, width: `${r.width}px` });
+      this.dom.replaceChildren(
+        ...(r?.marks ?? []).map((m) => {
+          const el = document.createElement("div");
+          el.className = `cm-git-mark cm-git-mark-${m.kind}`;
+          // At least a few pixels, centred on a removal's place.
+          const h = Math.max(m.height, 3);
+          el.style.top = `${m.height < 3 ? m.top - (3 - m.height) / 2 : m.top}px`;
+          el.style.height = `${h}px`;
+          return el;
+        }),
+      );
+    }
+    destroy() {
+      this.dom.remove();
+    }
+  },
+);
+
 // ---------------- the whole file's changes ----------------
 
 const setDiffOn = StateEffect.define<boolean>();
@@ -324,6 +386,12 @@ const theme = EditorView.theme({
   ".cm-gitGutter .cm-git-deleted::before, .cm-gitGutter .cm-git-deleted-below::before": { left: "2px", width: "0", height: "0", border: "4px solid transparent", borderLeftColor: BAR.deleted },
   ".cm-gitGutter .cm-git-deleted::before": { top: "-4px" },
   ".cm-gitGutter .cm-git-deleted-below::before": { bottom: "-4px" },
+  ".cm-git-ruler": { position: "absolute", right: "0", zIndex: "0", pointerEvents: "none" },
+  // Half the track, on its left: VS Code's lane for them.
+  ".cm-git-mark": { position: "absolute", left: "0", width: "50%" },
+  ".cm-git-mark-added": { background: BAR.added },
+  ".cm-git-mark-modified": { background: BAR.modified },
+  ".cm-git-mark-deleted": { background: BAR.deleted },
   ".cm-deletedChunk .cm-deletedLine": { padding: "0 24px 0 4px", background: "rgba(var(--danger-rgb), 0.1)", whiteSpace: "pre" },
   ".cm-deletedChunk .cm-deletedText": { background: "rgba(var(--danger-rgb), 0.24)", borderRadius: "2px" },
   ".cm-changedLine": { background: "rgba(var(--success-rgb), 0.1) !important" },
@@ -358,6 +426,7 @@ export function gitChanges(changed: () => void): Extension {
     unified.of([]),
     followBase,
     revertOnHover,
+    scrollMarks,
     gutter({
       class: "cm-gitGutter",
       lineMarker: (view, line) => barOf(view.state, line),

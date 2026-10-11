@@ -1,7 +1,7 @@
 // The file editor (CodeMirror 6, kept plain): typing, undo and redo, the usual selection and clipboard keys, the
 // language's colours from the theme's syntax palette, and go to definition (Mod+click or F12). Each open file keeps
 // its own state, so its undo history survives switching tabs.
-import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
+import { copyLineDown, copyLineUp, defaultKeymap, history, historyKeymap, indentWithTab, moveLineDown, moveLineUp } from "@codemirror/commands";
 import { cpp } from "@codemirror/lang-cpp";
 import { css } from "@codemirror/lang-css";
 import { go } from "@codemirror/lang-go";
@@ -15,7 +15,7 @@ import { rust } from "@codemirror/lang-rust";
 import { sql } from "@codemirror/lang-sql";
 import { xml } from "@codemirror/lang-xml";
 import { yaml } from "@codemirror/lang-yaml";
-import { HighlightStyle, indentUnit, StreamLanguage, syntaxHighlighting, type LanguageSupport } from "@codemirror/language";
+import { HighlightStyle, indentUnit, StreamLanguage, syntaxHighlighting, syntaxTree, type LanguageSupport } from "@codemirror/language";
 import { csharp, kotlin, scala } from "@codemirror/legacy-modes/mode/clike";
 import { diff } from "@codemirror/legacy-modes/mode/diff";
 import { dockerFile } from "@codemirror/legacy-modes/mode/dockerfile";
@@ -25,15 +25,43 @@ import { ruby } from "@codemirror/legacy-modes/mode/ruby";
 import { shell } from "@codemirror/legacy-modes/mode/shell";
 import { swift } from "@codemirror/legacy-modes/mode/swift";
 import { toml } from "@codemirror/legacy-modes/mode/toml";
-import { EditorState, RangeSetBuilder, type Extension } from "@codemirror/state";
+import { Compartment, EditorState, Facet, Prec, RangeSetBuilder, type Extension, type TransactionSpec } from "@codemirror/state";
 import { Decoration, drawSelection, EditorView, highlightActiveLine, highlightActiveLineGutter, highlightSpecialChars, keymap, lineNumbers, ViewPlugin, type DecorationSet, type ViewUpdate } from "@codemirror/view";
 import { tags as t } from "@lezer/highlight";
+import { vim } from "@replit/codemirror-vim";
 import { gitChanges, reviewDiff } from "./gitdiff";
+import { prefs } from "./prefs";
+import { setUpVim } from "./vim";
 
 /** Past this the editor shows the text without colours: parsing it would stall typing. */
 const HIGHLIGHT_MAX = 300_000;
-/** CodeMirror's editing keys, less Ctrl+M (its tab focus mode): that's the app's, source ⇄ preview. */
-const editKeys = defaultKeymap.filter((b) => b.key !== "Ctrl-m");
+/** CodeMirror's editing keys, less Ctrl+M (its tab focus mode): that's the app's, source ⇄ preview; and less its
+ *  line moves, which lineKeys binds. */
+const LINE_MOVES = new Set<unknown>([moveLineUp, moveLineDown, copyLineUp, copyLineDown]);
+const editKeys = defaultKeymap.filter((b) => b.key !== "Ctrl-m" && !LINE_MOVES.has(b.run));
+
+/** VS Code's line moves: Alt+Up/Down moves the selected lines, Shift+Alt+Up/Down copies them above or below. With
+ *  Vim keys they're on J and K instead of the arrows. */
+function lineKeys(up: string, down: string): Extension {
+  return Prec.high(
+    keymap.of([
+      { key: `Alt-${up}`, run: moveLineUp, preventDefault: true },
+      { key: `Alt-${down}`, run: moveLineDown, preventDefault: true },
+      { key: `Shift-Alt-${up}`, run: copyLineUp, preventDefault: true },
+      { key: `Shift-Alt-${down}`, run: copyLineDown, preventDefault: true },
+    ]),
+  );
+}
+
+/** Vim keys (Settings → General), or the plain ones. Ahead of the other keymaps, which Vim's must come before. */
+const keyMode = new Compartment();
+const keysFor = (vimKeys: boolean): Extension => (vimKeys ? (setUpVim(definitionAtCaret), [vim(), lineKeys("k", "j")]) : lineKeys("ArrowUp", "ArrowDown"));
+
+/** A file editor's go to definition (its hooks'), for keys that aren't its own: Vim's gd. */
+const definitionHook = Facet.define<(pos: number) => void, ((pos: number) => void) | null>({ combine: (fs) => fs[0] ?? null });
+const definitionAtCaret = (view: EditorView) => view.state.facet(definitionHook)?.(view.state.selection.main.head);
+/** A file editor's keys brought to the setting. */
+export const keyModeSpec = (): TransactionSpec => ({ effects: keyMode.reconfigure(keysFor(prefs.vimKeys)) });
 
 export type CodeHooks = {
   /** The text changed (by typing, not by a reload from disk). */
@@ -138,24 +166,81 @@ function languageFor(path: string): LanguageSupport | StreamLanguage<unknown> | 
   return null;
 }
 
-/** The viewer's syntax colours (style.css's .hljs rules), by Lezer tag. */
+/** The code colours (theme.ts's --syn-*, which style.css's .hljs rules share), by Lezer tag. */
 const colours = HighlightStyle.define([
-  { tag: [t.comment, t.quote], color: "var(--faint)", fontStyle: "italic" },
-  { tag: [t.keyword, t.controlKeyword, t.definitionKeyword, t.moduleKeyword, t.operatorKeyword, t.modifier, t.self], color: "var(--syn-keyword)" },
-  { tag: [t.string, t.special(t.string), t.regexp, t.inserted, t.character], color: "var(--syn-string)" },
+  { tag: [t.comment, t.quote], color: "var(--syn-comment)", fontStyle: "var(--syn-comment-style)" },
+  { tag: [t.keyword, t.controlKeyword, t.definitionKeyword, t.moduleKeyword, t.operatorKeyword, t.modifier], color: "var(--syn-keyword)" },
+  { tag: t.self, color: "var(--syn-self)" },
+  { tag: [t.string, t.special(t.string), t.inserted, t.character], color: "var(--syn-string)" },
   { tag: [t.number, t.bool, t.null, t.atom, t.literal], color: "var(--syn-number)" },
   { tag: [t.typeName, t.className, t.namespace, t.standard(t.variableName)], color: "var(--syn-type)" },
-  { tag: [t.function(t.variableName), t.function(t.propertyName), t.heading, t.macroName], color: "var(--syn-function)" },
+  { tag: [t.function(t.variableName), t.function(t.definition(t.variableName)), t.function(t.propertyName), t.function(t.definition(t.propertyName)), t.macroName], color: "var(--syn-function)", fontWeight: "var(--syn-function-weight)" },
+  { tag: t.heading, color: "var(--syn-heading)" },
+  { tag: [t.variableName, t.definition(t.variableName)], color: "var(--syn-variable)" },
+  { tag: t.propertyName, color: "var(--syn-property)" },
+  { tag: [t.operator, t.regexp, t.escape], color: "var(--syn-operator)" },
+  { tag: [t.derefOperator, t.punctuation, t.bracket, t.separator], color: "var(--syn-text)" },
   { tag: [t.tagName, t.deleted], color: "var(--syn-tag)" },
-  { tag: [t.attributeName, t.propertyName, t.constant(t.variableName)], color: "var(--syn-attr)" },
+  { tag: [t.attributeName, t.constant(t.variableName)], color: "var(--syn-attr)" },
   { tag: [t.meta, t.processingInstruction], color: "var(--muted)" },
   { tag: t.emphasis, fontStyle: "italic" },
   { tag: t.strong, fontWeight: "600" },
   { tag: t.link, textDecoration: "underline" },
 ]);
 
+/** Python's builtin classes (and collections' lowercase ones), which read as calls or plain names to the parser. */
+const BUILTIN_TYPES = new Set(["str", "int", "float", "bool", "bytes", "bytearray", "complex", "list", "dict", "set", "frozenset", "tuple", "object", "type", "range", "memoryview", "defaultdict", "deque"]);
+const nameMarks = {
+  class: Decoration.mark({ class: "cm-name-class" }),
+  constant: Decoration.mark({ class: "cm-name-constant" }),
+  self: Decoration.mark({ class: "cm-name-self" }),
+};
+/** What a name is beyond what the parser says (a language server's semantic colours, roughly): a class by its
+ *  CapitalCase or as one of Python's, a CONSTANT by its capitals, Python's self and cls. */
+function nameKind(name: string): keyof typeof nameMarks | null {
+  if (name === "self" || name === "cls") return "self";
+  if (/^_*[A-Z][A-Z0-9_]+$/.test(name)) return "constant";
+  if (/^_*[A-Z]/.test(name) || BUILTIN_TYPES.has(name)) return "class";
+  return null;
+}
+function namesIn(view: EditorView): DecorationSet {
+  const b = new RangeSetBuilder<Decoration>();
+  const tree = syntaxTree(view.state);
+  for (const { from, to } of view.visibleRanges)
+    tree.iterate({
+      from,
+      to,
+      enter: (n) => {
+        if (n.name !== "VariableName" && n.name !== "PropertyName") return;
+        const kind = nameKind(view.state.sliceDoc(n.from, n.to));
+        if (kind) b.add(n.from, n.to, nameMarks[kind]);
+      },
+    });
+  return b.finish();
+}
+const names: Extension = [
+  ViewPlugin.fromClass(
+    class {
+      decorations: DecorationSet;
+      constructor(view: EditorView) {
+        this.decorations = namesIn(view);
+      }
+      update(u: ViewUpdate) {
+        if (u.docChanged || u.viewportChanged || syntaxTree(u.state) !== syntaxTree(u.startState)) this.decorations = namesIn(u.view);
+      }
+    },
+    { decorations: (v) => v.decorations },
+  ),
+  EditorView.baseTheme({
+    ".cm-name-class, .cm-name-class > span": { color: "var(--syn-type)", fontWeight: "normal" },
+    ".cm-name-constant, .cm-name-constant > span": { color: "var(--syn-constant)" },
+    ".cm-name-self, .cm-name-self > span": { color: "var(--syn-self)" },
+  }),
+];
+const codeColours: Extension = [syntaxHighlighting(colours), names];
+
 const theme = EditorView.theme({
-  "&": { height: "100%", fontSize: "var(--code-size)", color: "var(--text)", backgroundColor: "transparent" },
+  "&": { height: "100%", fontSize: "var(--code-size)", color: "var(--syn-text)", backgroundColor: "transparent" },
   "&.cm-focused": { outline: "none" },
   ".cm-scroller": { fontFamily: "var(--mono)", lineHeight: "1.6", overflow: "auto" },
   // Clear of the fade under the host's tabs.
@@ -167,6 +252,12 @@ const theme = EditorView.theme({
   ".cm-activeLine": { backgroundColor: "rgba(var(--wash-rgb), 0.035)" },
   ".cm-cursor, .cm-dropCursor": { borderLeftColor: "var(--text)", borderLeftWidth: "1.5px" },
   "&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, .cm-selectionBackground, ::selection": { backgroundColor: "rgba(var(--accent-rgb), 0.28) !important" },
+  // Vim's block cursor, in the caret's colour.
+  ".cm-fat-cursor": { background: "rgba(var(--wash-rgb), 0.6) !important", color: "var(--main) !important" },
+  "&:not(.cm-focused) .cm-fat-cursor": { background: "none !important", outline: "solid 1px rgba(var(--wash-rgb), 0.6) !important", color: "transparent !important" },
+  // vim.hlsearch off: a search's matches aren't left marked.
+  ".cm-searchMatch": { backgroundColor: "transparent !important" },
+  ".cm-vim-panel": { fontFamily: "var(--mono)", fontSize: "var(--code-size)", color: "var(--muted)", backgroundColor: "var(--main)", padding: "2px 16px" },
   ".cm-def-link": { textDecoration: "underline", textUnderlineOffset: "2px", cursor: "pointer", color: "var(--accent)" },
 });
 
@@ -233,6 +324,46 @@ function definitionLinks(hooks: CodeHooks): Extension {
   ];
 }
 
+const wordRef = Decoration.mark({ class: "cm-word-ref" });
+/** The word at the caret, boxed faintly wherever it shows (VS Code's occurrence highlight); a selection that's a
+ *  whole word boxes its other copies. Only while the editor has focus, so a file doesn't open with its first word lit. */
+function refsAt(view: EditorView): DecorationSet {
+  const { state } = view;
+  const sel = state.selection.main;
+  if (!view.hasFocus) return Decoration.none;
+  const range = wordRange(state, sel.from);
+  if (!range || (!sel.empty && (range[0] !== sel.from || range[1] !== sel.to))) return Decoration.none;
+  const word = state.sliceDoc(range[0], range[1]);
+  const b = new RangeSetBuilder<Decoration>();
+  for (const r of view.visibleRanges) {
+    const text = state.sliceDoc(r.from, r.to);
+    for (let i = text.indexOf(word); i >= 0; i = text.indexOf(word, i + word.length)) {
+      const from = r.from + i;
+      const to = from + word.length;
+      if (IDENT.test(state.sliceDoc(from - 1, from)) || IDENT.test(state.sliceDoc(to, to + 1))) continue;
+      if (!sel.empty && from === sel.from) continue;
+      b.add(from, to, wordRef);
+    }
+  }
+  return b.finish();
+}
+
+const wordRefs: Extension = [
+  ViewPlugin.fromClass(
+    class {
+      decorations: DecorationSet;
+      constructor(view: EditorView) {
+        this.decorations = refsAt(view);
+      }
+      update(u: ViewUpdate) {
+        if (u.docChanged || u.selectionSet || u.viewportChanged || u.focusChanged) this.decorations = refsAt(u.view);
+      }
+    },
+    { decorations: (v) => v.decorations },
+  ),
+  EditorView.baseTheme({ ".cm-word-ref": { backgroundColor: "rgba(var(--wash-rgb), 0.13)", borderRadius: "2px" } }),
+];
+
 /** A file's editor state: its text (CRLF files keep their line breaks) with the language's colours. */
 export function codeState(text: string, path: string, hooks: CodeHooks): EditorState {
   const lang = text.length <= HIGHLIGHT_MAX ? languageFor(path) : null;
@@ -240,6 +371,7 @@ export function codeState(text: string, path: string, hooks: CodeHooks): EditorS
   return EditorState.create({
     doc: text,
     extensions: [
+      keyMode.of(keysFor(prefs.vimKeys)),
       lineNumbers(),
       gitChanges(hooks.changes),
       highlightActiveLineGutter(),
@@ -252,9 +384,11 @@ export function codeState(text: string, path: string, hooks: CodeHooks): EditorS
       indentUnit.of(tabs ? "\t" : "  "),
       EditorState.tabSize.of(4),
       lang ?? [],
-      syntaxHighlighting(colours),
+      codeColours,
       theme,
       definitionLinks(hooks),
+      definitionHook.of(hooks.definition),
+      wordRefs,
       keymap.of([
         { key: "F12", preventDefault: true, run: (v) => (hooks.definition(v.state.selection.main.head), true) },
         ...editKeys,
@@ -272,7 +406,7 @@ export function codeState(text: string, path: string, hooks: CodeHooks): EditorS
 const CELL_EXT: Record<string, string> = { python: "py", javascript: "js", typescript: "ts", markdown: "md", sql: "sql", rust: "rs", go: "go", java: "java", bash: "sh", sh: "sh", shell: "sh", scala: "scala", kotlin: "kt", ruby: "rb", lua: "lua", "c++": "cpp", cpp: "cpp", c: "c", "c#": "cs", csharp: "cs", swift: "swift", json: "json", yaml: "yaml", html: "html", css: "css" };
 
 const cellTheme = EditorView.theme({
-  "&": { fontSize: "var(--code-size)", color: "var(--text)", backgroundColor: "transparent" },
+  "&": { fontSize: "var(--code-size)", color: "var(--syn-text)", backgroundColor: "transparent" },
   "&.cm-focused": { outline: "none" },
   ".cm-scroller": { fontFamily: "var(--mono)", lineHeight: "1.6", overflow: "visible" },
   ".cm-content": { padding: "0", caretColor: "var(--text)" },
@@ -301,8 +435,10 @@ export function cellEditor(parent: HTMLElement, text: string, language: string, 
         EditorState.tabSize.of(4),
         EditorView.lineWrapping,
         lang ?? [],
-        syntaxHighlighting(colours),
+        codeColours,
         cellTheme,
+        wordRefs,
+        lineKeys("ArrowUp", "ArrowDown"),
         keymap.of([{ key: "Escape", run: leave }, { key: "Shift-Enter", run: leave }, { key: "Mod-Enter", run: leave }, ...editKeys, ...historyKeymap, indentWithTab]),
         EditorView.updateListener.of((u) => u.docChanged && on.change(u.state.doc.toString())),
       ],
@@ -325,7 +461,7 @@ export function diffView(parent: HTMLElement, before: string, after: string, pat
         EditorView.editable.of(false),
         after.includes("\r\n") ? EditorState.lineSeparator.of("\r\n") : [],
         lang ?? [],
-        syntaxHighlighting(colours),
+        codeColours,
         theme,
         reviewTheme,
         reviewDiff(before),

@@ -234,6 +234,27 @@ export function terminalPalette(t: Theme): TerminalPalette {
   };
 }
 
+/** Code colours by role, as CSS variables (--syn-*), for the editor's highlighting and the transcript's code. */
+type Syntax = { text: string; comment: string; commentStyle: string; keyword: string; string: string; number: string; type: string; function: string; functionWeight: string; heading: string; tag: string; attr: string; variable: string; property: string; operator: string; constant: string; self: string };
+
+/** One Dark Pro (its Night Flat's colours; the user's Cursor theme) with their tweaks: functions and methods bold,
+ *  self yellow. In light themes, its light sibling, Atom's One Light. */
+const ONE_DARK: Record<Appearance, Omit<Syntax, "commentStyle" | "functionWeight">> = {
+  dark: { text: "#abb2bf", comment: "#7f848e", keyword: "#c678dd", string: "#98c379", number: "#d19a66", type: "#e5c07b", function: "#61afef", heading: "#e06c75", tag: "#e06c75", attr: "#d19a66", variable: "#e06c75", property: "#e06c75", operator: "#56b6c2", constant: "#e5c07b", self: "#e5c07b" },
+  light: { text: "#383a42", comment: "#a0a1a7", keyword: "#a626a4", string: "#50a14f", number: "#986801", type: "#c18401", function: "#4078f2", heading: "#e45649", tag: "#e45649", attr: "#986801", variable: "#e45649", property: "#e45649", operator: "#0184bc", constant: "#c18401", self: "#c18401" },
+};
+
+function syntaxVars(t: Theme): Record<string, string> {
+  let s: Syntax;
+  if (prefs.codeColors === "one-dark-pro") s = { ...ONE_DARK[t.appearance], commentStyle: "normal", functionWeight: "700" };
+  else {
+    // The theme's terminal palette, so they suit every theme (Zeron's syntax theme does the same job).
+    const p = terminalPalette(t).ansi;
+    s = { text: "var(--text)", comment: "var(--faint)", commentStyle: "italic", keyword: p[5], string: p[2], number: p[3], type: p[6], function: p[4], functionWeight: "inherit", heading: p[4], tag: p[1], attr: p[3], variable: "inherit", property: p[3], operator: "inherit", constant: p[3], self: p[5] };
+  }
+  return Object.fromEntries(Object.entries(s).map(([k, v]) => [`--syn-${k.replace(/[A-Z]/g, (c) => "-" + c.toLowerCase())}`, v]));
+}
+
 // The context-free ink helpers (theme.rs): alphas are quoted in dark-mode terms.
 const ink = (t: Theme, a: number) => (t.appearance === "dark" ? alpha(WHITE, a) : alpha(BLACK, a));
 const hairline = (t: Theme, a: number) => (t.appearance === "dark" ? alpha(WHITE, a) : alpha(BLACK, Math.min(0.5, a * 1.35)));
@@ -342,6 +363,7 @@ function apply() {
   const root = document.documentElement;
   const palette = vars(active);
   for (const [k, v] of Object.entries(palette)) root.style.setProperty(k, v);
+  for (const [k, v] of Object.entries(syntaxVars(active))) root.style.setProperty(k, v);
   // index.html paints this before the bundle loads, so a light theme doesn't open on a dark flash.
   const paint = JSON.stringify(palette);
   localStorage.setItem("bismuth.paint", paint);

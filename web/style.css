@@ -472,17 +472,15 @@ html.phone .gutter-host > .gutter-rail { left: auto; right: 5px; top: 5px; botto
 .composer::before { background: var(--input); }
 .card.view-menu { background: none; -webkit-backdrop-filter: none; backdrop-filter: none; }
 .card.view-menu::before { background: var(--card-bg); }
-.composer { position: relative; border-radius: 26px; border: 1px solid var(--border); display: grid; grid-template-columns: auto 1fr auto auto auto; grid-template-areas: "attach input picker context send"; align-items: center; padding: 0 10px 0 8px; min-height: 49px; transition: border-radius 0.2s var(--ease); }
-.composer.expanded { grid-template-columns: auto 1fr auto auto auto; grid-template-areas: "strip strip strip strip strip" "input input input input input" "attach . picker context send"; padding: 0 12px 8px; min-height: 120px; align-items: end; }
+/* Capy's box: the text over a row of controls, from one line in a session; a new session's box starts taller. */
+.composer { position: relative; border-radius: 26px; border: 1px solid var(--border); display: grid; grid-template-columns: auto 1fr auto auto auto; grid-template-areas: "strip strip strip strip strip" "input input input input input" "attach . picker context send"; padding: 0 12px 8px; align-items: end; transition: border-radius 0.2s var(--ease); }
+.composer.roomy { min-height: 120px; }
 /* Zeron's AttachmentStrip: 56px rounded thumbnails over the text, the remove button revealed on hover. */
 .attach-strip { grid-area: strip; display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 4px 0; position: relative; }
 .attach-strip[hidden] { display: none; }
 /* A removed thumbnail fades where it was, out of the row; the last one's strip stays put while the box closes over it. */
 .attach-tile.leaving { position: absolute; margin: 0; pointer-events: none; }
 .attach-strip.attach-ghost { position: absolute; grid-area: auto; pointer-events: none; }
-/* The pill with images: a row of thumbnails over its single line, not the full box. */
-.composer.has-strip:not(.expanded) { grid-template-areas: "strip strip strip strip strip" "attach input picker context send"; }
-.composer.has-strip:not(.expanded) .attach-strip { padding: 10px 2px 0; }
 .attach-tile { position: relative; width: 56px; height: 56px; border-radius: 8px; border: 1px solid rgba(var(--ink-rgb), 0.10); cursor: pointer; flex: none; }
 .attach-tile img { width: 100%; height: 100%; border-radius: 7px; object-fit: cover; display: block; }
 .attach-tile.uploading img { opacity: 0.45; }
@@ -506,8 +504,8 @@ html.phone .gutter-host > .gutter-rail { left: auto; right: 5px; top: 5px; botto
 .composer .attach { grid-area: attach; width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: var(--muted); transition: background-color 0.15s; }
 .composer .attach:hover { background: rgba(var(--ink-rgb), 0.10); }
 .composer .attach .icon { width: 18px; height: 18px; }
-.composer .editor { grid-area: input; width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; cursor: text; outline: none; font-size: calc(14px * var(--fs)); line-height: calc(22.75px * var(--fs)); padding: 12px 8px 12px 6px; height: 47px; max-height: 260px; color: var(--text); caret-color: var(--accent); overflow-y: auto; position: relative; }
-.composer.expanded .editor { padding: 16px 4px 4px; height: auto; min-height: 76px; }
+.composer .editor { grid-area: input; width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; cursor: text; outline: none; font-size: calc(14px * var(--fs)); line-height: calc(22.75px * var(--fs)); padding: 14px 4px 4px; max-height: 260px; color: var(--text); caret-color: var(--accent); overflow-y: auto; position: relative; }
+.composer.roomy .editor { padding-top: 16px; min-height: 76px; }
 /* Out of the text flow (absolute, at its static spot), so the caret sits at the start rather than after it. */
 .composer .editor.empty::before { content: attr(data-placeholder); position: absolute; color: var(--faint); pointer-events: none; }
 /* Zeron's attachment chip: an image glyph and its label, inline in the text. It sits inside the line box, so
@@ -527,8 +525,7 @@ html.phone .gutter-host > .gutter-rail { left: auto; right: 5px; top: 5px; botto
 .composer .send:disabled { opacity: 0.35; cursor: default; }
 .composer .send .icon { width: 14px; height: 14px; }
 .composer .send .stop-square { width: 11px; height: 11px; border-radius: 3px; background: var(--theme-bg); }
-.composer.expanded .attach, .composer.expanded .picker-slot, .composer.expanded .context, .composer.expanded .send { align-self: end; margin-bottom: 2px; }
-.composer.expanded .picker-slot, .composer.expanded .context { margin-bottom: 0; }
+.composer .attach, .composer .send { margin-bottom: 2px; }
 /* While the height glides, the box clips its content from the top: the bottom edge (and the controls on
    it) stays put and the text sweeps with the moving top edge. */
 .composer.morphing { min-height: 0; overflow: hidden; align-content: unsafe end; }
@@ -1462,15 +1459,19 @@ html[data-appearance="light"] .cmd-palette { background: color-mix(in srgb, var(
 .fv-image img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 4px; background: repeating-conic-gradient(rgba(var(--ink-rgb), 0.06) 0 25%, transparent 0 50%) 0 0 / 16px 16px; }
 .fv-markdown { padding: 20px 24px 32px; }
 
-/* Syntax colours (the theme's terminal palette, set by panels.ts). */
-.hljs-comment, .hljs-quote { color: var(--faint); font-style: italic; }
+/* Syntax colours (Settings → Appearance → Code colors, set by theme.ts). */
+.hljs-comment, .hljs-quote { color: var(--syn-comment); font-style: var(--syn-comment-style); }
 .hljs-keyword, .hljs-selector-tag, .hljs-doctag, .hljs-meta .hljs-keyword { color: var(--syn-keyword); }
 .hljs-string, .hljs-regexp, .hljs-addition, .hljs-template-tag, .hljs-meta .hljs-string { color: var(--syn-string); }
 .hljs-number, .hljs-literal, .hljs-symbol, .hljs-bullet { color: var(--syn-number); }
 .hljs-type, .hljs-built_in, .hljs-class .hljs-title, .hljs-title.class_ { color: var(--syn-type); }
 .hljs-title, .hljs-title.function_, .hljs-section { color: var(--syn-function); }
+.hljs-title.function_ { font-weight: var(--syn-function-weight); }
+.hljs-variable.language_ { color: var(--syn-self); }
+.hljs-operator { color: var(--syn-operator); }
 .hljs-tag, .hljs-name, .hljs-deletion, .hljs-selector-id, .hljs-selector-class { color: var(--syn-tag); }
-.hljs-attr, .hljs-attribute, .hljs-property, .hljs-variable.constant_, .hljs-template-variable { color: var(--syn-attr); }
+.hljs-attr, .hljs-attribute, .hljs-variable.constant_, .hljs-template-variable { color: var(--syn-attr); }
+.hljs-property { color: var(--syn-property); }
 .hljs-meta { color: var(--muted); }
 .hljs-emphasis { font-style: italic; }
 .hljs-strong { font-weight: 600; }
@@ -1637,8 +1638,8 @@ html[data-appearance="light"] .cmd-palette { background: color-mix(in srgb, var(
 .ft { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; scrollbar-gutter: stable; padding: 4px 0 16px; outline: none; }
 /* Rows out of view skip layout and paint: Expand all folders draws thousands. */
 .ft-row { position: relative; height: 27px; display: flex; align-items: center; gap: 4px; padding-right: 8px; font-size: 11.5px; color: var(--muted); cursor: pointer; user-select: none; content-visibility: auto; }
-.ft-row:not(.selected):hover { background: rgba(var(--wash-rgb), 0.055); }
-.ft-row.selected { background: rgba(var(--wash-rgb), 0.08); color: var(--text); }
+.ft-row:not(.selected, .current):hover { background: rgba(var(--wash-rgb), 0.055); }
+.ft-row.selected, .ft-row.current { background: rgba(var(--wash-rgb), 0.08); color: var(--text); }
 .ft:focus .ft-row.selected { background: rgba(var(--wash-rgb), 0.12); }
 .ft-row.ignored { opacity: 0.52; }
 /* An empty folder: grey, selected or not. */

@@ -3,7 +3,7 @@
 import { EFFECTS, loadSource, openAdjust, removeImage, setImage } from "./background";
 import { el } from "./dom";
 import type { IconName } from "./icons";
-import { DEFAULTS, prefs, setPrefs, type ReduceMotion, type Scheme, type Surface } from "./prefs";
+import { DEFAULTS, prefs, setPrefs, type CodeColors, type ReduceMotion, type Scheme, type Surface } from "./prefs";
 import { refresh } from "./settings";
 import { ACCENTS, activeTheme, css, deriveTheme, sidebarTone, systemReducesMotion, THEMES, themeFor, type Appearance, type Theme } from "./theme";
 import { action, card, errorStrip, optionCard, pageColumn, pageHeader, row, rowText, section, select, toggle, type Option } from "./widgets";
@@ -23,7 +23,7 @@ export function renderAppearance(): HTMLElement {
   schemeSection.classList.add("first", "options");
   page.append(schemeSection);
 
-  const colors = card(themeRow("light"), themeRow("dark"), accentRow());
+  const colors = card(themeRow("light"), themeRow("dark"), accentRow(), codeColorsRow());
   colors.classList.add("near");
   page.append(colors);
 
@@ -123,6 +123,17 @@ function accentRow(): HTMLElement {
   }
   const helper = prefs.accent === "theme" ? "Theme default" : ACCENTS.find((a) => a.id === prefs.accent)!.label;
   return row("Accent color", [helper], swatches);
+}
+
+const CODE_COLORS: { id: CodeColors; label: string; meta: string }[] = [
+  { id: "one-dark-pro", label: "One Dark Pro", meta: "One Light in light themes; functions in bold" },
+  { id: "theme", label: "Theme", meta: "From the theme's terminal colors" },
+];
+
+function codeColorsRow(): HTMLElement {
+  const at = Math.max(0, CODE_COLORS.findIndex((c) => c.id === prefs.codeColors));
+  const picker = select({ options: CODE_COLORS.map((c) => ({ label: c.label })), selected: at, width: 218, onSelect: (i) => change({ codeColors: CODE_COLORS[i].id }) });
+  return row("Code colors", [CODE_COLORS[at].meta], picker);
 }
 
 // ---------------- material and background ----------------

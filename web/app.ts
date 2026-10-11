@@ -4,7 +4,7 @@ import { initUiSync, uiSyncHello, uiSyncRemote } from "./uisync"; // first: it s
 import type { ServerMessage, Thread, ThreadEvent, ThreadSummary, Turn } from "../shared/model";
 import { forgetStaged } from "./attachments";
 import { initBackground } from "./background";
-import { canRemoveImage, closePicker, draft, initComposer, removeLastImage } from "./composer";
+import { canRemoveImage, canStopTurn, closePicker, draft, initComposer, removeLastImage, stopTurn } from "./composer";
 import { discardNewDraft, draftHasContent, isNewDraft, newDraft, openNewDraft, setDraft, setNewDraftProject, switchNewDraft } from "./drafts";
 import { $, el, firstLine } from "./dom";
 import { harnessIcon, icon } from "./icons";
@@ -22,7 +22,7 @@ import { actions, call, failCalls, nav, net, on, persist, projectName, projectOf
 import { initTheme } from "./theme";
 import { closeTerminal, cycleTerminal, hideTerminal, initTerminal, newTerminal, terminalExit, terminalOutput, terminalsArrived, toggleMaximize, toggleTerminal } from "./terminal";
 import { initTranscript } from "./transcript";
-import { closeActiveFile, collapseFolders, showSidebarView, cycleTabs, expandFolders, filesChanged, goBack, goForward, openReview, initPanels, jumpTab, renameHovered, resyncWatch, showCommit, revealActiveFile, saveActiveFile, toggleExpand, toggleFiles, toggleHiddenFiles, togglePane, togglePreview, turnSnapshot } from "./panels";
+import { closeActiveFile, reopenClosedFile, collapseFolders, showSidebarView, cycleTabs, expandFolders, filesChanged, goBack, goForward, openReview, initPanels, jumpTab, renameHovered, resyncWatch, showCommit, revealActiveFile, saveActiveFile, toggleExpand, toggleFiles, toggleHiddenFiles, togglePane, togglePreview, turnSnapshot } from "./panels";
 
 declare global {
   interface Window {
@@ -552,6 +552,7 @@ bindShortcut("nextTerminal", () => !settingsOpen() && cycleTerminal(1));
 bindShortcut("prevTerminal", () => !settingsOpen() && cycleTerminal(-1));
 bindShortcut("maximizeTerminal", () => !settingsOpen() && toggleMaximize());
 bindShortcut("closeFile", () => !settingsOpen() && closeActiveFile());
+bindShortcut("reopenFile", () => !settingsOpen() && reopenClosedFile());
 bindShortcut("saveFile", () => !settingsOpen() && saveActiveFile());
 bindShortcut("togglePreview", () => !settingsOpen() && togglePreview());
 bindShortcut("goBack", () => !settingsOpen() && goBack());
@@ -562,6 +563,7 @@ bindShortcut("collapseFolders", () => !settingsOpen() && collapseFolders());
 bindShortcut("revealFile", () => !settingsOpen() && revealActiveFile());
 for (let n = 1; n <= 9; n++) bindShortcut(`tab${n}` as `tab${1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9}`, () => !settingsOpen() && jumpTab(n));
 bindShortcut("removeImage", removeLastImage, () => !settingsOpen() && canRemoveImage());
+bindShortcut("stopTurn", stopTurn, () => !settingsOpen() && canStopTurn());
 bindShortcut("newSession", () => actions.newThread());
 bindShortcut("newSessionIn", () => togglePalette("projects"));
 bindShortcut("quickOpen", () => togglePalette("files"));

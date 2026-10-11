@@ -11,10 +11,10 @@ const GROUPS: [string, (id: ShortcutId) => boolean][] = [
   ["Sessions", (id) => ["newSession", "newSessionIn", "openModelPicker", "nextSession", "prevSession", "settleSession", "renameSession"].includes(id)],
   ["Jump to session", (id) => id.startsWith("jump")],
   ["Terminal", (id) => ["toggleTerminal", "newTerminal", "closeTerminal", "nextTerminal", "prevTerminal", "maximizeTerminal"].includes(id)],
-  ["Files", (id) => ["quickOpen", "saveFile", "closeFile", "togglePreview", "goBack", "goForward", "toggleHiddenFiles", "expandFolders", "collapseFolders", "revealFile"].includes(id)],
+  ["Files", (id) => ["quickOpen", "saveFile", "closeFile", "reopenFile", "togglePreview", "goBack", "goForward", "toggleHiddenFiles", "expandFolders", "collapseFolders", "revealFile"].includes(id)],
   ["Source control", (id) => ["showChanges", "showReview"].includes(id)],
   ["Jump to file tab", (id) => /^tab\d$/.test(id)],
-  ["Composer", (id) => id === "removeImage"],
+  ["Composer", (id) => ["removeImage", "stopTurn"].includes(id)],
 ];
 
 let recordingId: ShortcutId | null = null;

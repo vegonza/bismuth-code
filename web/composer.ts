@@ -1,4 +1,4 @@
-// The dock under the transcript: plan tray, agent questions, the composer (compact pill or expanded box)
+// The dock under the transcript: plan tray, agent questions, the composer (text over a row of controls)
 // with the model picker (picker.ts) and the context ring (usage.ts).
 import type { TurnSettings } from "../shared/model";
 import { ACCEPT, clipboardImages, forgetStaged, onStaged, openLightbox, parseUserMessage, QUEUE_EDIT, restoreStaged, setStagedKey, staged, stagedImages, stagedKey, stageFiles, stageUploaded, takeStaged, uploading, unstage, withAttachments, type Staged } from "./attachments";
@@ -23,9 +23,8 @@ import { keepHold } from "./transcript";
 
 export { closePicker };
 
-/** The pill's single line: one line box plus 12px above and below (47px at the default size). */
-const compactTextH = () => Math.round(parseFloat(getComputedStyle(editor.root).lineHeight) + 24);
-const EXPAND_HYSTERESIS = 32;
+/** A session's box starts at one line (its line box plus the 14px and 4px around it); a new session's at 76px. */
+const textFloor = () => (store.thread ? Math.round(parseFloat(getComputedStyle(editor.root).lineHeight) + 18) : 76);
 
 let editor: Editor;
 let composer: HTMLElement;
@@ -34,7 +33,6 @@ let pickerSlot: HTMLElement;
 let contextRing: HTMLElement;
 let stack: HTMLElement;
 let strip: HTMLElement;
-let expanded = false;
 /** Whose draft the box holds: the session being opened or shown, or the new session on screen (drafts.ts). */
 let draftOwner: string | undefined;
 const ownerKey = () => draftOwner ?? openNewDraft().id;
@@ -216,7 +214,7 @@ function renderSend() {
   send.replaceChildren(stop ? el("span", "stop-square") : icon("arrowUp"));
   const how = workingSend(false);
   const other = how && store.queueSupported ? ` · ${displayCombo(workingCombo(how === "queue" ? "steer" : "queue"))} to ${how === "queue" ? "steer" : "queue"}` : "";
-  send.title = stop ? "Stop" : uploading() ? "Attaching…" : how === "queue" ? `Queue message (sends when this turn ends)${other}` : how === "steer" ? `Steer (send into the running turn now)${other}` : "Send";
+  send.title = stop ? `Stop (${displayCombo(prefs.keymap.stopTurn)})` : uploading() ? "Attaching…" : how === "queue" ? `Queue message (sends when this turn ends)${other}` : how === "steer" ? `Steer (send into the running turn now)${other}` : "Send";
   send.disabled = (!stop && !hasText) || (hasText && uploading());
 }
 
@@ -420,49 +418,26 @@ function dropZone(main: HTMLElement) {
 
 /** The picker's width with its model and effort labels showing, kept from the last time they were. */
 let fullPickerW = 0;
-/** When the pill would leave the input less than this beside a labelled picker, the picker shows only the
- *  harness icon (its tooltip still names the model). Judged on the labelled width, so hiding doesn't undo it. */
-const NARROW_INPUT = 120;
+/** When the controls' row can't fit a labelled picker, the picker shows only the harness icon (its tooltip still
+ *  names the model). Judged on the labelled width, so hiding doesn't undo it. */
 function fitPicker() {
   const narrow = composer.classList.contains("narrow");
   if (!narrow) fullPickerW = pickerSlot.offsetWidth;
-  const room = composer.clientWidth - 8 - 28 - 14 - (fullPickerW + 8) - contextRing.offsetWidth - 28 - 10;
-  composer.classList.toggle("narrow", room < NARROW_INPUT + (narrow ? 16 : 0));
-}
-
-let measureCtx: CanvasRenderingContext2D | null = null;
-/** Width of the single-line input the compact pill would offer. */
-const compactInputWidth = () => composer.clientWidth - 8 - 28 - 14 - (pickerSlot.offsetWidth + 8) - contextRing.offsetWidth - 28 - 10;
-
-function textWidth(text: string) {
-  measureCtx ??= document.createElement("canvas").getContext("2d")!;
-  measureCtx.font = getComputedStyle(editor.root).font; // follows the interface font and size
-  return measureCtx.measureText(text).width;
+  const room = composer.clientWidth - 24 - 28 - (fullPickerW + 8) - contextRing.offsetWidth - 28;
+  composer.classList.toggle("narrow", room < (narrow ? 16 : 0));
 }
 
 /** `was`: where the text and thumbnails were on screen before the change, when the caller changed the layout
  *  before calling (the strip). */
 function measure(kind: "morph" | "route" = "morph", was: Painted = onScreen()) {
-  // A new session always gets the box; a thread gets the pill until the draft needs a second line.
-  // Collapsing back waits until the text clears the pill by 32px, so a line at the edge doesn't flicker.
   fitPicker();
-  const text = editor.value();
-  const multiline = text.includes("\n");
-  const limit = compactInputWidth() - (expanded ? EXPAND_HYSTERESIS : 0);
-  // Chips are wider than their labels. Thumbnails don't need the box: the pill grows a row for them.
-  const wants = !store.thread || multiline || textWidth(text) + editor.chips().length * 24 > limit;
-  const flipped = wants !== expanded;
-  if (flipped) {
-    expanded = wants;
-    composer.classList.toggle("expanded", expanded);
-  }
-  // Grow with content up to the cap; the expanded box keeps a 76px floor.
+  // Grow with content up to the cap, from one line in a session (a new session's box starts taller).
+  composer.classList.toggle("roomy", !store.thread);
   const box = editor.root;
   box.style.height = "auto";
-  box.style.height = `${expanded ? Math.min(260, Math.max(76, box.scrollHeight)) : compactTextH()}px`;
+  box.style.height = `${Math.min(260, Math.max(textFloor(), box.scrollHeight))}px`;
   retarget(kind);
-  // Pill ⇄ box rest their first line at different insets (Zeron's morph_text_pad, collapse_text_glide), and the
-  // strip moves the text down: everything starts where it was and eases into the new layout over the morph.
+  // The strip moves the text down: everything starts where it was and eases into the new layout over the morph.
   if (morph) settleLags(was);
 }
 
@@ -472,7 +447,7 @@ const turnSettings = (): TurnSettings => {
 };
 
 /** `key`: Enter, which never stops a run (Zeron #406: a stray Enter right after sending stopped the turn it had just
- *  queued behind); the Stop button and Escape do. */
+ *  queued behind); the Stop button and the Stop generation shortcut do. */
 function submit(key = false, mod = false) {
   // Another session is loading: the one still on screen isn't where the user means to send (the draft waits).
   if (store.opening && store.opening !== store.thread?.id) return;
@@ -569,6 +544,11 @@ export function canRemoveImage() {
 export function removeLastImage() {
   const list = staged();
   if (list.length) unstage(list[list.length - 1].id);
+}
+
+export const canStopTurn = running;
+export function stopTurn() {
+  net.send({ type: "interrupt", threadId: store.thread!.id });
 }
 
 export const draft = {
@@ -715,8 +695,6 @@ export function initComposer() {
       e.preventDefault();
       e.stopPropagation();
       void finishEdit(false);
-    } else if (e.key === "Escape" && running() && !editor.value()) {
-      net.send({ type: "interrupt", threadId: store.thread!.id });
     }
   });
 

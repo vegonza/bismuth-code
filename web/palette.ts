@@ -17,7 +17,7 @@ import { restartApp } from "./restart";
 import { closeSettings, openSettings, refresh } from "./settings";
 import { projectArt, renameSession, sessionRow, sortedSummaries, toggleSidebar } from "./sidebar";
 import { newTerminal, toggleMaximize, toggleTerminal } from "./terminal";
-import { closeActiveFile, collapseFolders, copyActivePath, downloadPdf, expandFolders, findFiles, loadSuggestions, openFile, openReview, showChangesSince, showCommit, suggestedFiles, toggleChanges, toggleExpand, toggleFiles, revealActiveFile, toggleHiddenFiles, togglePane, togglePreview } from "./panels";
+import { closeActiveFile, reopenClosedFile, collapseFolders, copyActivePath, downloadPdf, expandFolders, findFiles, loadSuggestions, openFile, openReview, showChangesSince, showCommit, suggestedFiles, toggleChanges, toggleExpand, toggleFiles, revealActiveFile, toggleHiddenFiles, togglePane, togglePreview } from "./panels";
 import { actions, call, on, projectName, store, targetProject, tildePath, workFolder } from "./store";
 
 const HISTORY_RESULT_LIMIT = 30;
@@ -55,6 +55,7 @@ const COMMANDS: Command[] = [
   { label: "Expand all folders", icon: "folderOpen", combo: () => bound("expandFolders"), run: () => (closeSettings(), void expandFolders()) },
   { label: "Collapse all folders", icon: "folder", combo: () => bound("collapseFolders"), run: () => (closeSettings(), collapseFolders()) },
   { label: "Close file", icon: "x", combo: () => bound("closeFile"), run: () => (closeSettings(), closeActiveFile()) },
+  { label: "Reopen closed file", icon: "rotateCcw", combo: () => bound("reopenFile"), run: () => (closeSettings(), reopenClosedFile()) },
   { label: "Copy path of current file", icon: "clipboardCopy", combo: () => null, run: () => (closeSettings(), copyActivePath()) },
   { label: "Reveal current file in file manager", icon: "folderOpen", combo: () => bound("revealFile"), run: () => (closeSettings(), revealActiveFile()) },
   { label: "Toggle preview", icon: "bookOpen", combo: () => bound("togglePreview"), run: () => (closeSettings(), togglePreview()) },

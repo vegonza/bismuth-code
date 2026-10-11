@@ -11,7 +11,7 @@
 import { Transaction, type TransactionSpec } from "@codemirror/state";
 import { isPhone } from "./phone";
 import { BRANCH, UNPUSHED, type FileContent, type FileEntry, type FileLocation, type FileRef, type GitStatus, type WriteResult } from "../shared/model";
-import { codeState, codeView, EditorView, type CodeHooks, type EditorState } from "./code";
+import { codeState, codeView, EditorView, keyModeSpec, type CodeHooks, type EditorState } from "./code";
 import { changesStore, changesView, lineCounts, SCOPES, type ChangesStore } from "./changes";
 import { graphView } from "./graph";
 import { commitSource, reviewView, uncommittedSource } from "./review";
@@ -33,7 +33,7 @@ import { call, on, store, tildePath, workFolder } from "./store";
 import { reducedMotion, RESIZE_MS } from "./motion";
 import { contextMenu as openContextMenu, menuPoint, toggleSwitch, type MenuEntry, type Popover } from "./popover";
 import { dialog, select as selectMenu } from "./widgets";
-import { activeTheme, onTheme, terminalPalette } from "./theme";
+import { onTheme } from "./theme";
 
 // Zeron's settings.rs widths.
 const FILES_DEFAULT = 286;
@@ -641,6 +641,9 @@ export function toggleFiles(focusTree = true) {
   layout();
   renderExplorer();
   if (s.files) {
+    // The shown file is in view in the tree.
+    const shownFile = currentFile();
+    if (shownFile && !isAbs(shownFile)) reveal(shownFile);
     refresh();
     if (focusTree) requestAnimationFrame(() => explorer.contains(document.activeElement) || treeEl.focus({ preventScroll: true }));
   } else if (explorer.contains(document.activeElement)) focusComposer();
@@ -788,19 +791,28 @@ function closeTabs(paths: string[]) {
   );
 }
 
-/** Tabs gone, whatever they held. */
-function shut(paths: string[]) {
+/** How many closed tabs Mod+Shift+T can bring back, per session. */
+const REOPEN_MAX = 3;
+/** Each session's closed tabs (where they stood), newest last. */
+const closedTabs = new Map<string, { path: string; at: number }[]>();
+
+/** Tabs gone, whatever they held. Unless `forget` (their files deleted), Mod+Shift+T brings them back. */
+function shut(paths: string[], forget = false) {
   const s = session();
   const r = root();
-  if (!s || !r || !paths.length) return;
+  const id = panelsKey();
+  if (!s || !r || !id || !paths.length) return;
   const at = s.active ? s.tabs.indexOf(s.active) : 0;
+  const closed = closedTabs.get(id) ?? [];
   for (const p of paths) {
     const i = s.tabs.indexOf(p);
     if (i < 0) continue;
+    if (!forget) closed.push({ path: p, at: i });
     s.tabs.splice(i, 1);
     if (s.preview === p) s.preview = null;
     dropDoc(r, p);
   }
+  closedTabs.set(id, closed.slice(-REOPEN_MAX));
   if (s.active && !s.tabs.includes(s.active)) s.active = s.tabs[Math.min(at, s.tabs.length - 1)] ?? null;
   persist();
   // The last tab closing puts the host away (Zeron's collapse_surfaces_if_empty).
@@ -826,6 +838,17 @@ export function cycleTabs(step: 1 | -1): boolean {
 export function closeActiveFile() {
   const s = session();
   if (s?.surfaces && s.active) closeTab(s.active);
+}
+
+/** Mod+Shift+T: the last closed tab back where it stood. */
+export function reopenClosedFile() {
+  const s = session();
+  const id = panelsKey();
+  const last = id ? closedTabs.get(id)?.pop() : undefined;
+  if (!s || !last) return;
+  // Placed first, so opening it only shows it (a commit or the review opens the same way).
+  if (!s.tabs.includes(last.path)) s.tabs.splice(Math.min(last.at, s.tabs.length), 0, last.path);
+  openFile(last.path, { focus: true });
 }
 
 /** The shown file's absolute path copied (the palette's Copy path of current file). */
@@ -931,6 +954,21 @@ async function goToDefinition(r: string, path: string, pos: number) {
   );
 }
 
+/** The file shown in the host, which the tree marks. */
+function currentFile(): string | null {
+  const s = session();
+  return s?.surfaces && s.active && !isReviewTab(s.active) ? s.active : null;
+}
+
+/** The tree's mark moved to the shown file, without redrawing the tree. */
+function markCurrent() {
+  if (!treeEl) return;
+  const path = currentFile();
+  for (const row of treeEl.querySelectorAll<HTMLElement>(".ft-row.current")) if (row.dataset.path !== path) row.classList.remove("current"), (row.dataset.sig = "");
+  const row = path ? treeEl.querySelector<HTMLElement>(`.ft-row[data-path="${CSS.escape(path)}"]:not(.ft-result)`) : null;
+  if (row && !row.classList.contains("current")) row.classList.add("current"), (row.dataset.sig = "");
+}
+
 /** Show a path in the tree: its folders open, it selected. */
 function reveal(path: string) {
   const r = root();
@@ -983,6 +1021,7 @@ function layout(snap = false) {
   app.classList.toggle("pane-open", showPane);
   app.classList.toggle("pane-expanded", showPane && expanded);
   app.classList.toggle("has-panels", !!s);
+  markCurrent();
   if (snap) {
     void app.offsetWidth; // the new widths land with transitions off
     app.classList.remove("snap");
@@ -1065,6 +1104,7 @@ let bodyShows = "";
 function renderPane() {
   const s = session();
   const r = root();
+  markCurrent();
   // Closing glides: the last content stays until the column is shut.
   if (!s?.surfaces || !r) return;
   renderBar();
@@ -1568,20 +1608,6 @@ function flash(text: string) {
   note.classList.remove("out");
   if (flashTimer) clearTimeout(flashTimer);
   flashTimer = setTimeout(() => note!.classList.add("out"), 2200);
-}
-
-/** Code colours from the theme's terminal palette, so they suit every theme (Zeron's syntax theme does the same job). */
-function paintSyntax() {
-  const p = terminalPalette(activeTheme()).ansi;
-  const root = document.documentElement.style;
-  const set = (name: string, value: string) => root.setProperty(`--syn-${name}`, value);
-  set("keyword", p[5]);
-  set("string", p[2]);
-  set("number", p[3]);
-  set("type", p[6]);
-  set("function", p[4]);
-  set("tag", p[1]);
-  set("attr", p[3]);
 }
 
 // ---------------- the explorer ----------------
@@ -2093,7 +2119,7 @@ function entryRow(r: string, t: Tree, e: FileEntry, depth: number, cache: Map<st
   const git = isDir ? t.gitDirs.get(e.path) : t.git[e.path];
   // A folder listed with nothing in it (or nothing shown) is greyed, so it needn't be opened to tell.
   const empty = isDir && t.children.get(e.path)?.length === 0;
-  const cls = `ft-row${isDir ? " dir" : ""}${empty ? " empty" : ""}${open ? " open" : ""}${t.selected === e.path ? " selected" : ""}${e.ignored && !git ? " ignored" : ""}${git ? ` git-${git}` : ""}`;
+  const cls = `ft-row${isDir ? " dir" : ""}${empty ? " empty" : ""}${open ? " open" : ""}${t.selected === e.path ? " selected" : ""}${currentFile() === e.path ? " current" : ""}${e.ignored && !git ? " ignored" : ""}${git ? ` git-${git}` : ""}`;
   const sig = `${cls}|${depth}|${e.name}`;
   const kept = rowCache.get(e.path);
   if (kept?.dataset.sig === sig) return cache.set(e.path, kept), kept;
@@ -2781,7 +2807,7 @@ async function trash(r: string, paths: string[], permanent: boolean) {
   // Their tabs close; unsaved edits there are dropped with the file.
   const s = session();
   const gone = (p: string) => paths.some((x) => p === x || p.startsWith(`${x}/`));
-  if (s) shut(s.tabs.filter(gone));
+  if (s) shut(s.tabs.filter(gone), true);
   const t = treeOf(r);
   if (t.selected && gone(t.selected)) t.selected = null;
   await relistAround(r, ...paths);
@@ -3113,10 +3139,8 @@ export function initPanels(refocus: () => void) {
   app.append(pane, explorer, toggles);
   makeToggles();
 
-  paintSyntax();
   // Icons are drawn for the appearance: a new one redraws them.
   onTheme(() => {
-    paintSyntax();
     rowCache = new Map();
     renderExplorer();
     renderPane();
@@ -3129,6 +3153,11 @@ export function initPanels(refocus: () => void) {
       if (st && showsChanges(st) !== prefs.showChanges) changeDoc(key, d, showChangesSpec(prefs.showChanges));
     }
     renderBar();
+  });
+  // Vim keys turned on or off (here or in another window): every open file's editor follows.
+  onPrefs((prev) => {
+    if (prev.vimKeys === prefs.vimKeys) return;
+    for (const [key, d] of docs) changeDoc(key, d, keyModeSpec());
   });
   // Changes against the other scope (here or in another window).
   onPrefs((prev) => prev.changesScope !== prefs.changesScope && rescope());

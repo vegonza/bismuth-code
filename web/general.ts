@@ -1,11 +1,12 @@
 // Settings → General: where New project's folder browser opens, and what Enter and Ctrl+Enter do with a prompt
-// while the agent is working (queue it for when the turn ends, or steer it in now), and how the file explorer orders files.
+// while the agent is working (queue it for when the turn ends, or steer it in now), how the file explorer orders files,
+// and whether the file editor takes Vim's keys.
 import { el } from "./dom";
 import { displayCombo } from "./keymap";
 import { prefs, setPrefs, type FileSort, type WorkingSend } from "./prefs";
 import { refresh } from "./settings";
 import { call, tildePath } from "./store";
-import { card, errorStrip, pageColumn, pageHeader, row, section, select } from "./widgets";
+import { card, errorStrip, pageColumn, pageHeader, row, section, select, toggle } from "./widgets";
 
 /** The base folder field: saved on Enter or leaving it once the core can list it; empty means home. */
 function baseFolder(): HTMLElement[] {
@@ -93,12 +94,17 @@ function fileSort(): HTMLElement {
   return row("Sort files by", [SORTS[at].meta, "Folders always come first"], picker);
 }
 
+function vimKeys(): HTMLElement {
+  const meta = [`Normal, insert and visual modes in the file editor`, `${displayCombo("alt-j")} and ${displayCombo("alt-k")} move lines, with Shift they copy them`];
+  return row("Vim keys", meta, toggle(prefs.vimKeys, "Vim keys", (on) => setPrefs({ vimKeys: on })));
+}
+
 export function renderGeneral(): HTMLElement {
   const page = pageColumn();
   const folders = section("Projects", card(...baseFolder()));
   folders.classList.add("first");
   const sending = section("While the agent works", card(sendKey("enter"), sendKey("mod-enter")));
-  const files = section("Files", card(fileSort()));
+  const files = section("Files", card(fileSort(), vimKeys()));
   page.append(pageHeader("General"), folders, sending, files);
   return page;
 }

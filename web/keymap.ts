@@ -65,6 +65,7 @@ export const LABELS: Record<ShortcutId, string> = {
   prevTerminal: "Previous terminal",
   maximizeTerminal: "Maximize terminal",
   closeFile: "Close file",
+  reopenFile: "Reopen closed file",
   saveFile: "Save file",
   togglePreview: "Toggle preview",
   goBack: "Go back",
@@ -84,6 +85,7 @@ export const LABELS: Record<ShortcutId, string> = {
   tab8: "File tab 8",
   tab9: "File tab 9",
   removeImage: "Remove last attached image",
+  stopTurn: "Stop generation",
 };
 
 const handlers: Partial<Record<ShortcutId, () => void>> = {};

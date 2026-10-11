@@ -10,7 +10,7 @@ export type BackgroundEffect = "none" | "dither" | "ascii" | "halftone" | "scanl
 /** Pan/zoom of the new-thread background: the focal point (0–1 on each axis) and a 1–4× magnification. */
 export type Framing = { focalX: number; focalY: number; zoom: number };
 
-export const SHORTCUTS = ["toggleSidebar", "toggleRightPane", "expandRightPane", "toggleFiles", "showChanges", "showReview", "toggleTerminal", "newSession", "newSessionIn", "openModelPicker", "nextSession", "prevSession", "settleSession", "renameSession", "jump1", "jump2", "jump3", "jump4", "jump5", "jump6", "jump7", "jump8", "jump9", "newTerminal", "closeTerminal", "nextTerminal", "prevTerminal", "maximizeTerminal", "closeFile", "saveFile", "togglePreview", "goBack", "goForward", "toggleHiddenFiles", "expandFolders", "collapseFolders", "revealFile", "quickOpen", "tab1", "tab2", "tab3", "tab4", "tab5", "tab6", "tab7", "tab8", "tab9", "removeImage"] as const;
+export const SHORTCUTS = ["toggleSidebar", "toggleRightPane", "expandRightPane", "toggleFiles", "showChanges", "showReview", "toggleTerminal", "newSession", "newSessionIn", "openModelPicker", "nextSession", "prevSession", "settleSession", "renameSession", "jump1", "jump2", "jump3", "jump4", "jump5", "jump6", "jump7", "jump8", "jump9", "newTerminal", "closeTerminal", "nextTerminal", "prevTerminal", "maximizeTerminal", "closeFile", "reopenFile", "saveFile", "togglePreview", "goBack", "goForward", "toggleHiddenFiles", "expandFolders", "collapseFolders", "revealFile", "quickOpen", "tab1", "tab2", "tab3", "tab4", "tab5", "tab6", "tab7", "tab8", "tab9", "removeImage", "stopTurn"] as const;
 export type ShortcutId = (typeof SHORTCUTS)[number];
 /** Shortcuts that act on the terminal drawer. They may share a combination with one that acts on the session
  *  (Next terminal and Next session are both Mod+Tab): while a terminal has focus its own wins, elsewhere the
@@ -54,8 +54,9 @@ export const DEFAULT_KEYMAP: Keymap = {
   nextTerminal: "mod-tab",
   prevTerminal: "mod-shift-tab",
   maximizeTerminal: "mod-shift-enter",
-  // The right panel's open files: Mod+W closes the shown one, Mod+N shows the Nth (sessions keep Alt+N).
+  // The right panel's open files: Mod+W closes the shown one (Mod+Shift+T brings it back), Mod+N shows the Nth (sessions keep Alt+N).
   closeFile: "mod-w",
+  reopenFile: "mod-shift-t",
   saveFile: "mod-s",
   // The shown file's source and its preview (Markdown, LaTeX, a notebook, HTML, CSV).
   togglePreview: "mod-m",
@@ -80,6 +81,8 @@ export const DEFAULT_KEYMAP: Keymap = {
   tab9: "mod-9",
   // The composer's newest attached image (Shift+Backspace from the box, or with nothing else focused).
   removeImage: "shift-backspace",
+  // Stops the open session's running turn, wherever focus is (Escape doesn't).
+  stopTurn: "mod-shift-backspace",
 };
 
 export type Prefs = {
@@ -118,12 +121,18 @@ export type Prefs = {
   enterWhileWorking: WorkingSend;
   /** How the file explorer orders a folder's files (folders always come first, by name). */
   fileSort: FileSort;
+  /** The colours code is highlighted in: One Dark Pro's (One Light's in light themes), or ones from the theme. */
+  codeColors: CodeColors;
+  /** The file editor takes Vim's keys (normal, insert and visual modes, : commands). */
+  vimKeys: boolean;
   /** Files' changes since git's copy shown in place in their editors (a bar's click, or Open changes). */
   showChanges: boolean;
   /** What the explorer's marks and the editors' changes are against: the last commit, the open session's folder
    *  just before its last turn, the branch as last pushed, or where the branch left the default one. */
   changesScope: ChangesScope;
 };
+
+export type CodeColors = "one-dark-pro" | "theme";
 
 export type ChangesScope = "turn" | "uncommitted" | "unpushed" | "branch";
 
@@ -163,6 +172,8 @@ export const DEFAULTS: Prefs = {
   projectsDir: null,
   enterWhileWorking: "queue",
   fileSort: "type",
+  codeColors: "one-dark-pro",
+  vimKeys: false,
   showChanges: false,
   changesScope: "uncommitted",
 };

@@ -74,8 +74,12 @@ function cover() {
   sync();
 }
 
+/** A screen was left for the list this page, so it's still there under the list to come back to. */
+let left = false;
+
 function goHome() {
   home = true;
+  left = true;
   sync();
 }
 
@@ -297,20 +301,25 @@ function strip(rules: CSSRuleList) {
   }
 }
 
-/** The files panel sits just off the chat's right edge: a swipe to the left over the chat pulls it in, following the
- *  finger, and a swipe to the right over it pushes it back. Let go past a third of the way (or flicked), it goes on;
- *  short of that, it goes back where it was. A swipe over something that scrolls sideways (a code block, a table) is
- *  that thing's, and the system's own back gesture starts at the screen's edges and never reaches the page. */
+/** The files panel sits just off the chat's right edge and the chat just off the session list's: a swipe to the left
+ *  over the chat pulls the panel in, and one over the list pulls back the chat last left; a swipe to the right over the
+ *  panel pushes it back, and one over the chat pushes the chat off to the list. Each follows the finger. Let go past a third of the way (or flicked), it
+ *  goes on; short of that, it goes back where it was. A swipe over something that scrolls sideways (a code block, a
+ *  table) is that thing's, and the system's own back gesture starts at the screen's edges and never reaches the page. */
 function swipePanels() {
-  let fp: HTMLElement | null = null;
-  let mode: "open" | "close" | null = null;
+  /** What the finger went down on, then (once it moves) what it does: the panel in or out, or the chat away or back. */
+  let over: "list" | "chat" | "files" | null = null;
+  let mode: "open" | "close" | "home" | "back" | null = null;
+  /** The moving screen comes in from off the right, rather than going off it. */
+  const coming = () => mode === "open" || mode === "back";
+  let moving: HTMLElement | null = null;
   let start = { x: 0, y: 0 };
   let target: Element | null = null;
   let dragging = false;
   let last = { x: 0, t: 0, v: 0 };
-  const width = () => fp!.offsetWidth || innerWidth;
-  // Where the panel is for the finger at `x`: 0 in, width away.
-  const at = (x: number) => Math.max(0, Math.min(width(), (mode === "open" ? width() : 0) + x - start.x));
+  const width = () => moving!.offsetWidth || innerWidth;
+  // Where the moving screen is for the finger at `x`: 0 in, width away.
+  const at = (x: number) => Math.max(0, Math.min(width(), (coming() ? width() : 0) + x - start.x));
   /** Something under the finger that would scroll that way itself. */
   const scrolls = (dx: number) => {
     for (let n = target; n && n !== document.body; n = n.parentElement) {
@@ -320,50 +329,56 @@ function swipePanels() {
     return false;
   };
   addEventListener("touchstart", (e: TouchEvent) => {
-    mode = null;
-    if (!isPhone() || home || e.touches.length !== 1 || document.querySelector(".ctx-menu, .card.ph-menu, .s-scrim, .lightbox")) return;
+    over = mode = null;
+    if (!isPhone() || e.touches.length !== 1 || document.querySelector(".ctx-menu, .card.ph-menu, .s-scrim, .lightbox")) return;
     target = e.target as Element;
     if (target.closest("input, textarea, [contenteditable], .terminal-drawer")) return;
-    fp = document.querySelector<HTMLElement>(".fp");
     const top = layers().at(-1);
-    if (top === goHome && app.classList.contains("has-panels") && target.closest("#main")) mode = "open";
-    else if (top === actions.closeFiles && fp && target.closest(".fp")) mode = "close";
+    if (!top && left && target.closest("#sidebar")) over = "list";
+    else if (top === goHome && target.closest("#main")) over = "chat";
+    else if (top === actions.closeFiles && document.querySelector(".fp") && target.closest(".fp")) over = "files";
     else return;
     const t = e.touches[0];
     start = { x: t.clientX, y: t.clientY };
     last = { x: t.clientX, t: e.timeStamp, v: 0 };
   }, { passive: true });
   addEventListener("touchmove", (e: TouchEvent) => {
-    if (!mode) return;
+    if (!over) return;
     const t = e.touches[0];
     const dx = t.clientX - start.x;
     const dy = t.clientY - start.y;
     if (!dragging) {
       if (Math.hypot(dx, dy) < 10) return;
-      // Scrolling up or down, a swipe the other way, or one something else takes: left alone.
-      if (Math.abs(dx) < Math.abs(dy) * 1.5 || (mode === "open") !== dx < 0 || scrolls(dx)) return void (mode = null);
+      if (over === "list") mode = dx < 0 ? "back" : null;
+      else if (over === "files") mode = dx > 0 ? "close" : null;
+      else mode = dx > 0 ? "home" : app.classList.contains("has-panels") ? "open" : null;
+      // Scrolling up or down, a swipe with nothing that way, or one something else takes: left alone.
+      if (!mode || Math.abs(dx) < Math.abs(dy) * 1.5 || scrolls(dx)) return void (over = mode = null);
+      moving = mode === "home" || mode === "back" ? $("main") : document.querySelector<HTMLElement>(".fp")!;
       dragging = true;
-      fp!.style.transition = "none";
-      fp!.style.visibility = "visible";
+      moving.style.transition = "none";
+      moving.style.visibility = "visible";
     }
     e.preventDefault();
     const dt = e.timeStamp - last.t;
     if (dt > 0) last = { x: t.clientX, t: e.timeStamp, v: (t.clientX - last.x) / dt };
-    fp!.style.transform = `translateX(${at(t.clientX)}px)`;
+    moving!.style.transform = `translateX(${at(t.clientX)}px)`;
   }, { passive: false });
   const end = (e: TouchEvent) => {
-    if (!dragging) return void (mode = null);
+    if (!dragging) return void (over = mode = null);
     dragging = false;
-    const out = at(e.changedTouches[0]?.clientX ?? last.x) < width() * (mode === "open" ? 2 / 3 : 1 / 3);
+    const out = at(e.changedTouches[0]?.clientX ?? last.x) < width() * (coming() ? 2 / 3 : 1 / 3);
     const keep = e.type === "touchend" && (last.v < -0.3 || (last.v <= 0.3 && out));
     const was = mode;
-    mode = null;
+    over = mode = null;
     // From where the finger left it, the stylesheet's slide takes it the rest of the way, or back.
-    fp!.style.removeProperty("transition");
-    fp!.style.removeProperty("visibility");
-    fp!.style.removeProperty("transform");
+    moving!.style.removeProperty("transition");
+    moving!.style.removeProperty("visibility");
+    moving!.style.removeProperty("transform");
     if (was === "open" && keep) actions.explorer();
+    else if (was === "back" && keep) cover();
     else if (was === "close" && !keep && e.type === "touchend") actions.closeFiles();
+    else if (was === "home" && !keep && e.type === "touchend") goHome();
     // Nor does a click follow, should the browser send one for the lifted finger.
     addEventListener("click", swallow, true);
     setTimeout(() => removeEventListener("click", swallow, true), 400);

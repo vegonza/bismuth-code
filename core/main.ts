@@ -738,7 +738,7 @@ async function serveBuild(id: string, path: string, inject: boolean): Promise<Re
   const file = ui.buildFile(id, path);
   if (!file) return new Response("not found", { status: 404 });
   if (inject && file.endsWith(".html")) {
-    return new Response(sharedUi.inject(injectLiveClient(await Bun.file(file).text(), id)), { headers: { "content-type": "text/html; charset=utf-8" } });
+    return new Response(sharedUi.inject(injectLiveClient(await Bun.file(file).text(), id)), { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
   }
   return new Response(Bun.file(file));
 }
