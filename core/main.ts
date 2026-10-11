@@ -20,7 +20,7 @@ import { blob, changes, commit, commitChanges, discard, init, log, pull, push, s
 import { baseText, createEntry, duplicateEntry, gitState, rawFile, listDirectory, openExternal, previewFile, readFile, renameEntry, resolveRefs, revealEntry, searchFiles, trashEntries, writeFile } from "./files";
 import { definition, killLanguageServers } from "./lsp";
 import { FolderWatch, gitDirOf } from "./watch";
-import { cursorListing, McpOverrides, setCursorServer, type McpListing, type McpPlan } from "./mcp";
+import { cursorListing, McpOverrides, setCursorServer, type McpBuiltin, type McpListing, type McpPlan } from "./mcp";
 import { HOME, listFolder, Projects } from "./projects";
 import { MessageQueue, type Row } from "./queue";
 import { RemoteAccessControl } from "./remote";
@@ -39,7 +39,14 @@ const projects = new Projects(ui.STATE, process.argv[2] ?? process.env.BISMUTH_L
 const launch = process.argv[2] ? projects.ensure(process.argv[2]).id : null;
 const settlement = new Settlement(ui.STATE);
 const uploads = new Uploads(ui.STATE);
-const views = new Views(ui.STATE, () => server.port!);
+// Screenshots of views are in the user's appearance ("system" is taken as dark).
+const views = new Views(ui.STATE, () => server.port!, () => {
+  let prefs: { scheme?: string } = {};
+  try {
+    prefs = JSON.parse(sharedUi.all()["bismuth.prefs"] ?? "{}");
+  } catch {}
+  return { appearance: prefs.scheme === "light" ? "light" : "dark" };
+});
 const sharedUi = new SharedUiState(ui.STATE);
 /** When each thread's run in flight began: its turn's start as the harness reports it, else when the run was first
  *  seen. Every run starts under this core (harness work doesn't outlive it), so it's never a guess. */
@@ -543,14 +550,16 @@ async function rpc<M extends keyof RpcMethods>(method: M, params: RpcMethods[M][
       const enabled = !!p.enabled;
       const scope = p.scope === "all" ? "all" : "project";
       const listings = await mcpListings(project.path, false);
-      const use = mcp.table(project.path, [h], listings).find((s) => s.name === name)?.uses[h];
+      const row = mcp.table(project.path, [h], listings, BUILTINS).find((s) => s.name === name);
+      const use = row?.uses[h];
       if (!use) throw new Error(`No MCP server named ${name} here`);
       if (use.locked) throw new Error(use.locked);
       // A dormant definition (a project's .cursor/mcp.json) isn't one the harness runs on its own: its switch is bismuth's.
       const native = listings[h]?.natives.find((n) => n.name === name && !n.dormant);
       // Cursor's own servers switch in Cursor's per-project list: "all" is every project there is now.
       if (native && h === "cursor") for (const cwd of scope === "all" ? projects.paths() : [project.path]) setCursorServer(cwd, name, enabled);
-      else mcp.set(project.path, h, name, enabled, scope, native?.configured ?? false);
+      // A built-in server is on unless switched off.
+      else mcp.set(project.path, h, name, enabled, scope, row!.from === "bismuth" ? true : (native?.configured ?? false));
       if (h === "codex") await codex.replanMcp();
       return mcpSnapshot(project.path);
     }
@@ -625,14 +634,17 @@ async function mcpListings(cwd: string, live: boolean): Promise<Partial<Record<H
 
 async function mcpSnapshot(cwd: string): Promise<McpSnapshot> {
   const available = harnesses.filter((h) => status.get(h.id)!.available).map((h) => h.id);
-  return { harnesses: available, servers: mcp.table(cwd, available, await mcpListings(cwd, true)) };
+  return { harnesses: available, servers: mcp.table(cwd, available, await mcpListings(cwd, true), BUILTINS) };
 }
 
+/** bismuth's own servers, listed first in MCP servers and on unless switched off there. */
+const BUILTINS: McpBuiltin[] = [{ name: VIEW_SERVER, source: "Built into bismuth", target: "render: views made with the project's own frontend" }];
+
 /** What a harness's runs in a project get (without a switch for it there, nothing to read), and bismuth's own server
- *  for views (core/views.ts). */
+ *  for views (core/views.ts) unless it's switched off. */
 async function mcpPlan(cwd: string, h: HarnessId): Promise<McpPlan> {
   const plan: McpPlan = Object.keys(mcp.get(cwd, h)).length ? mcp.plan(cwd, h, await mcpListings(cwd, false)) : { off: [], on: [], add: {} };
-  return { ...plan, add: { ...plan.add, [VIEW_SERVER]: views.server(cwd) } };
+  return mcp.builtinOn(cwd, h, VIEW_SERVER) ? { ...plan, add: { ...plan.add, [VIEW_SERVER]: views.server(cwd) } } : plan;
 }
 
 function usageReport(days: number): Promise<UsageReport> {

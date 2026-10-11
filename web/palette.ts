@@ -669,10 +669,14 @@ async function loadMcp() {
 /** The servers in the order their harnesses come, each a row of switches. */
 function mcpEntries(q: string[]): Entry[] {
   mcpRows = (mcpSnapshot?.servers ?? [])
-    .filter((s) => matches(q, `${s.name} ${HARNESS_NAMES[s.from]} ${s.source} ${s.target ?? ""}`))
-    .sort((a, b) => HARNESS_ORDER.indexOf(a.from) - HARNESS_ORDER.indexOf(b.from) || a.name.localeCompare(b.name));
+    .filter((s) => matches(q, `${s.name} ${fromName(s)} ${s.source} ${s.target ?? ""}`))
+    // bismuth's own first, then by the harness that defines them.
+    .sort((a, b) => fromOrder(a) - fromOrder(b) || a.name.localeCompare(b.name));
   return mcpRows.map((s) => ({ group: "servers", render: (q) => mcpRow(s, q), pick: () => void switchMcp(s, mcpHarnesses()[mcpColumn], "project") }));
 }
+
+const fromName = (s: McpServer) => (s.from === "bismuth" ? "bismuth" : HARNESS_NAMES[s.from]);
+const fromOrder = (s: McpServer) => (s.from === "bismuth" ? -1 : HARNESS_ORDER.indexOf(s.from));
 
 /** Name, the harness and file that define it, then a switch per harness. */
 function mcpRow(s: McpServer, q: string[]): HTMLElement {
@@ -682,7 +686,7 @@ function mcpRow(s: McpServer, q: string[]): HTMLElement {
   const name = el("span", "name");
   name.append(highlight(s.name, q));
   const where = el("span", "path");
-  where.append(highlight(`${HARNESS_NAMES[s.from]} · ${s.source}`, q));
+  where.append(highlight(s.from === "bismuth" ? s.source : `${fromName(s)} · ${s.source}`, q));
   label.append(name, where);
   item.append(label);
   mcpHarnesses().forEach((h, col) => {
@@ -716,7 +720,8 @@ function mcpCellTitle(s: McpServer, h: HarnessId, use: McpUse): string {
     `${who}: ${use.enabled ? "on" : "off"}` +
       (use.scope === "project" ? " for this project" : use.scope === "all" ? " for all projects" : use.native ? ", as its own config has it" : ""),
   ];
-  if (!use.native && !use.locked) lines.push(`Carried over from ${HARNESS_NAMES[s.from]} (${s.source})`);
+  if (s.from === "bismuth") lines.push(`Built into bismuth: ${s.target}`);
+  else if (!use.native && !use.locked) lines.push(`Carried over from ${fromName(s)} (${s.source})`);
   if (use.status) lines.push(MCP_STATUS[use.status] + (use.status === "connected" && use.tools != null ? ` · ${use.tools} tool${use.tools === 1 ? "" : "s"}` : ""));
   if (use.locked) lines.push(use.locked);
   else lines.push(`Click: this project · ${displayCombo("mod")}-click: all projects`);

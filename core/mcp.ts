@@ -22,6 +22,8 @@ export type McpDef =
 export type McpNative = { name: string; source: string; def: McpDef | null; configured: boolean; locked: string | null; dormant?: true };
 /** A harness's servers for a project, and how the ones it ran there were doing (carried ones too). */
 export type McpListing = { natives: McpNative[]; status: Record<string, { status: McpStatus | null; tools: number | null }> };
+/** A server bismuth itself serves to every run (core/views.ts): on unless switched off. */
+export type McpBuiltin = { name: string; source: string; target: string };
 /** What a harness's runs in a project get: its own servers forced off or on, and the ones carried over. */
 export type McpPlan = { off: string[]; on: string[]; add: Record<string, McpDef> };
 
@@ -74,8 +76,30 @@ export class McpOverrides {
     if (!Object.keys(at).length) delete this.stored[key];
   }
 
-  /** The table the UI shows: one row per server name, one use per available harness. */
-  table(cwd: string, harnesses: HarnessId[], listings: Partial<Record<HarnessId, McpListing>>): McpServer[] {
+  /** Whether `h`'s runs in the project get a built-in server: unless it's switched off. */
+  builtinOn = (cwd: string, h: HarnessId, name: string) => this.get(cwd, h)[name] !== false;
+
+  /** The table the UI shows: one row per server name, one use per available harness; bismuth's own servers first. */
+  table(cwd: string, harnesses: HarnessId[], listings: Partial<Record<HarnessId, McpListing>>, builtins: McpBuiltin[] = []): McpServer[] {
+    const own: McpServer[] = builtins.map((b) => ({
+      name: b.name,
+      from: "bismuth",
+      source: b.source,
+      target: b.target,
+      uses: Object.fromEntries(
+        harnesses.map((h) => {
+          const override = this.lookup(cwd, h, b.name);
+          const enabled = override?.value ?? true;
+          const live = listings[h]?.status[b.name];
+          return [h, { native: false, enabled, scope: override?.scope ?? null, locked: null, status: enabled ? (live?.status ?? null) : null, tools: enabled ? (live?.tools ?? null) : null }];
+        }),
+      ),
+    }));
+    const names = new Set(builtins.map((b) => b.name));
+    return [...own, ...this.harnessTable(cwd, harnesses, listings).filter((s) => !names.has(s.name))];
+  }
+
+  private harnessTable(cwd: string, harnesses: HarnessId[], listings: Partial<Record<HarnessId, McpListing>>): McpServer[] {
     const rows = new Map<string, { from: HarnessId; native: McpNative; def: McpDef | null }>();
     for (const { h, n } of definitions(listings)) {
       const row = rows.get(n.name);

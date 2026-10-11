@@ -7,9 +7,9 @@
 //      (or none: opening another would resume it, which can stall or fail for reasons that aren't the UI's), without
 //      throwing or logging errors, and sets window.__bismuthReady
 // Exit codes: 0 applied / up to date · 1 change rejected (errors on stderr) · 3 core changed, restart the app to load it.
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { chromeBin, openChrome } from "../core/chrome";
 import * as ui from "../core/ui";
 
 const force = process.argv.includes("--force");
@@ -54,50 +54,22 @@ async function call<T>(core: ui.CoreInfo, path: string, body?: unknown): Promise
 
 // ---------------- smoke test ----------------
 async function smoke(url: string): Promise<string[]> {
-  const bin = process.env.CHROME ?? ["chromium", "google-chrome-stable", "google-chrome", "chromium-browser"].map((b) => Bun.which(b)).find(Boolean);
-  if (!bin) return ["no Chromium/Chrome found for the smoke test (set CHROME=/path/to/browser)"];
-  const profile = mkdtempSync(join(tmpdir(), "bismuth-smoke-"));
-  const chrome = Bun.spawn([bin, "--headless=new", "--disable-gpu", "--no-first-run", "--remote-debugging-port=0", `--user-data-dir=${profile}`, "about:blank"], {
-    stdout: "ignore",
-    stderr: "ignore",
-  });
+  if (!chromeBin()) return ["no Chromium/Chrome found for the smoke test (set CHROME=/path/to/browser)"];
+  const chrome = await openChrome();
+  if (!chrome) return ["could not start headless Chromium for the smoke test"];
   const errors: string[] = [];
   try {
-    // Chrome writes the port it picked to DevToolsActivePort.
-    let target: { webSocketDebuggerUrl: string } | undefined;
-    for (let i = 0; i < 100 && !target; i++) {
-      await Bun.sleep(100);
-      const portFile = join(profile, "DevToolsActivePort");
-      if (!existsSync(portFile)) continue;
-      const port = readFileSync(portFile, "utf8").split("\n")[0];
-      target = await fetch(`http://127.0.0.1:${port}/json/list`)
-        .then((r) => r.json() as Promise<any[]>)
-        .then((list) => list.find((t) => t.type === "page"))
-        .catch(() => undefined);
-    }
-    if (!target) return ["could not start headless Chromium for the smoke test"];
-
-    const ws = new WebSocket(target.webSocketDebuggerUrl);
-    await new Promise((r, j) => ((ws.onopen = r), (ws.onerror = j)));
-    let seq = 0;
-    const waiting = new Map<number, (v: any) => void>();
-    ws.onmessage = (e) => {
-      const m = JSON.parse(String(e.data));
-      if (m.id) return waiting.get(m.id)?.(m.result);
-      if (m.method === "Runtime.exceptionThrown") {
-        const d = m.params.exceptionDetails;
+    chrome.on((method, params) => {
+      if (method === "Runtime.exceptionThrown") {
+        const d = params.exceptionDetails;
         errors.push(`uncaught: ${d.exception?.description ?? d.text}`);
-      } else if (m.method === "Runtime.consoleAPICalled" && m.params.type === "error") {
-        errors.push(`console.error: ${m.params.args.map((a: any) => a.value ?? a.description ?? "").join(" ")}`);
-      } else if (m.method === "Log.entryAdded" && m.params.entry.level === "error") {
-        errors.push(`${m.params.entry.text}${m.params.entry.url ? ` (${m.params.entry.url})` : ""}`);
+      } else if (method === "Runtime.consoleAPICalled" && params.type === "error") {
+        errors.push(`console.error: ${params.args.map((a: any) => a.value ?? a.description ?? "").join(" ")}`);
+      } else if (method === "Log.entryAdded" && params.entry.level === "error") {
+        errors.push(`${params.entry.text}${params.entry.url ? ` (${params.entry.url})` : ""}`);
       }
-    };
-    const cdp = (method: string, params = {}) =>
-      new Promise<any>((r) => {
-        waiting.set(++seq, r);
-        ws.send(JSON.stringify({ id: seq, method, params }));
-      });
+    });
+    const cdp = chrome.cdp;
     await cdp("Runtime.enable");
     await cdp("Log.enable");
     await cdp("Page.navigate", { url });
@@ -113,11 +85,10 @@ async function smoke(url: string): Promise<string[]> {
       const notice = (await cdp("Runtime.evaluate", { expression: "document.getElementById('notice')?.textContent ?? ''", returnByValue: true }))?.result?.value;
       errors.push(`UI never set window.__bismuthReady within ${SMOKE_TIMEOUT_MS / 1000}s${notice ? ` (notice shown: ${notice})` : ""}`);
     }
-    ws.close();
+  } catch (err: any) {
+    errors.push(String(err?.message ?? err));
   } finally {
-    chrome.kill();
-    await chrome.exited;
-    rmSync(profile, { recursive: true, force: true });
+    await chrome.close();
   }
   return errors;
 }

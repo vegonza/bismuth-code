@@ -329,7 +329,7 @@ export type McpUse = {
 };
 export type McpServer = {
   name: string;
-  from: HarnessId; // the harness whose config defines it (the first, when several do)
+  from: HarnessId | "bismuth"; // the harness whose config defines it (the first, when several do), or bismuth's own (views)
   source: string; // where: "~/.codex/config.toml", ".mcp.json", "Plugin"…
   target: string | null; // the command it runs or the URL it talks to
   uses: Partial<Record<HarnessId, McpUse>>; // one per available harness

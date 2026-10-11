@@ -20,7 +20,7 @@ type Row =
   | { kind: "group"; key: string; items: ToolItem[]; live: boolean; gap: number }
   | { kind: "notice"; key: string; text: string; gap: number }
   | { kind: "question"; key: string; item: QuestionItem; waiting: boolean; gap: number }
-  | { kind: "view"; key: string; id: string; title: string; gap: number }
+  | { kind: "view"; key: string; id: string; title: string; viewport: number | null; gap: number }
   | { kind: "error"; key: string; label: string; text: string; warning: boolean; gap: number };
 
 const OUTPUT_LINES = 24;
@@ -545,6 +545,8 @@ function buildRow(row: Row): HTMLElement {
   outer.dataset.key = row.key;
   outer.dataset.group = hoverGroup.get(row.key) ?? row.key;
   outer.dataset.sig = signature(row);
+  // A view spans the conversation's width, past the text column.
+  if (row.kind === "view") outer.classList.add("wide");
   outer.style.paddingTop = `${row.gap}px`;
   const inner = el("div", "inner");
   switch (row.kind) {
@@ -568,7 +570,7 @@ function buildRow(row: Row): HTMLElement {
       inner.append(questionChip(row));
       break;
     case "view":
-      inner.append(viewFrame(row.id, row.title));
+      inner.append(viewFrame(row.id, row.title, row.viewport));
       break;
     case "error":
       inner.append(noticeChip(row.label, row.text, row.warning));

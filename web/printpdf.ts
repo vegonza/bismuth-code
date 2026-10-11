@@ -3,7 +3,7 @@
 // selectable and the maths sharp; a plain browser (`bun start`) can't make one without a print dialog, so there it
 // isn't offered.
 import { picturesIn } from "./dom";
-import { lightVars } from "./theme";
+import { themeVars } from "./theme";
 
 const PAGE_CSS = `
 @page { size: A4; margin: 18mm 16mm 20mm; }
@@ -36,7 +36,7 @@ function printable(preview: HTMLElement, title: string): string {
   // The fonts picked stay (they're on the root too); the colours are the light theme's, the text its default size.
   const root = document.createElement("html");
   root.style.cssText = document.documentElement.style.cssText;
-  for (const [k, v] of Object.entries({ ...lightVars(), "--fs": "1" })) root.style.setProperty(k, v);
+  for (const [k, v] of Object.entries({ ...themeVars("light"), "--fs": "1" })) root.style.setProperty(k, v);
   return `<!doctype html><html lang="en" data-appearance="light" style="${attr(root.style.cssText)}"><head><meta charset="utf-8"><title>${attr(title)}</title>${sheets}<style>${PAGE_CSS}</style></head><body>${copy.outerHTML}</body></html>`;
 }
 

@@ -222,6 +222,7 @@ button { cursor: pointer; }
 /* Rows out of view skip layout (their last size stands in): a long conversation re-wrapping as the sidebar glides
    only lays out what's on screen. The scroll keeper (transcript.ts) holds the view still as sizes settle. */
 .trow > .inner { width: 100%; max-width: var(--content-w); min-width: 0; }
+.trow.wide > .inner { max-width: none; }
 .turn-start { padding-top: 16px; }
 .gap-sm { padding-top: 8px; }
 .gap-md { padding-top: 12px; }
@@ -317,7 +318,13 @@ html.phone .gutter-host > .gutter-rail { left: auto; right: 5px; top: 5px; botto
 .md .katex { font-size: 1.12em; }
 .mermaid-view { position: relative; display: flex; justify-content: safe center; padding: 16px; border-radius: 10px; border: 1px solid var(--border); overflow-x: auto; }
 /* A view the agent rendered with the project's components (web/views.ts): the page fits its frame, like a diagram's. */
-.uiview { display: block; width: 100%; border: 1px solid var(--border); border-radius: 10px; background: transparent; color-scheme: normal; transition: height 0.2s var(--ease); }
+.uiview-box { --w: var(--content-w); width: min(100%, max(var(--content-w), var(--w))); margin-inline: auto; }
+.uiview { display: block; box-sizing: border-box; width: min(100%, var(--w)); border: 1px solid var(--border); border-radius: 10px; background: transparent; color-scheme: normal; transition: height 0.2s var(--ease), width 0.2s var(--ease); }
+/* A plain HTML view is part of the reply: no frame, and the page's transparent background shows the conversation's. */
+.uiview.plain { border: 0; border-radius: 0; color-scheme: inherit; }
+/* A view at a viewport width (a desktop layout): the frame keeps that width, scaled to the box (web/views.ts). */
+.uiview-box.scaled { overflow: hidden; }
+.uiview-box.scaled > .uiview { max-width: none; transform-origin: 0 0; transition: none; }
 .mermaid-view > svg { flex: none; height: auto; }
 .mermaid-view svg * { filter: none !important; }
 .mermaid-view > .code-action { position: absolute; top: 5px; right: 5px; opacity: 0; transition: opacity 0.12s; }

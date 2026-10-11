@@ -315,8 +315,8 @@ export const themeFor = (appearance: Appearance) => deriveTheme(appearance === "
 
 let active = themeFor(currentAppearance());
 export const activeTheme = () => active;
-/** The light theme's colours as CSS variables (a printed page's). */
-export const lightVars = () => vars(themeFor("light"));
+/** An appearance's colours as CSS variables, for pages outside the window (a printed page's, a view's). */
+export const themeVars = (appearance: Appearance) => vars(themeFor(appearance));
 /** The accent's channels, for canvas painting. */
 export const accentChannels = (): [number, number, number] => [active.accent[0], active.accent[1], active.accent[2]];
 
