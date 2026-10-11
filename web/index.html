@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, interactive-widget=resizes-content, viewport-fit=cover" />
+    <meta name="theme-color" content="#1e2027" />
+    <title>bismuth</title>
+    <link rel="icon" type="image/svg+xml" href="../assets/icon.svg" />
+    <link rel="stylesheet" href="./style.css" />
+    <script>
+      // The last theme's colours (theme.ts saves them), applied before first paint.
+      try {
+        const paint = JSON.parse(localStorage.getItem("bismuth.paint") || "null");
+        for (const k in paint) document.documentElement.style.setProperty(k, paint[k]);
+      } catch {}
+    </script>
+  </head>
+  <body>
+    <div id="app" class="booting connecting">
+      <div id="titlebar-cluster" class="titlebar-cluster"></div>
+
+      <aside id="sidebar">
+        <div class="sidebar-body">
+          <div id="sidebar-top" class="sidebar-top"></div>
+          <div id="sidebar-lists" class="sidebar-lists"></div>
+          <div id="sidebar-footer" class="sidebar-footer"></div>
+        </div>
+      </aside>
+
+      <main id="main" class="new-thread">
+        <div id="chat-titlebar" class="chat-titlebar"></div>
+        <div id="scroller">
+          <div id="transcript">
+            <div id="transcript-rows"></div>
+            <div class="trow"><div class="inner"><div id="working" class="working" hidden></div></div></div>
+            <div id="transcript-end"></div>
+          </div>
+        </div>
+        <div id="dock" class="dock"></div>
+        <div id="banner" hidden></div>
+      </main>
+    </div>
+
+    <script type="module" src="./app.ts"></script>
+  </body>
+</html>

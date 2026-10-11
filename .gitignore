@@ -1,0 +1,15 @@
+node_modules/
+
+# The app's state: UI builds, logs, uploads, the Cursor SDK (core/ui.ts, STATE)
+.bismuth/
+
+# Reference projects, each its own git clone; not part of the app (AGENTS.md)
+/refs/
+
+# Editors and OS
+.DS_Store
+.vscode/
+.idea/
+*.log
+.env
+.env.*
