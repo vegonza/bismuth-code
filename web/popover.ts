@@ -1,5 +1,5 @@
 // Floating cards shared by menus: Zeron's menu-in/menu-out motion (travelling from the trigger's side),
-// dismissal on outside presses and Escape, and the small parts menus are built from.
+// dismissal on outside presses, Escape, leaving the window or the trigger going, and the small parts menus are built from.
 import { el } from "./dom";
 import { icon, type IconName } from "./icons";
 import { reducedMotion } from "./motion";
@@ -29,11 +29,18 @@ export function openPopover(host: HTMLElement, card: HTMLElement, opts: { from?:
       close();
     }
   };
+  // Leaving the window (another app, or a press in a preview's frame, which the document never hears) closes it,
+  // as a native menu; so does its trigger going (its panel closed or hidden, the screen changed under it).
+  const left = () => close();
+  const anchor = opts.keep?.[0];
+  const watch = anchor && new IntersectionObserver(() => (!anchor.isConnected || !anchor.getClientRects().length) && close());
   function close() {
     if (closed) return;
     closed = true;
     document.removeEventListener("pointerdown", outside, true);
     document.removeEventListener("keydown", key, true);
+    removeEventListener("blur", left);
+    watch?.disconnect();
     card.classList.remove(motion[0]);
     card.classList.add(motion[1]);
     card.style.pointerEvents = "none";
@@ -42,6 +49,8 @@ export function openPopover(host: HTMLElement, card: HTMLElement, opts: { from?:
   }
   document.addEventListener("pointerdown", outside, true);
   document.addEventListener("keydown", key, true);
+  addEventListener("blur", left);
+  if (anchor) watch!.observe(anchor);
   card.focus({ preventScroll: true });
   return { card, close };
 }

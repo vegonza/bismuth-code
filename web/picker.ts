@@ -640,5 +640,6 @@ export function initPicker(into: HTMLElement, closed: () => void) {
   document.addEventListener("pointerdown", (e) => {
     if (card && !slot.contains(e.target as Node)) closePicker();
   });
+  addEventListener("blur", () => card && closePicker()); // leaving the window, as the other menus (popover.ts)
   renderTrigger();
 }
