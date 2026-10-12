@@ -13,6 +13,8 @@
         const paint = JSON.parse(localStorage.getItem("bismuth.paint") || "null");
         for (const k in paint) document.documentElement.style.setProperty(k, paint[k]);
       } catch {}
+      // A side chat's frame (sidechat.ts): the chat column alone, laid out as such from the first paint.
+      if (new URLSearchParams(location.search).has("side")) document.documentElement.classList.add("side-chat");
     </script>
   </head>
   <body>

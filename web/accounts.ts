@@ -3,7 +3,7 @@
 // and the one sign-in dialog every provider shares. The list is cached across visits and revalidated in place;
 // switches and removals are optimistic, and the core's reply (the fresh list) replaces them.
 import type { AgentAccount, AgentAccountsSnapshot, HarnessId, UsageWindow } from "../shared/model";
-import { el, gradientSpinner, miniSpinner } from "./dom";
+import { el, miniSpinner } from "./dom";
 import { HARNESS_NAMES, icon } from "./icons";
 import { contextMenu, menuPoint, type MenuItem, type Popover } from "./popover";
 import { call } from "./store";
@@ -423,7 +423,7 @@ function paintDialog() {
   const buttons = el("div", "login-buttons");
   if (step.kind === "browser") {
     const line = el("div", "login-progress");
-    line.append(gradientSpinner(), el("span", "", step.message ?? (l.url ? "Waiting for you to finish in the browser…" : "Starting sign-in…")));
+    line.append(miniSpinner(), el("span", "", step.message ?? (l.url ? "Waiting for you to finish in the browser…" : "Starting sign-in…")));
     parts.push(line);
     buttons.append(action("Cancel", "quiet", cancelLogin));
   } else if (step.kind === "paste") {

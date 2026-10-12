@@ -110,7 +110,9 @@ button { cursor: pointer; }
 /* Shut, the column is only its border: that goes too. */
 #app.sidebar-collapsed #sidebar { border-right-color: transparent; }
 
-.titlebar-cluster { position: absolute; top: 0; left: 0; height: var(--titlebar-h); padding: 4px 10px 0; display: flex; align-items: center; z-index: 20; }
+.titlebar-cluster { position: absolute; top: 0; left: 0; height: var(--titlebar-h); padding: 4px 10px 0; display: flex; align-items: center; z-index: 20; transition: opacity 0.15s, visibility 0.15s; }
+/* Shut beside an expanded panel, the cluster would sit over the panel's own tabs and controls: it steps aside. */
+#app.sidebar-collapsed.pane-expanded > .titlebar-cluster { opacity: 0; visibility: hidden; }
 .titlebar-cluster .nav { display: flex; gap: 2px; margin-left: 8px; }
 .titlebar-cluster .new { margin-left: 8px; transition: opacity 0.15s; }
 .wc-btn { width: 24px; height: 24px; border-radius: 6px; display: flex; align-items: center; justify-content: center; color: var(--muted); transition: background-color 0.15s; }
@@ -309,8 +311,16 @@ html.phone .gutter-host > .gutter-rail { left: auto; right: 5px; top: 5px; botto
 .code-action { width: 22px; height: 22px; border-radius: 6px; display: flex; align-items: center; justify-content: center; color: var(--muted); }
 .code-action:hover { background: rgba(var(--ink-rgb), 0.08); }
 .code-action .icon { width: 13px; height: 13px; }
-.code-block:not(:has(.code-head)) > .code-action { position: absolute; top: 5px; right: 5px; opacity: 0; transition: opacity 0.12s; }
-.code-block:hover > .code-action { opacity: 1; }
+/* A block's copy with its wrap button beside it (below it, out in the gutter: markdown.ts). The wrap button waits for
+   a hover, and stays lit while long lines wrap. */
+.code-actions { display: flex; flex-direction: row-reverse; gap: 2px; }
+.gutter-rail > .code-actions { flex-direction: column; }
+html.phone .gutter-rail > .code-actions { flex-direction: row-reverse; }
+.code-block:not(:has(.code-head)) > .code-actions { position: absolute; top: 5px; right: 5px; opacity: 0; transition: opacity 0.12s; }
+.code-block:hover > .code-actions { opacity: 1; }
+.code-head .code-wrap { opacity: 0; transition: opacity 0.12s; }
+.code-block:hover > .code-head .code-wrap { opacity: 1; }
+html.wrap-code .code-wrap { background: rgba(var(--wash-rgb), 0.09); color: var(--text); }
 /* Displayed maths (mathmd.ts) scrolls sideways when it's wider than the column; a diagram (diagrams.ts) sits framed
    like the code block it replaces, its copy button the source's. */
 .md .math-display { display: block; margin: 0.6em 0; overflow-x: auto; overflow-y: hidden; padding: 2px 0; }
@@ -331,6 +341,7 @@ html.phone .gutter-host > .gutter-rail { left: auto; right: 5px; top: 5px; botto
 .mermaid-view:hover > .code-action { opacity: 1; }
 .code-block pre { margin: 0; padding: 10px 12px; overflow-x: auto; font: var(--code-size)/1.44 var(--mono); }
 .code-block pre code { font: inherit; }
+html.wrap-code .code-block pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 
 /* tool groups (activity tree) */
 .tgroup { font-family: var(--sans); }
@@ -395,15 +406,19 @@ html.phone .gutter-host > .gutter-rail { left: auto; right: 5px; top: 5px; botto
 .notice-chip .msg { color: rgba(var(--text-rgb), 0.8); overflow-wrap: anywhere; white-space: pre-wrap; }
 .fork-marker { padding: 14px 0; display: flex; align-items: center; gap: 10px; font-size: calc(12px * var(--fs)); color: var(--muted); }
 .fork-marker::before, .fork-marker::after { content: ""; flex: 1; height: 1px; background: var(--border-strong); }
+/* Where a side chat's own turns start: what came before is a copy of the session it branched from, named under it. */
+.fork-seam { padding: 14px 0; display: flex; flex-direction: column; gap: 6px; }
+.fork-seam .fork-marker { padding: 0; }
+.fork-from { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; text-align: center; font-size: calc(13px * var(--fs)); font-weight: 500; color: var(--muted); }
 
 /* working trailer */
 #working { display: flex; align-items: center; gap: 8px; padding-top: 16px; font-size: calc(12px * var(--fs)); }
 #working .word { color: var(--muted); }
 #working .elapsed { color: var(--faint); position: relative; top: 1px; font-variant-numeric: tabular-nums; }
-.gspin { display: grid; grid-template-columns: repeat(3, 2.5px); grid-auto-rows: 2.5px; gap: 1.25px; flex: none; }
-.gspin i, .mspin i { border-radius: 50%; animation: gspin 0.75s cubic-bezier(0.25, 0.1, 0.25, 1) infinite; }
+#working .mspin { grid-template-columns: repeat(2, 3px); grid-auto-rows: 3px; gap: 1.5px; }
+.mspin i { border-radius: 50%; animation: mspin 0.75s cubic-bezier(0.25, 0.1, 0.25, 1) infinite; }
 .mspin { display: grid; grid-template-columns: repeat(2, 2px); grid-auto-rows: 2px; gap: 1px; flex: none; }
-@keyframes gspin { 0% { opacity: 1; } 45% { opacity: 0.1; } 92% { opacity: 0.1; } 100% { opacity: 1; } }
+@keyframes mspin { 0% { opacity: 1; } 45% { opacity: 0.1; } 92% { opacity: 0.1; } 100% { opacity: 1; } }
 
 /* ============================ popover cards ============================ */
 .card { background: var(--card-bg); -webkit-backdrop-filter: var(--frost); backdrop-filter: var(--frost); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -4px rgba(0, 0, 0, 0.1), 0 20px 40px -12px rgba(0, 0, 0, 0.45); font-size: calc(13px * var(--fs)); color: var(--text); }
@@ -473,7 +488,7 @@ html.phone .gutter-host > .gutter-rail { left: auto; right: 5px; top: 5px; botto
 .card.view-menu { background: none; -webkit-backdrop-filter: none; backdrop-filter: none; }
 .card.view-menu::before { background: var(--card-bg); }
 /* Capy's box: the text over a row of controls, from one line in a session; a new session's box starts taller. */
-.composer { position: relative; border-radius: 26px; border: 1px solid var(--border); display: grid; grid-template-columns: auto 1fr auto auto auto; grid-template-areas: "strip strip strip strip strip" "input input input input input" "attach . picker context send"; padding: 0 12px 8px; align-items: end; transition: border-radius 0.2s var(--ease); }
+.composer { position: relative; border-radius: 14px; border: 1px solid var(--border); display: grid; grid-template-columns: auto 1fr auto auto auto; grid-template-areas: "strip strip strip strip strip" "input input input input input" "attach . picker context send"; padding: 0 12px 8px; align-items: end; transition: border-radius 0.2s var(--ease); }
 .composer.roomy { min-height: 120px; }
 /* Zeron's AttachmentStrip: 56px rounded thumbnails over the text, the remove button revealed on hover. */
 .attach-strip { grid-area: strip; display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 4px 0; position: relative; }
@@ -520,7 +535,7 @@ html.phone .gutter-host > .gutter-rail { left: auto; right: 5px; top: 5px; botto
    width measure counts only its box). */
 .composer .context { grid-area: context; width: 32px; height: 32px; padding: 0; justify-content: center; border-radius: 8px; margin: 0 6px 0 -6px; }
 /* Its card opens where the picker's does: 10px over the control. */
-.composer .send { grid-area: send; width: 28px; height: 28px; border-radius: 50%; background: var(--text); color: var(--theme-bg); display: flex; align-items: center; justify-content: center; transition: opacity 0.15s; }
+.composer .send { grid-area: send; width: 28px; height: 28px; border-radius: 8px; background: var(--text); color: var(--theme-bg); display: flex; align-items: center; justify-content: center; transition: opacity 0.15s; }
 .composer .send:hover { opacity: 0.85; }
 .composer .send:disabled { opacity: 0.35; cursor: default; }
 .composer .send .icon { width: 14px; height: 14px; }
@@ -539,7 +554,7 @@ html.phone .gutter-host > .gutter-rail { left: auto; right: 5px; top: 5px; botto
 .composer.narrow .trigger .label, .composer.narrow .trigger .suffix, .composer.narrow .trigger .bolt { display: none; }
 
 /* tray behind the composer: plan steps */
-.tray { margin: 0 16px -18px; padding: 8px 14px 26px; border: 1px solid var(--border); border-bottom: 0; border-radius: 18px 18px 0 0; background: var(--input); display: flex; flex-direction: column; gap: 2px; font-size: calc(12px * var(--fs)); max-height: 180px; overflow-y: auto; }
+.tray { margin: 0 16px -18px; padding: 8px 14px 26px; border: 1px solid var(--border); border-bottom: 0; border-radius: 12px 12px 0 0; background: var(--input); display: flex; flex-direction: column; gap: 2px; font-size: calc(12px * var(--fs)); max-height: 180px; overflow-y: auto; }
 /* the message queue (Zeron's queue.rs): a narrower tray of compact rows emerging from behind the composer */
 .tray.queue { padding: 4px 4px 22px; gap: 0; font-size: calc(12.5px * var(--fs)); max-height: 30vh; }
 .tray.queue + .composer.editing-queued { border-color: var(--border-strong); }
@@ -580,10 +595,10 @@ html.phone .gutter-host > .gutter-rail { left: auto; right: 5px; top: 5px; botto
 /* Where the agent asked, in the transcript (Zeron's InputChip): a quiet one-line chip; answered, it opens to the
    questions and what was picked. */
 
-/* Questions from the agent (Zeron's question panel): it stands in for the composer with the same frosted pill
+/* Questions from the agent (Zeron's question panel): it stands in for the composer with the same frosted box
    chrome, one question per page. */
 .stack.asking .composer { display: none; }
-.question-panel { position: relative; isolation: isolate; border-radius: 26px; border: 1px solid var(--border); display: flex; flex-direction: column; outline: none; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -4px rgba(0, 0, 0, 0.1); }
+.question-panel { position: relative; isolation: isolate; border-radius: 14px; border: 1px solid var(--border); display: flex; flex-direction: column; outline: none; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -4px rgba(0, 0, 0, 0.1); }
 .question-panel::before { content: ""; position: absolute; inset: 0; z-index: -1; border-radius: inherit; background: var(--input); -webkit-backdrop-filter: var(--frost); backdrop-filter: var(--frost); pointer-events: none; }
 .question-panel.sent { opacity: 0.6; pointer-events: none; transition: opacity 0.15s; }
 .qp-body { padding: 16px 16px 0; display: flex; flex-direction: column; }
@@ -1413,6 +1428,29 @@ html[data-appearance="light"] .cmd-palette { background: color-mix(in srgb, var(
 .rp-ctl.on { background: rgba(var(--wash-rgb), 0.09); color: var(--text); }
 .rp-body { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
 
+/* ---- side chats (sidechat.ts) ---- */
+/* Each side chat's frame lives in this layer over the host's body (one leaving the document starts over), the shown
+   one visible while its tab is, on the tone the chat inside it has. */
+.sc { position: absolute; inset: 0; z-index: 1; visibility: hidden; background: var(--sidebar); }
+.sc.shown { visibility: inherit; }
+.sc-frame { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; visibility: hidden; background: var(--sidebar); opacity: 0; transition: opacity 0.15s var(--ease); }
+.sc-frame.shown { visibility: inherit; }
+/* A frame still booting or loading its session stays out of sight; it fades in with the conversation on it. */
+.sc-frame.ready { opacity: 1; }
+/* As over a page: a sliver along the right edge still brings the explorer out, and a column's edge dragged across a
+   frame keeps the pointer. */
+.sc::after { content: ""; position: absolute; top: 0; right: 0; bottom: 0; width: 3px; z-index: 1; }
+#app.pane-resizing .sc-frame { pointer-events: none; }
+/* Inside the frame: the chat column alone, on the sidebar's tone, so it's told apart from the session beside it
+   (Zeron tints its side chats). Its tab names it: no header. */
+html.side-chat body, html.side-chat #app { --sb: 0px; --rp: 0px; --fp: 0px; --main: var(--sidebar); background: var(--sidebar); }
+html.side-chat :is(#sidebar, #titlebar-cluster, #chat-titlebar) { display: none; }
+/* What scrolls fades out under the tabs over as much as the chat's does under its header, from the tabs' own tone (the
+   window's, kept from before the frame's is changed); at rest the first message sits just below the fade. */
+html.side-chat { --tabs-bg: var(--main); }
+html.side-chat #app #transcript { padding-top: calc(var(--titlebar-h) - 14px); }
+html.side-chat #main::before { content: ""; position: absolute; top: 0; left: 0; right: 10px; height: var(--titlebar-h); z-index: 9; background: linear-gradient(var(--tabs-bg), transparent); pointer-events: none; }
+
 /* ---- browser tabs (browser.ts) ---- */
 /* Every open page lives in this layer over the host's body (one leaving the document would be gone), the shown one
    visible while a browser tab is. `inherit`, not `visible`: the host shut hides it with everything else. */
@@ -1421,8 +1459,10 @@ html[data-appearance="light"] .cmd-palette { background: color-mix(in srgb, var(
 /* Zeron's browser toolbar, in the explorer's row metrics (.fp-sub, .fp-search): back, forward, reload, the address,
    and out to the default browser. */
 .bw-bar { flex: none; display: flex; align-items: center; gap: 4px; padding: 0 8px 6px; }
-.bw-btn { flex: none; }
+/* The toggles' size, so each lines up under the one above it. */
+.bw-btn { flex: none; width: 26px; height: 26px; }
 .bw-btn .icon { width: 14px; height: 14px; }
+.bw-btn.on { background: rgba(var(--wash-rgb), 0.09); color: var(--text); }
 .bw-field { flex: 1; min-width: 0; height: 24px; padding: 0 8px; display: flex; align-items: center; gap: 6px; border-radius: 6px; background: rgba(var(--ink-rgb), 0.045); cursor: text; transition: background-color 0.15s; }
 .bw-field:hover, .bw-field:focus-within { background: rgba(var(--ink-rgb), 0.07); }
 .bw-field .icon { width: 12px; height: 12px; flex: none; color: var(--faint); }
@@ -1439,8 +1479,43 @@ html[data-appearance="light"] .cmd-palette { background: color-mix(in srgb, var(
 /* A page an agent holds whose tab isn't shown (another session's, or the panel shows a file, or is closed): still laid
    out at the panel's size and rendering, out of sight and out of the way, so the agent can drive it and see it. */
 .bw-page.awake:not(.shown) { position: fixed; top: 0; left: 0; width: var(--rp-w, 900px); height: 100vh; visibility: visible; opacity: 0; pointer-events: none; z-index: -1; }
-/* The <webview> keeps its own display (flex, so its frame fills it). */
+/* The <webview> keeps its own display (flex, so its frame fills it). It sits in a device: the panel, or a phone. Never
+   transformed (a transform would draw the page as a picture, blurred): a desktop's window or a phone smaller than its
+   own size is the page drawn at that scale by the shell (browser.ts asks for it). */
 .bw-page webview { flex: 1; min-width: 0; height: 100%; }
+/* Its parts (the camera over the status bar) stacked inside it, under what's said over the page. */
+.bw-device { position: absolute; inset: 0; display: flex; flex-direction: column; isolation: isolate; }
+.bw-glass { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.bw-screen { position: relative; flex: 1; min-height: 0; display: flex; }
+.bw-status, .bw-camera, .bw-nav, .bw-key { display: none; }
+/* A device (browser.ts): its screen (--sw × --sh), as large as the panel takes, up to its own size: every length in
+   --u, a pixel at the scale browser.ts fits it to (--k). A desktop's screen is the panel's width, edge to edge, its top
+   and bottom ruled off. A phone (a Pixel's) sits in an even black bezel in a satin aluminium band: round corners, the
+   camera's punch hole in the status bar, Android's three-button navigation bar, and the power key and volume rocker
+   down its right side. */
+.bw-page:is([data-view="desktop"], [data-view="phone"]) { --u: calc(var(--k, 1) * 1px); align-items: center; justify-content: center; background: radial-gradient(90% 70% at 50% 45%, rgba(var(--wash-rgb), 0.06), transparent 75%); }
+.bw-page:is([data-view="desktop"], [data-view="phone"]) .bw-device { position: relative; inset: auto; flex: none; }
+.bw-page:is([data-view="desktop"], [data-view="phone"]) .bw-glass { flex: none; width: calc(var(--sw) * var(--u)); height: calc(var(--sh) * var(--u)); overflow: hidden; }
+.bw-page[data-view="desktop"] .bw-device { box-shadow: 0 -1px 0 var(--border), 0 1px 0 var(--border); }
+.bw-page[data-view="phone"] .bw-device { padding: calc(11 * var(--u)); border: calc(3 * var(--u)) solid transparent; border-radius: calc(56 * var(--u)); background: linear-gradient(#050506, #050506) padding-box, linear-gradient(160deg, #6a6b71 0%, #35363b 22%, #222327 50%, #34353a 78%, #64656b 100%) border-box; box-shadow: inset 0 0 0 calc(1 * var(--u)) rgba(255, 255, 255, 0.05), 0 0 0 1px rgba(0, 0, 0, 0.6), 0 calc(30 * var(--u)) calc(70 * var(--u)) calc(-20 * var(--u)) rgba(0, 0, 0, 0.65); }
+.bw-page[data-view="phone"] .bw-glass { border-radius: calc(42 * var(--u)); background: #000; color: #fff; }
+.bw-page[data-view="phone"] .bw-key { display: block; position: absolute; right: calc(-6 * var(--u)); width: calc(3 * var(--u)); border-radius: 0 calc(2 * var(--u)) calc(2 * var(--u)) 0; background: linear-gradient(90deg, #26272b, #5c5d63 60%, #2e2f33); }
+.bw-key.power { top: calc(200 * var(--u)); height: calc(58 * var(--u)); }
+.bw-key.volume { top: calc(296 * var(--u)); height: calc(108 * var(--u)); }
+/* Above and below the page: the status bar and the navigation bar, as a phone in dark mode has them (the phone's,
+   not the page's: they don't change with it). */
+.bw-page[data-view="phone"] .bw-status { flex: none; height: calc(40 * var(--u)); display: flex; align-items: center; justify-content: space-between; padding: 0 calc(24 * var(--u)) 0 calc(28 * var(--u)); background: #121214; font: 500 calc(14 * var(--u)) / 1 var(--sans); font-variant-numeric: tabular-nums; letter-spacing: 0.01em; }
+.bw-page[data-view="phone"] .bw-camera { display: block; position: absolute; left: 50%; top: calc(10 * var(--u)); width: calc(20 * var(--u)); height: calc(20 * var(--u)); margin-left: calc(-10 * var(--u)); border-radius: 50%; background: radial-gradient(circle at 42% 40%, #1c2030 0 16%, #08090c 40%, #000 70%); z-index: 2; }
+.bw-page[data-view="phone"] .bw-nav { flex: none; height: calc(48 * var(--u)); display: grid; grid-template-columns: repeat(3, 1fr); place-items: center; padding: 0 calc(52 * var(--u)); background: #121214; }
+.bw-nav-key { width: calc(52 * var(--u)); height: calc(40 * var(--u)); display: flex; align-items: center; justify-content: center; border-radius: calc(20 * var(--u)); }
+.bw-nav-key svg { width: calc(24 * var(--u)); height: calc(24 * var(--u)); fill: currentColor; opacity: 0.92; }
+/* Back, the one that does something: a press shows, as Android's ripple does. */
+button.bw-nav-key { transition: background-color 0.15s; }
+button.bw-nav-key:hover { background: rgba(255, 255, 255, 0.08); }
+button.bw-nav-key:active { background: rgba(255, 255, 255, 0.16); }
+/* Its icons are sized in em (browser.ts): an em here is --u. */
+.bw-status-icons { display: flex; align-items: center; gap: calc(5 * var(--u)); font-size: var(--u); }
+.bw-status-icons svg { fill: currentColor; }
 /* Over the page: where a blank tab can go, why a page failed, or where pages open without the desktop app. */
 .bw-state { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 24px; background: var(--main); text-align: center; }
 .bw-state-tile { width: 44px; height: 44px; margin-bottom: 14px; display: flex; align-items: center; justify-content: center; border-radius: 10px; border: 1px solid var(--border); background: rgba(var(--ink-rgb), 0.03); color: var(--muted); }
@@ -1457,6 +1532,7 @@ html[data-appearance="light"] .cmd-palette { background: color-mix(in srgb, var(
 .rp-tools { flex: 1; min-height: 0; overflow-y: auto; padding: 20px 16px; text-align: left; }
 .rp-tools-head { margin: 0 2px 10px; font-size: calc(12px * var(--fs)); font-weight: 500; color: var(--muted); }
 .rp-tools-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 6px; }
+.rp-tools-grid + .rp-tools-head { margin-top: 20px; }
 .rp-tool { height: 38px; padding: 0 10px 0 12px; display: flex; align-items: center; gap: 10px; border-radius: 9px; background: rgba(var(--wash-rgb), 0.04); color: var(--text); font-size: calc(12.5px * var(--fs)); transition: background-color 0.15s; }
 .rp-tool:hover { background: rgba(var(--wash-rgb), 0.09); }
 .rp-tool .icon { width: 15px; height: 15px; flex: none; color: var(--muted); }
@@ -1798,8 +1874,8 @@ html.phone :is(.rp-inner, .fp-inner) { width: 100vw; }
 html.phone :is(.rp, .fp)::before { display: none; }
 html.phone .settings { z-index: 30; }
 
-/* The round buttons over the screens: back at the top left, a session's ··· and home's new-session and Settings at the
-   top right. Centred in the 52px header band. */
+/* The round buttons over the screens: back at the top left, a session's ··· and home's search, new-session and Settings
+   at the top right. Centred in the 52px header band. */
 .ph-btn, .ph-home-bar { display: none; }
 html.phone .ph-btn { position: absolute; top: 8px; z-index: 40; width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: var(--text); background: rgba(var(--wash-rgb), 0.07); border: 1px solid var(--hairline-12); -webkit-backdrop-filter: var(--frost); backdrop-filter: var(--frost); }
 html.phone .ph-btn .icon { width: 17px; height: 17px; }
@@ -1863,12 +1939,12 @@ html.phone .rp-bar { padding: 0 8px 0 52px; }
 html.phone #scroller { scrollbar-gutter: auto; }
 html.phone ::-webkit-scrollbar { width: 0; height: 0; }
 /* Controls that otherwise wait for a hover (phone.ts drops hover styles on touch screens) show without one. */
-/* Only what has no other way in: every message's time and copy, a quote's or code block's copy, an attachment's remove,
-   a queued message's actions, a reviewed file's actions in its head.
+/* Only what has no other way in: every message's time and copy, a quote's copy, a code block's copy and wrap, an
+   attachment's remove, a queued message's actions, a reviewed file's actions in its head.
    What a long press reaches (a project's menu, a tab's Close) or a session's ··· holds (Settle) stays out of sight,
    rather than showing on whichever row or tab was tapped last. */
 @media (hover: none) and (pointer: coarse) {
-  .meta-strip, .gutter-rail > *, .code-block:not(:has(.code-head)) > .code-action, .mermaid-view > .code-action, .attach-remove, .rv-acts { opacity: 1; }
+  .meta-strip, .gutter-rail > *, .code-block:not(:has(.code-head)) > .code-actions, .code-head .code-wrap, .mermaid-view > .code-action, .attach-remove, .rv-acts { opacity: 1; }
   .q-row:not(.editing) .q-action:not(:last-child) { opacity: 1; }
 }
 /* Settings: the sections as a row of tabs that scrolls sideways in the header band, then the page. */

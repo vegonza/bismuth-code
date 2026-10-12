@@ -2,6 +2,7 @@
 // transport that rides the prompt (Zeron's `withAttachments` / `parseUserMessageImages`: the files' local paths
 // listed under the text, which is what the harness records), and the full-size lightbox.
 import { el } from "./dom";
+import { writeEntries } from "./store";
 
 /** Zeron's MAX_ATTACHMENT_BYTES (the core enforces it too). */
 const MAX_BYTES = 24 * 1024 * 1024;
@@ -91,14 +92,10 @@ function fromPath(path: string, i: number): Staged {
   return { id: crypto.randomUUID(), label: `Image ${i + 1}`, name: attachmentName(path), url: attachmentUrl(path), path };
 }
 
-/** Uploaded images last with their draft across reloads and restarts (the files are on disk already). */
-function save() {
-  const out: Record<string, string[]> = {};
-  for (const [key, list] of drafts) {
-    const paths = list.flatMap((s) => (s.path ? [s.path] : []));
-    if (paths.length) out[key] = paths;
-  }
-  localStorage.setItem(KEY, JSON.stringify(out));
+/** Uploaded images last with their draft across reloads and restarts (the files are on disk already): these drafts'. */
+function save(...keys: string[]) {
+  const paths = (key: string) => (drafts.get(key) ?? []).flatMap((s) => (s.path ? [s.path] : []));
+  writeEntries(KEY, Object.fromEntries(keys.map((key) => [key, paths(key).length ? paths(key) : undefined])));
 }
 
 /** The open draft's images. */
@@ -153,7 +150,7 @@ export function stageFiles(files: Iterable<File>): Staged[] {
     upload(file, s.name).then(
       (path) => {
         s.path = path;
-        save();
+        save(key);
         changed();
       },
       (err) => {
@@ -174,7 +171,7 @@ function drop(key: string, id: string) {
   if (s.url.startsWith("blob:")) URL.revokeObjectURL(s.url);
   list.forEach((x, i) => (x.label = `Image ${i + 1}`));
   if (!list.length) drafts.delete(key);
-  save();
+  save(key);
   changed();
 }
 
@@ -190,7 +187,7 @@ export function stageUploaded(images: SentImage[]): Staged[] {
     return s;
   });
   if (list.length) drafts.set(current, list);
-  save();
+  save(current);
   changed();
   return out;
 }
@@ -202,7 +199,7 @@ export function takeStaged(): SentImage[] {
   const list = staged();
   drafts.delete(current);
   for (const s of list) if (s.url.startsWith("blob:")) URL.revokeObjectURL(s.url);
-  save();
+  save(current);
   changed();
   return list.flatMap((s) => (s.path ? [{ label: s.label, path: s.path }] : []));
 }
@@ -211,7 +208,7 @@ export function takeStaged(): SentImage[] {
 export function restoreStaged(key: string, images: SentImage[]) {
   if (images.length) drafts.set(key, images.map((i, ix) => fromPath(i.path, ix)));
   else drafts.delete(key);
-  save();
+  save(key);
   changed();
 }
 
@@ -227,13 +224,13 @@ export function renameStaged(from: string, to: string) {
   if (!list) return;
   drafts.delete(from);
   drafts.set(to, list);
-  save();
+  save(from, to);
 }
 
 /** A session went away: its images go with its draft. */
 export function forgetStaged(key: string) {
   if (!drafts.delete(key)) return;
-  save();
+  save(key);
   changed();
 }
 

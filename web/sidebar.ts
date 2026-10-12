@@ -333,8 +333,9 @@ export function draftChanged(id: string) {
 export const sortedSummaries = () => {
   const key = store.view.sort === "created" ? "createdAt" : "updatedAt";
   // Zeron's compare_sidebar_chats: newest first, ties by id so equal times never swap places.
-  // Sessions of a project just removed leave with it, before the core's next list arrives.
-  return [...store.summaries.values()].filter((t) => projectOf(t.cwd)).sort((a, b) => b[key] - a[key] || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  // Sessions of a project just removed leave with it, before the core's next list arrives. Side chats are tabs of their
+  // session's panel (sidechat.ts) until moved here.
+  return [...store.summaries.values()].filter((t) => projectOf(t.cwd) && !t.parent).sort((a, b) => b[key] - a[key] || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 };
 
 /** Session ids top to bottom as the sidebar shows them (what next/previous and the jump shortcuts walk): a

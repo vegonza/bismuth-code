@@ -16,7 +16,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFile
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Subprocess } from "bun";
-import { finalizeItem, mergeItem, summary, titleFrom, UNTITLED, type Harness } from "./harness";
+import { finalizeItem, finishedTurns, mergeItem, summary, titleFrom, UNTITLED, type Harness } from "./harness";
 import { toCursor, type McpDef, type McpPlan } from "./mcp";
 import type { Item, ModelOption, PlanStep, RequestResponse, Thread, ThreadEvent, ThreadSummary, Turn, TurnSettings, TurnStatus, UsageWindow } from "../shared/model";
 
@@ -241,6 +241,31 @@ export class CursorAdapter implements Harness {
     this.threads.set(thread.id, thread);
     this.agents.set(thread.id, null);
     this.emitThread(thread);
+    return thread;
+  }
+
+  /** A side chat: the SDK can't fork, so the shim copies the agent's conversation checkpoints into a new one (the
+   *  same conversation, cache included for models whose cache keys on content). */
+  async fork(parentId: string): Promise<Thread> {
+    const parent = await this.openThread(parentId);
+    const turns = finishedTurns(parent);
+    const parentAgent = this.agents.get(parentId);
+    if (!parentAgent) throw new Error("Nothing to branch from yet: wait for the first answer");
+    if (!this.node) throw new Error("Cursor is not available");
+    const proc = this.spawnShim(["fork", parentAgent]);
+    proc.stdin.end();
+    let agentId: string | null = null;
+    for await (const line of lines(proc.stdout)) {
+      const frame = parse(line);
+      if (frame?.ev === "forked" && typeof frame.agentId === "string") agentId = frame.agentId;
+      if (frame?.ev === "fatal") throw new Error(String(frame.message ?? "Cursor couldn't fork the conversation"));
+    }
+    if (!agentId) throw new Error(`Cursor couldn't fork the conversation (exit ${await proc.exited})`);
+    const now = Date.now();
+    const thread: Thread = { ...parent, id: randomUUID(), title: UNTITLED, createdAt: now, updatedAt: now, status: "idle", activeTurnId: null, turns, requests: [], plan: null, notice: null };
+    this.threads.set(thread.id, thread);
+    this.agents.set(thread.id, agentId);
+    this.persist(thread.id);
     return thread;
   }
 

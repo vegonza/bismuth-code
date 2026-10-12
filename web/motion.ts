@@ -74,7 +74,7 @@ export function animator(frame: (now: number) => boolean) {
 // ---------------- rolling labels ----------------
 
 // Scritto's roll: {y: .35em, scale: .6, rotate: 2°, blur: .1em, stagger: .3} over 550ms ease-out-quint,
-// while the label's width glides on the 200ms resize clock.
+// while the label's width glides on the 200ms resize clock (narrowing, a beat behind the old glyphs leaving from the right).
 const ROLL_MS = 550;
 const STAGGER = 0.3;
 const GLIDE = "cubic-bezier(0.22, 1, 0.36, 1)";
@@ -119,15 +119,44 @@ export function rollText(el: HTMLElement, text: string) {
   mid.append(incoming, outgoing);
   el.replaceChildren(b.slice(0, p).join(""), mid, b.slice(b.length - s).join(""));
 
-  const oldW = outgoing.getBoundingClientRect().width;
-  const newW = incoming.getBoundingClientRect().width;
-  mid.animate([{ width: `${oldW}px` }, { width: `${newW}px` }], { duration: RESIZE_MS, easing: "cubic-bezier(0, 0, 0.58, 1)", fill: "forwards" });
+  // Separate glyphs set without kerning. Each one is spaced to where the plain text puts it, so the old glyphs start
+  // where the label stood, the new ones land where the plain label takes over, and the width glides between the two.
+  const setAsPlain = (layer: HTMLElement, chars: string[]) => {
+    if (!chars.length) return 0;
+    const probe = document.createElement("span");
+    probe.className = "roll-out";
+    probe.style.visibility = "hidden";
+    probe.textContent = chars.join("");
+    mid.append(probe);
+    const text = probe.firstChild as Text;
+    const range = document.createRange();
+    const left = probe.getBoundingClientRect().left;
+    let at = 0;
+    const xs = chars.map((ch) => {
+      range.setStart(text, at);
+      range.setEnd(text, (at += ch.length));
+      return range.getBoundingClientRect().left - left;
+    });
+    const width = probe.getBoundingClientRect().width;
+    probe.remove();
+    [...layer.children].forEach((g, i) => {
+      const advance = (i + 1 < xs.length ? xs[i + 1] : width) - xs[i];
+      (g as HTMLElement).style.marginRight = `${advance - g.getBoundingClientRect().width}px`;
+    });
+    return width;
+  };
+  const oldW = setAsPlain(outgoing, oldMid);
+  const newW = setAsPlain(incoming, newMid);
+  // Narrowing, the old glyphs leave from the right and the trailing run follows them in, a beat behind: closing over
+  // glyphs still rising out garbles the label.
+  const narrowing = newW < oldW;
+  mid.animate([{ width: `${oldW}px` }, { width: `${newW}px` }], { duration: RESIZE_MS, delay: narrowing ? ROLL_MS * 0.22 : 0, easing: "cubic-bezier(0, 0, 0.58, 1)", fill: "both" });
   const rest = "translateY(0) scale(1) rotate(0)";
   const away = (dir: number) => `translateY(${dir * 0.35}em) scale(0.6) rotate(2deg)`;
-  const run = (layer: HTMLElement, enter: boolean) => {
+  const run = (layer: HTMLElement, enter: boolean, fromRight = false) => {
     const n = layer.children.length;
     [...layer.children].forEach((g, i) => {
-      const delay = n > 1 ? (i / (n - 1)) * STAGGER * ROLL_MS : 0;
+      const delay = n > 1 ? ((fromRight ? n - 1 - i : i) / (n - 1)) * STAGGER * ROLL_MS : 0;
       const frames = [
         { transform: away(enter ? 1 : -1), opacity: 0, filter: "blur(0.1em)" },
         { transform: rest, opacity: 1, filter: "blur(0)" },
@@ -136,7 +165,7 @@ export function rollText(el: HTMLElement, text: string) {
     });
   };
   run(incoming, true);
-  run(outgoing, false);
+  run(outgoing, false, narrowing);
   // Hand back to the plain label once everything has landed.
   setTimeout(() => {
     if (el.dataset.roll === text) el.textContent = text;

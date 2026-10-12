@@ -4,7 +4,7 @@
 // their own (t3code's draft threads).
 import { forgetStaged, renameStaged, stagedCount } from "./attachments";
 import { firstLine } from "./dom";
-import { store } from "./store";
+import { store, writeEntries } from "./store";
 
 const KEY = "bismuth.drafts";
 const CARETS = "bismuth.draftCarets";
@@ -20,9 +20,9 @@ export function setDraft(key: string, text: string) {
   if (text) drafts.set(key, text);
   else {
     drafts.delete(key);
-    if (carets.delete(key)) localStorage.setItem(CARETS, JSON.stringify(Object.fromEntries(carets)));
+    if (carets.delete(key)) writeEntries(CARETS, { [key]: undefined });
   }
-  localStorage.setItem(KEY, JSON.stringify(Object.fromEntries(drafts)));
+  writeEntries(KEY, { [key]: text || undefined });
 }
 
 /** Where the caret was in a draft when its session was left (undefined: the end). */
@@ -31,7 +31,7 @@ export const getDraftCaret = (key: string) => carets.get(key);
 export function setDraftCaret(key: string, caret: number) {
   if (!drafts.has(key) || carets.get(key) === caret) return;
   carets.set(key, caret);
-  localStorage.setItem(CARETS, JSON.stringify(Object.fromEntries(carets)));
+  writeEntries(CARETS, { [key]: caret });
 }
 
 // ---------------- new-session drafts ----------------

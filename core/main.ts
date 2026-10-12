@@ -12,7 +12,7 @@ import { HarnessUpdates } from "./updates";
 import { ClaudeAdapter } from "./claude-adapter";
 import { CodexAdapter } from "./codex-adapter";
 import { CursorAdapter } from "./cursor-adapter";
-import type { Harness } from "./harness";
+import { summary, titleFrom, UNTITLED, type Harness } from "./harness";
 import { injectLiveClient } from "./live";
 import { AutoCompact, claudeCompactAt, codexCompactAt } from "./compact";
 import { dropSnapshot, snapshot } from "./checkpoints";
@@ -25,6 +25,7 @@ import { HOME, listFolder, Projects } from "./projects";
 import { MessageQueue, type Row } from "./queue";
 import { RemoteAccessControl } from "./remote";
 import { Settlement } from "./settled";
+import { SideChats } from "./sidechats";
 import { Terminals } from "./terminals";
 import { SharedUiState } from "./uistate";
 import { MAX_UPLOAD_BYTES, Uploads } from "./uploads";
@@ -39,6 +40,7 @@ mkdirSync(ui.STATE, { recursive: true }); // a fresh checkout has none yet
 const projects = new Projects(ui.STATE, process.argv[2] ?? process.env.BISMUTH_LAUNCH_CWD ?? process.cwd());
 const launch = process.argv[2] ? projects.ensure(process.argv[2]).id : null;
 const settlement = new Settlement(ui.STATE);
+const sideChats = new SideChats(ui.STATE);
 const uploads = new Uploads(ui.STATE);
 // Screenshots of views are in the user's appearance ("system" is taken as dark).
 const views = new Views(ui.STATE, () => server.port!, () => {
@@ -74,8 +76,13 @@ function askWindow(ask: { op: "open"; session: string; url: string } | { op: "cl
 /** When each thread's run in flight began: its turn's start as the harness reports it, else when the run was first
  *  seen. Every run starts under this core (harness work doesn't outlive it), so it's never a guess. */
 const runStarts = new Map<string, number>();
-/** A summary (or full thread) as clients see it: with its settlement and how long it's been running. */
-const settled = <T extends ThreadSummary>(t: T): T => ({ ...t, settledAt: settlement.settledAt(t, projects.settleBefore(t.cwd)), runningSince: runStarts.get(t.id) ?? null });
+/** A summary (or full thread) as clients see it: with its settlement, how long it's been running, and for a side chat
+ *  its parent and its own title. */
+const settled = <T extends ThreadSummary>(t: T): T => ({ ...t, ...lineage(t.id), settledAt: settlement.settledAt(t, projects.settleBefore(t.cwd)), runningSince: runStarts.get(t.id) ?? null });
+function lineage(id: string): Partial<ThreadSummary> {
+  const title = sideChats.title(id);
+  return title === undefined ? {} : { parent: sideChats.parent(id), title: title ?? UNTITLED, forked: sideChats.forked(id) };
+}
 
 type SocketData = { kind: "app" | "live" | "cdp"; threadId: string | null; id: string; remote: boolean }; // cdp: threadId is the session (core/browser.ts) // id: the window, for queue edits; remote: through remote access
 type Client = ServerWebSocket<SocketData>;
@@ -182,6 +189,12 @@ for (const h of harnesses) {
       if (cwd) void dropSnapshot(cwd, threadId);
       activeTurns.delete(threadId);
       queue.drop(threadId);
+      // Its side chats go with it.
+      for (const child of sideChats.children(threadId))
+        void harnessFor(child)
+          .then((ch) => ch.archive(child))
+          .catch((err) => console.error(`[side chats] archiving ${child} failed:`, err?.message ?? err));
+      sideChats.drop(threadId);
     }
     if (event.type === "turn.upsert" && event.turn.status === "inProgress" && event.turn.startedAt) runStarts.set(threadId, event.turn.startedAt);
     if (event.type === "thread.upsert") event = { ...event, thread: decorated(event.thread) };
@@ -230,7 +243,9 @@ async function threadList(): Promise<ThreadSummary[]> {
 /** The harness that owns a thread; unknown ids are looked up by listing again. */
 async function harnessFor(threadId: string): Promise<Harness> {
   if (!owner.has(threadId)) await threadList();
-  const h = owner.get(threadId);
+  // A side chat with no turn of its own may not be listed.
+  const lone = sideChats.harness(threadId);
+  const h = owner.get(threadId) ?? (lone ? byId(lone) : undefined);
   if (!h) throw new Error(`unknown thread ${threadId}`);
   return h;
 }
@@ -338,8 +353,17 @@ async function handle(ws: Client, msg: ClientMessage) {
   }
 }
 
+/** A thread's metadata to every window again, after the core changed what they see of it (a side chat's lineage or
+ *  title). */
+async function announce(threadId: string) {
+  const { turns: _turns, requests: _requests, ...meta } = await (await harnessFor(threadId)).openThread(threadId);
+  broadcast({ type: "event", threadId, event: { type: "thread.upsert", thread: decorated(meta) } });
+}
+
 /** Send a prompt: a new turn, or a steer into the running one. */
 async function sendTurn(h: Harness, threadId: string, text: string, settings: TurnSettings) {
+  // A side chat's first prompt names it.
+  if (sideChats.named(threadId, titleFrom(text))) await announce(threadId);
   // A new turn wakes a settled session (t3code clears the override on a user message).
   if (settlement.activity(threadId)) broadcast({ type: "settlement", threadId, settledAt: null });
   // A new turn (not a steer): its folder as it stands first, for the turn's changes to show against. A repository
@@ -631,6 +655,26 @@ async function rpc<M extends keyof RpcMethods>(method: M, params: RpcMethods[M][
       const before = await threadList();
       settlement.clearActive(before.filter((t) => t.cwd === project.path).map((t) => t.id));
       broadcast({ type: "threads", threads: await threadList() });
+      return null;
+    }
+    case "threads.fork": {
+      const parent = String(p.id);
+      const h = await harnessFor(parent);
+      const thread = await h.fork(parent);
+      owner.set(thread.id, h);
+      cwds.set(thread.id, thread.cwd);
+      // Titled as it is now, should it be gone later (one the harness hasn't named goes by its first prompt).
+      const from = await h.openThread(parent);
+      const named = settled(summary(from)).title;
+      const prompt = from.turns.flatMap((t) => t.items).find((i) => i.kind === "user")?.text ?? "";
+      sideChats.add(thread.id, parent, h.id, { from: parent, title: named === UNTITLED ? titleFrom(prompt) || UNTITLED : named, turns: thread.turns.length });
+      await announce(thread.id);
+      return settled(summary(thread));
+    }
+    case "threads.promote": {
+      const id = String(p.id);
+      sideChats.promote(id);
+      await announce(id);
       return null;
     }
     case "threads.settle": {

@@ -26,6 +26,19 @@ export async function picturesIn(root: HTMLElement, ms: number) {
   for (const until = Date.now() + ms; picturesPending(root) && Date.now() < until; ) await new Promise((r) => setTimeout(r, 50));
 }
 
+/** A middle click on `host` (a three-finger tap on a touchpad) presses its copy `button`: the innermost block's when
+ *  they nest, and not over a link, which a middle click opens. */
+export function middleCopy(host: HTMLElement, button: HTMLElement) {
+  host.addEventListener("mousedown", (e) => e.button === 1 && e.preventDefault()); // no autoscroll
+  // Nor Linux's paste of the primary selection on release, which lands in whatever input has focus (the composer).
+  host.addEventListener("mouseup", (e) => e.button === 1 && e.preventDefault());
+  host.addEventListener("auxclick", (e) => {
+    if (e.button !== 1 || e.defaultPrevented || (e.target as Element).closest("a")) return;
+    e.preventDefault();
+    button.click();
+  });
+}
+
 export const basename = (p: string) => p.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || p;
 export const firstLine = (s: string) => s.split("\n").find((l) => l.trim())?.trim() ?? "";
 
@@ -65,22 +78,8 @@ export function timestamp(ms: number) {
 const EFFORTS: Record<string, string> = { none: "None", minimal: "Minimal", low: "Low", medium: "Medium", high: "High", xhigh: "X-High", "extra-high": "X-High", max: "Max", ultra: "Ultra" };
 export const effortLabel = (e: string) => EFFORTS[e] ?? e.charAt(0).toUpperCase() + e.slice(1);
 
-/** Zeron's 3×3 activity glyph: the pulse enters at the bottom edge and converges on the top centre. */
-export function gradientSpinner(): HTMLElement {
-  const box = el("span", "gspin");
-  const tints = ["#B6D3EF", "#EDB185", "#F888A0"];
-  for (let row = 0; row < 3; row++)
-    for (let col = 0; col < 3; col++) {
-      const cell = el("i");
-      const phase = (2 - row + Math.abs(col - 1)) / 4;
-      cell.style.background = tints[row];
-      cell.style.animationDelay = `${-phase * 0.75}s`;
-      box.append(cell);
-    }
-  return box;
-}
-
-/** The 2×3 accent glyph sidebar rows wear while Working: a clockwise ring chase. */
+/** The 2×3 accent activity glyph: a clockwise ring chase. Sidebar rows wear it while Working, browser tabs while
+ *  loading, and the transcript's working trailer beside its word. */
 export function miniSpinner(): HTMLElement {
   const box = el("span", "mspin");
   const ring = [[0, 1], [5, 2], [4, 3]];

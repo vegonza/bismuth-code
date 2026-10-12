@@ -10,7 +10,7 @@ export type BackgroundEffect = "none" | "dither" | "ascii" | "halftone" | "scanl
 /** Pan/zoom of the new-thread background: the focal point (0–1 on each axis) and a 1–4× magnification. */
 export type Framing = { focalX: number; focalY: number; zoom: number };
 
-export const SHORTCUTS = ["toggleSidebar", "toggleRightPane", "expandRightPane", "toggleFiles", "showChanges", "showReview", "toggleTerminal", "newSession", "newSessionIn", "openModelPicker", "nextSession", "prevSession", "settleSession", "renameSession", "jump1", "jump2", "jump3", "jump4", "jump5", "jump6", "jump7", "jump8", "jump9", "newTerminal", "closeTerminal", "nextTerminal", "prevTerminal", "maximizeTerminal", "closeFile", "reopenFile", "saveFile", "togglePreview", "goBack", "goForward", "toggleHiddenFiles", "expandFolders", "collapseFolders", "revealFile", "quickOpen", "tab1", "tab2", "tab3", "tab4", "tab5", "tab6", "tab7", "tab8", "tab9", "removeImage", "stopTurn", "newBrowserTab", "focusAddress", "reloadPage"] as const;
+export const SHORTCUTS = ["toggleSidebar", "toggleRightPane", "expandRightPane", "toggleFiles", "showChanges", "showReview", "toggleTerminal", "newSession", "newSessionIn", "openModelPicker", "nextSession", "prevSession", "settleSession", "renameSession", "jump1", "jump2", "jump3", "jump4", "jump5", "jump6", "jump7", "jump8", "jump9", "newTerminal", "closeTerminal", "nextTerminal", "prevTerminal", "maximizeTerminal", "closeFile", "reopenFile", "saveFile", "togglePreview", "goBack", "goForward", "toggleHiddenFiles", "expandFolders", "collapseFolders", "revealFile", "quickOpen", "tab1", "tab2", "tab3", "tab4", "tab5", "tab6", "tab7", "tab8", "tab9", "removeImage", "stopTurn", "newBrowserTab", "focusAddress", "reloadPage", "sideChat"] as const;
 export type ShortcutId = (typeof SHORTCUTS)[number];
 /** Shortcuts that act on the terminal drawer. They may share a combination with one that acts on the session
  *  (Next terminal and Next session are both Mod+Tab): while a terminal has focus its own wins, elsewhere the
@@ -87,6 +87,8 @@ export const DEFAULT_KEYMAP: Keymap = {
   newBrowserTab: "mod-t",
   focusAddress: "mod-l",
   reloadPage: "f5",
+  // A side chat off the open session, as a tab of the right panel (sidechat.ts).
+  sideChat: "mod-alt-s",
 };
 
 export type Prefs = {
@@ -134,6 +136,8 @@ export type Prefs = {
   /** What the explorer's marks and the editors' changes are against: the last commit, the open session's folder
    *  just before its last turn, the branch as last pushed, or where the branch left the default one. */
   changesScope: ChangesScope;
+  /** Long lines in code blocks wrap instead of scrolling sideways (every block's wrap button). */
+  wrapCode: boolean;
 };
 
 export type CodeColors = "one-dark-pro" | "theme";
@@ -180,6 +184,7 @@ export const DEFAULTS: Prefs = {
   vimKeys: false,
   showChanges: false,
   changesScope: "uncommitted",
+  wrapCode: false,
 };
 
 /** The key that does `what` while the agent works. */

@@ -6,7 +6,7 @@ import type { InitializeParams } from "../codex-protocol";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { finalizeItem, mergeItem, summary, titleFrom, UNTITLED, type Harness } from "./harness";
+import { finalizeItem, finishedTurns, mergeItem, summary, titleFrom, UNTITLED, type Harness } from "./harness";
 import { JsonRpcPeer, RpcError, type Id } from "./jsonrpc";
 import { fromCodex, toCodex, type McpDef, type McpListing, type McpPlan } from "./mcp";
 import type {
@@ -267,14 +267,18 @@ export class CodexAdapter implements Harness {
       if (!(err instanceof RpcError) || !this.lastList) throw err;
       return this.lastList.filter((t) => cwds.includes(t.cwd)).map((t) => (this.threads.has(t.id) ? summary(this.threads.get(t.id)!) : t));
     }
-    return (this.lastList = pages.flatMap((res) =>
+    const listed = pages.flatMap((res) =>
       res.data.map((t): ThreadSummary => {
         const loaded = this.threads.get(t.id);
         return loaded
           ? summary(loaded)
           : { id: t.id, harness: "codex", title: titleOf(t), updatedAt: activityAt(t), createdAt: t.createdAt * 1000, status: threadStatus(t.status), branch: t.gitInfo?.branch ?? null, cwd: t.cwd };
       }),
-    ));
+    );
+    // A fork isn't listed until it has a turn of its own: loaded ones with the turns they inherited are.
+    const ids = new Set(listed.map((t) => t.id));
+    const forks = [...this.threads.values()].filter((t) => !ids.has(t.id) && t.turns.length && cwds.includes(t.cwd)).map(summary);
+    return (this.lastList = [...listed, ...forks]);
   }
 
   private windows(): UsageWindow[] {
@@ -347,6 +351,43 @@ export class CodexAdapter implements Harness {
     this.applied(thread.id, config);
     this.threads.set(thread.id, thread);
     this.emitThread(thread);
+    return thread;
+  }
+
+  /** A side chat: Codex's own fork, persisted (an ephemeral one keeps the parent's prompt cache but can't be
+   *  reopened or moved to the sidebar), so its first turn writes the cache afresh under its own session id. */
+  async fork(parentId: string): Promise<Thread> {
+    const parent = await this.openThread(parentId);
+    const lastTurnId = finishedTurns(parent).at(-1)!.id;
+    await this.planMcp(parent.cwd);
+    const key = `new-${randomUUID()}`;
+    const config = this.threadConfig(parent.cwd, key);
+    const res: C.ThreadForkResponse = await this.rpc().request("thread/fork", {
+      threadId: parentId,
+      lastTurnId,
+      ...FULL_ACCESS_THREAD,
+      ...config.params,
+      excludeTurns: true,
+    } satisfies C.ThreadForkParams, OPEN_TIMEOUT_MS);
+    // The fork lists the turns it inherited, under their ids in the parent.
+    const page: C.ThreadTurnsListResponse = await this.rpc().request("thread/turns/list", {
+      threadId: res.thread.id,
+      limit: 50,
+      sortDirection: "desc",
+      itemsView: "full",
+    } satisfies C.ThreadTurnsListParams, OPEN_TIMEOUT_MS);
+    // The parent's settings, not the config's defaults the fork reports: it carries on the same conversation.
+    const thread: LoadedThread = {
+      ...baseThread(res.thread, parent.model ?? res.model, parent.effort, parent.serviceTier),
+      title: UNTITLED,
+      turns: page.data.map(toTurn).reverse(),
+      contextTokens: parent.contextTokens,
+      contextWindow: parent.contextWindow,
+    };
+    this.keys.set(thread.id, key);
+    this.onSessionKey(key, thread.id);
+    this.applied(thread.id, config);
+    this.threads.set(thread.id, thread);
     return thread;
   }
 

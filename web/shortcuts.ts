@@ -8,7 +8,7 @@ import { action, card, pageColumn, pageHeader, pageSubtitle, rowText, section } 
 
 const GROUPS: [string, (id: ShortcutId) => boolean][] = [
   ["Panels", (id) => ["toggleSidebar", "toggleRightPane", "expandRightPane", "toggleFiles"].includes(id)],
-  ["Sessions", (id) => ["newSession", "newSessionIn", "openModelPicker", "nextSession", "prevSession", "settleSession", "renameSession"].includes(id)],
+  ["Sessions", (id) => ["newSession", "newSessionIn", "sideChat", "openModelPicker", "nextSession", "prevSession", "settleSession", "renameSession"].includes(id)],
   ["Jump to session", (id) => id.startsWith("jump")],
   ["Terminal", (id) => ["toggleTerminal", "newTerminal", "closeTerminal", "nextTerminal", "prevTerminal", "maximizeTerminal"].includes(id)],
   ["Files", (id) => ["quickOpen", "saveFile", "closeFile", "reopenFile", "togglePreview", "goBack", "goForward", "toggleHiddenFiles", "expandFolders", "collapseFolders", "revealFile"].includes(id)],

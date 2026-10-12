@@ -18,6 +18,7 @@ import { prefs, workingCombo, type WorkingSend } from "./prefs";
 import { offScreen } from "./phone";
 import { failed as queueFailed, initQueue, queueOf, renderQueue, steerLatest } from "./queue";
 import { call, net, on, store, targetProject, tildePath } from "./store";
+import { sideChat } from "./sidechat";
 import { initContext, renderContext } from "./usage";
 import { keepHold } from "./transcript";
 
@@ -722,6 +723,9 @@ export function initComposer() {
   let wasNew: boolean | null = null;
   let threadId: string | null = null;
   on("composer", () => {
+    // A side chat's frame has no new-session page: until its session is asked for, the composer holds no draft (the
+    // window's own new-session one would be taken as left behind).
+    if (sideChat && !store.opening && !store.thread) return;
     // Each session keeps its own draft: moving to another (from the moment it's asked for) swaps in that one's,
     // and what was typed here stays here.
     const owner = store.opening ?? store.thread?.id ?? openNewDraft().id;

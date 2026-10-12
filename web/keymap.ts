@@ -89,6 +89,7 @@ export const LABELS: Record<ShortcutId, string> = {
   newBrowserTab: "New browser tab",
   focusAddress: "Focus address bar",
   reloadPage: "Reload page",
+  sideChat: "New side chat",
 };
 
 const handlers: Partial<Record<ShortcutId, () => void>> = {};
@@ -114,6 +115,39 @@ export function heldModifiers(e: KeyboardEvent | MouseEvent) {
   if (e.shiftKey) parts.push("shift");
   return parts.join("-");
 }
+
+/** `fn` once the modifiers held through a run of presses (Mod+Tab, Tab, Tab…) are let go, or the window loses the keys.
+ *  Shift doesn't count: let go of it, Mod+Tab goes on from where Mod+Shift+Tab got to. */
+export function onModifiersReleased(fn: () => void) {
+  addEventListener("keyup", (e: KeyboardEvent) => !e.ctrlKey && !e.metaKey && !e.altKey && fn());
+  addEventListener("blur", fn);
+}
+
+/** Mod+Tab through what was used most recently first, as browsers go through their tabs. The order is taken at the
+ *  first press and kept while the modifier's held, so more presses go further back; only where the walk stops counts
+ *  as used (`stopped` runs once the modifier's let go). */
+export function recentWalk(stopped: () => void) {
+  let order: string[] | null = null;
+  onModifiersReleased(() => {
+    if (!order) return;
+    order = null;
+    stopped();
+  });
+  return {
+    /** Mid-walk: what's passed on the way isn't used. */
+    walking: () => !!order,
+    /** `step` on from `at` through `recent` (newest first), past the ones no longer `there`. */
+    next(at: string | null, recent: () => string[], step: 1 | -1, there: (id: string) => boolean): string | undefined {
+      order ??= [...new Set([at, ...recent()])].filter((id): id is string => !!id);
+      const ids = order.filter(there);
+      const i = at ? ids.indexOf(at) : -1;
+      return ids.length ? ids[i < 0 ? (step > 0 ? 0 : ids.length - 1) : (i + step + ids.length) % ids.length] : undefined;
+    },
+  };
+}
+
+/** A newest-first list with `id` the newest. */
+export const usedNow = (recent: readonly string[], id: string) => [id, ...recent.filter((x) => x !== id)];
 
 /** Where keys are going: a focused terminal gives the terminal's shortcuts priority, and with the drawer closed they
  *  don't apply at all (terminal.ts sets both). */

@@ -24,7 +24,7 @@
 //     {"ev":"fatal","message"}              unrecoverable (auth, SDK init)
 //
 // Models mode (`node <shim> models`): prints {"ev":"models","items":[…]} (the live `Cursor.models.list()`
-// catalog) and exits.
+// catalog) and exits. Fork mode (`node <shim> fork <agentId>`): prints {"ev":"forked","agentId"} and exits.
 //
 // Unknown SDK update kinds are ignored (never fatal): the SDK is beta and its delta union grows.
 
@@ -288,6 +288,52 @@ if (process.argv[2] === "models") {
     await exitAfterFlush(0);
   } catch (e) {
     await fatal(`cursor model discovery failed: ${e?.message ?? e}`);
+  }
+}
+
+// ---- fork mode ------------------------------------------------------------
+// `node <shim> fork <agentId>`: a side chat. The SDK has no fork, so the agent's conversation checkpoints (content-
+// addressed blobs) are copied into a new agent's own store, which starts at the checkpoint of its last finished run:
+// the same conversation, so a model whose cache keys on content keeps it. A run in flight isn't part of it.
+if (process.argv[2] === "fork") {
+  try {
+    const parentId = process.argv[3];
+    const found = parentId ? storeForResume(parentId) : null;
+    if (!found) throw new Error("this conversation's Cursor storage wasn't found");
+    const from = found.store;
+    const document = await from.agents.get({agentId: parentId});
+    if (!document) throw new Error("this conversation's Cursor agent wasn't found");
+    let at = document.latestCheckpoint;
+    if (document.activeRunId || document.status === "running") {
+      const runs = [];
+      let cursor;
+      do {
+        const page = await from.runs.list({filter: {agentIds: [parentId], cursor}});
+        runs.push(...page.items);
+        cursor = page.nextCursor;
+      } while (cursor);
+      at = runs
+        .filter((r) => r.runId !== document.activeRunId && !["queued", "running"].includes(r.status) && r.latestCheckpointRef)
+        .sort((a, b) => a.turnNumber - b.turnNumber)
+        .at(-1)?.latestCheckpointRef;
+    }
+    if (!at) throw new Error("nothing to branch from yet: wait for the first answer");
+    const fork = newRunStore();
+    const agentId = `agent-${crypto.randomUUID()}`;
+    let cursor;
+    do {
+      const page = await from.checkpoints.list({filter: {agentIds: [parentId], cursor}});
+      for (const blobId of page.items)
+        await fork.store.checkpoints.create({agentId, blobId, data: await from.checkpoints.get({agentId: parentId, blobId})});
+      cursor = page.nextCursor;
+    } while (cursor);
+    const now = Date.now();
+    await fork.store.agents.create({agent: {...document, agentId, status: "idle", activeRunId: null, createdAt: now, updatedAt: now, latestCheckpoint: at}});
+    rememberAgentDir(agentId, fork.dir);
+    out({ ev: "forked", agentId });
+    await exitAfterFlush(0);
+  } catch (e) {
+    await fatal(`cursor fork failed: ${e?.message ?? e}`);
   }
 }
 

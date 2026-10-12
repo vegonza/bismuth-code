@@ -1,20 +1,27 @@
 // The browser tabs' side of the shell (web/browser.ts draws them, each page a <webview>):
 // - one persistent session for every page (`persist:bismuth-browser`), its cookies kept across launches;
-// - Zen's (or Firefox's) sign-ins synced into it: its profile's cookies copied in as they change, one way;
-// - every page held to what a web page may do: no Node, no preload, sandboxed, web addresses only, permissions asked
-//   for denied but a few harmless ones;
+// - Zen's (or Firefox's) sign-ins synced into it: its profile's cookies copied in as they change, and each site's
+//   localStorage as its pages load (page-preload.cjs), one way, never over what a site has changed here since (two
+//   browsers trading one sign-in's tokens is what gets sites to end it);
+// - every page held to what a web page may do: no Node, sandboxed, web addresses only, permissions asked for denied
+//   but a few harmless ones; its only preload is ours, in a world the page can't reach;
+// - a page drawn as a desktop's window or a phone, as Chrome's DevTools draws its devices (the viewport's size, drawn
+//   at the scale the window shows it, sharp; as a phone, its user agent, platform and client hints, a touch screen,
+//   overlay scrollbars);
 // - a page's own new windows open as tabs (a popup that signs in stays a window, so it can talk to its opener);
 // - the app's shortcuts reach the app while a page has focus (the page never hears them);
 // - Chromium's DevTools port open on localhost for agents (core/browser.ts filters it down to the pages), each page's
 //   target named to the window so the core can tell which tab an agent means.
 import { app, BrowserWindow, ipcMain, session, shell, webContents, type Session, type WebContents } from "electron";
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, watch, writeFileSync, type FSWatcher } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, watch, writeFileSync, type FSWatcher } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 export const PARTITION = "persist:bismuth-browser";
+/** Each page's preload: Zen's localStorage for its site, put in before the page's scripts run. */
+const PAGE_PRELOAD = join(import.meta.dirname, "page-preload.cjs");
 const MAC = process.platform === "darwin";
 
 /** Web pages, and what pages make for themselves (a frame's own documents). */
@@ -46,6 +53,7 @@ export function initBrowser(window: () => BrowserWindow | null) {
   win = window;
   settingsFile = join(app.getPath("userData"), "browser.json");
   syncedFile = join(app.getPath("userData"), "browser-synced.json");
+  storageFile = join(app.getPath("userData"), "browser-synced-storage.json");
   settings = { ...settings, ...readJson(settingsFile) };
   pages = session.fromPartition(PARTITION);
   // Sites that turn away embedded browsers look for Electron (and the app) in the user agent: a plain Chrome's.
@@ -75,14 +83,25 @@ export function initBrowser(window: () => BrowserWindow | null) {
     if (e.sender !== win()?.webContents) throw new Error("not the app's window");
     const contents = webContents.fromId(id);
     if (!contents || contents.getType() !== "webview" || contents.hostWebContents !== e.sender) return null;
-    const dbg = contents.debugger;
-    const mine = !dbg.isAttached();
-    if (mine) dbg.attach("1.3");
+    holdDebugger(contents);
     try {
-      return ((await dbg.sendCommand("Target.getTargetInfo")) as { targetInfo: { targetId: string } }).targetInfo.targetId;
+      return ((await contents.debugger.sendCommand("Target.getTargetInfo")) as { targetInfo: { targetId: string } }).targetInfo.targetId;
     } finally {
-      if (mine) dbg.detach();
+      releaseDebugger(contents);
     }
+  });
+  // A page's localStorage from Zen's for its site (page-preload.cjs asks, synchronously, before the page's scripts).
+  ipcMain.on("browser-storage", (e, origin: string) => {
+    e.returnValue = e.sender.session === pages && typeof origin === "string" ? storageFor(origin) : [];
+  });
+  // A page drawn as a viewport (web/browser.ts), or as its frame is again (null). Resolves to whether what it tells
+  // sites it is changed, so the window loads it again as that.
+  ipcMain.handle("browser-viewport", async (e, id: number, viewport: unknown) => {
+    if (e.sender !== win()?.webContents) throw new Error("not the app's window");
+    const contents = webContents.fromId(id);
+    if (!contents || contents.getType() !== "webview" || contents.hostWebContents !== e.sender) return false;
+    if (viewport !== null && !isViewport(viewport)) throw new Error("not a viewport");
+    return setViewport(contents, viewport);
   });
   // A page an agent holds kept running though its tab isn't shown (the window lays it out, out of sight): its timers
   // and frames not throttled as a hidden page's are.
@@ -98,7 +117,7 @@ export function initBrowser(window: () => BrowserWindow | null) {
 export function guardWebviews(contents: WebContents) {
   contents.on("will-attach-webview", (e, prefs, params) => {
     if (params.partition !== PARTITION || (params.src && !WEB.test(params.src))) return e.preventDefault();
-    delete prefs.preload;
+    prefs.preload = PAGE_PRELOAD;
     prefs.nodeIntegration = false;
     prefs.nodeIntegrationInSubFrames = false;
     prefs.contextIsolation = true;
@@ -119,7 +138,7 @@ function guest(contents: WebContents, tab: boolean) {
     if (!/^https?:/i.test(url)) return { action: "deny" };
     // window.open with a size (a sign-in popup) stays a window, so it can reach its opener and close itself.
     if (disposition === "new-window")
-      return { action: "allow", overrideBrowserWindowOptions: { width: 520, height: 720, autoHideMenuBar: true, webPreferences: { partition: PARTITION, sandbox: true, contextIsolation: true, nodeIntegration: false } } };
+      return { action: "allow", overrideBrowserWindowOptions: { width: 520, height: 720, autoHideMenuBar: true, webPreferences: { partition: PARTITION, sandbox: true, contextIsolation: true, nodeIntegration: false, preload: PAGE_PRELOAD } } };
     // A link to a new tab (or window.open without a size): the app opens it as a tab beside this page's.
     win()?.webContents.send("browser-open", url, tab ? contents.id : null, disposition === "background-tab");
     return { action: "deny" };
@@ -132,6 +151,110 @@ function guest(contents: WebContents, tab: boolean) {
     e.preventDefault();
     win()?.webContents.send("browser-key", { key: input.key, code: input.code, ctrlKey: input.control, shiftKey: input.shift, altKey: input.alt, metaKey: input.meta });
   });
+}
+
+// ---------------- the debugger ----------------
+
+/** Who needs each page's debugger (by webContents id): a target asked for, a viewport's emulation. Attached while anyone
+ *  does: one attach for all of them, never one detaching it from under another. */
+const debuggerHolds = new Map<number, number>();
+
+function holdDebugger(contents: WebContents) {
+  const held = debuggerHolds.get(contents.id) ?? 0;
+  if (!held) {
+    contents.debugger.attach("1.3");
+    // Let go of from outside (the page gone, DevTools taking it): nothing is held, and the emulation went with it.
+    contents.debugger.once("detach", () => {
+      debuggerHolds.delete(contents.id);
+      viewports.delete(contents.id);
+    });
+  }
+  debuggerHolds.set(contents.id, held + 1);
+}
+
+function releaseDebugger(contents: WebContents) {
+  const held = (debuggerHolds.get(contents.id) ?? 0) - 1;
+  if (held > 0) return void debuggerHolds.set(contents.id, held);
+  debuggerHolds.delete(contents.id);
+  if (!contents.isDestroyed() && contents.debugger.isAttached()) contents.debugger.detach();
+}
+
+// ---------------- viewports ----------------
+
+/** A page drawn as a `width`×`height` viewport at `scale`, and as a phone, telling sites it's one. */
+type Viewport = { width: number; height: number; scale: number; phone: Phone | null };
+/** Its user agent, the platform scripts read, and its client hints (Chromium's UserAgentMetadata, checked by it). */
+type Phone = { ua: string; platform: string; metadata?: object };
+const isPhone = (p: any): p is Phone =>
+  typeof p?.ua === "string" &&
+  p.ua.length <= 512 &&
+  typeof p.platform === "string" &&
+  p.platform.length <= 64 &&
+  (p.metadata === undefined || (typeof p.metadata === "object" && p.metadata !== null && JSON.stringify(p.metadata).length <= 4096));
+const isViewport = (v: any): v is Viewport =>
+  !!v &&
+  [v.width, v.height].every((n) => Number.isInteger(n) && n > 0 && n <= 10_000) &&
+  typeof v.scale === "number" &&
+  v.scale >= 0.05 &&
+  v.scale <= 4 &&
+  (v.phone === null || isPhone(v.phone));
+
+/** The pages drawn as viewports: their debugger held, as the emulation lasts only while it's attached. */
+const viewports = new Map<number, Viewport>();
+/** Each page's asks, one at a time (a panel gliding open asks every frame). */
+const viewportQueue = new Map<number, Promise<unknown>>();
+
+/** Whether what it tells sites it is changed. */
+function setViewport(contents: WebContents, viewport: Viewport | null): Promise<boolean> {
+  const id = contents.id;
+  const next = (viewportQueue.get(id) ?? Promise.resolve()).catch(() => {}).then(() => applyViewport(contents, viewport));
+  viewportQueue.set(id, next);
+  void next.finally(() => viewportQueue.get(id) === next && viewportQueue.delete(id)).catch(() => {});
+  return next;
+}
+
+async function applyViewport(contents: WebContents, viewport: Viewport | null): Promise<boolean> {
+  if (contents.isDestroyed()) return false;
+  const id = contents.id;
+  const was = viewports.get(id) ?? null;
+  const send = (method: string, params?: object) => contents.debugger.sendCommand(method, params);
+  const phoneChanged = JSON.stringify(was?.phone ?? null) !== JSON.stringify(viewport?.phone ?? null);
+  if (!viewport) {
+    if (!was) return false;
+    viewports.delete(id);
+    if (debuggerHolds.has(id)) {
+      // Undone one by one (something else may hold the debugger on, so detaching might not undo them).
+      await send("Emulation.setUserAgentOverride", { userAgent: "" }).catch(() => {});
+      await send("Emulation.clearDeviceMetricsOverride").catch(() => {});
+      // Chromium refuses maxTouchPoints out of 1..16 even when turning it off.
+      await send("Emulation.setTouchEmulationEnabled", { enabled: false, maxTouchPoints: 1 }).catch(() => {});
+      releaseDebugger(contents);
+    }
+    return phoneChanged;
+  }
+  if (!was) holdDebugger(contents);
+  viewports.set(id, viewport);
+  try {
+    if (phoneChanged) {
+      // What the page is told it runs on, consistently: the user agent, the platform scripts read (not Linux's) and
+      // the client hints (a phone's, not this browser's); and a touch screen as far as it can tell. The mouse stays a mouse: turned into touches
+      // (Emulation.setEmitTouchEventsForMouse), a <webview>'s press is never let go of, and holds the window's input.
+      const phone = viewport.phone;
+      await send("Emulation.setUserAgentOverride", phone ? { userAgent: phone.ua, platform: phone.platform, ...(phone.metadata && { userAgentMetadata: phone.metadata }) } : { userAgent: "" });
+      await send("Emulation.setTouchEmulationEnabled", phone ? { enabled: true, maxTouchPoints: 5 } : { enabled: false, maxTouchPoints: 1 });
+    }
+    // The viewport's size, drawn at the scale the window shows it at (the page drawn smaller, not a picture of it
+    // shrunk); as a phone, a phone's viewport rules and scrollbars over the page. The screen's density stays the
+    // window's, so the page is drawn at the pixels it shows on.
+    await send("Emulation.setDeviceMetricsOverride", { width: viewport.width, height: viewport.height, deviceScaleFactor: 0, mobile: !!viewport.phone, scale: viewport.scale });
+  } catch (err) {
+    if (!was) {
+      viewports.delete(id);
+      releaseDebugger(contents);
+    } else viewports.set(id, was);
+    throw err;
+  }
+  return phoneChanged;
 }
 
 // ---------------- the app's keys ----------------
@@ -160,8 +283,9 @@ function comboOf(input: Electron.Input): string | null {
 
 let settingsFile = "";
 let settings = { zenSync: true };
-/** What was copied in last time, by cookie: a hash of its value and attributes, so only what Zen changed since is
- *  written (a cookie a site renewed here isn't put back to Zen's older copy), and what Zen dropped is dropped. */
+/** What was copied in last time, by cookie: a hash of Zen's (its value and attributes), so only what Zen changed since
+ *  is written, and a hash of the value written, so a cookie the site has renewed here since is left as it is (and
+ *  what Zen dropped is dropped only if it hasn't been). */
 let syncedFile = "";
 
 export type SyncStatus = { enabled: boolean; source: string | null; profile: string | null; cookies: number; at: number | null; error: string | null };
@@ -253,6 +377,8 @@ function readCookies(dir: string): ZenCookie[] {
 }
 
 const keyOf = (c: { host: string; path: string; name: string }) => `${c.host}\t${c.path}\t${c.name}`;
+/** A value's fingerprint, kept instead of it. */
+const hash = (value: string) => createHash("sha1").update(value).digest("base64").slice(0, 16);
 const urlOf = (host: string, path: string, secure: boolean) => `${secure ? "https" : "http"}://${host.replace(/^\./, "")}${path || "/"}`;
 
 /** Firefox's expiry is in milliseconds now, seconds before. */
@@ -271,14 +397,32 @@ async function sync() {
     }
     const now = Date.now() / 1000;
     const cookies = readCookies(profile.dir).filter((c) => c.name && seconds(c.expiry) > now);
+    // Each entry: Zen's cookie's hash, then the written value's (one hash alone: from before they were told apart).
     const before: Record<string, string> = readJson(syncedFile);
     const after: Record<string, string> = {};
+    // The cookies here now, by the same key (Chromium spells a domain cookie's host with its dot, as Firefox does).
+    const here = new Map((await pages.cookies.get({})).map((c) => [keyOf({ host: c.domain ?? "", path: c.path ?? "/", name: c.name }), c.value]));
+    /** Whether the cookie here is still what was written (or is gone): Zen's newer one may take its place. */
+    const untouched = (key: string) => {
+      const written = before[key]?.split(" ")[1];
+      return !here.has(key) || written === undefined || hash(here.get(key)!) === written;
+    };
+    // Zen's, including any that couldn't be copied (not taken for dropped in Zen).
+    const zen = new Set(cookies.map(keyOf));
     let failed = 0;
     for (const c of cookies) {
       const key = keyOf(c);
       const sig = createHash("sha1").update(`${c.value}\0${c.expiry}\0${c.isSecure}${c.isHttpOnly}${c.sameSite}`).digest("base64");
-      after[key] = sig;
-      if (before[key] === sig) continue;
+      after[key] = `${sig} ${hash(c.value)}`;
+      if (before[key]?.split(" ")[0] === sig) {
+        if (before[key].includes(" ")) after[key] = before[key];
+        continue;
+      }
+      // Renewed here by its site since it was copied: two browsers trading one sign-in's tokens is what ends it.
+      if (before[key] && !untouched(key)) {
+        after[key] = `${sig} ${before[key].split(" ")[1]}`;
+        continue;
+      }
       const secure = !!c.isSecure;
       // Firefox's 0 is SameSite=None, which Chromium only takes on a secure cookie.
       const sameSite = c.sameSite === 1 ? "lax" : c.sameSite === 2 ? "strict" : secure ? "no_restriction" : "unspecified";
@@ -302,9 +446,9 @@ async function sync() {
         delete after[key];
       }
     }
-    // Signed out in Zen: signed out here too.
+    // Signed out in Zen: signed out here too (unless the site has signed in again here since).
     for (const key of Object.keys(before)) {
-      if (key in after) continue;
+      if (key in after || zen.has(key) || !untouched(key)) continue;
       const [host, path, name] = key.split("\t");
       await pages.cookies.remove(urlOf(host, path, true), name).catch(() => {});
       await pages.cookies.remove(urlOf(host, path, false), name).catch(() => {});
@@ -319,6 +463,145 @@ async function sync() {
     win()?.webContents.send("browser-sync-status", status());
     if (again) (again = false), void sync();
   }
+}
+
+// ---------------- localStorage ----------------
+
+/** What was put into each site's localStorage last time, by key: a hash of the value, so only what Zen changed since is
+ *  written, and only where the page still holds what was put in (page-preload.cjs compares): a value the site has
+ *  changed here since stays, and what Zen dropped is dropped only if it hasn't. */
+let storageFile = "";
+let stored: Record<string, Record<string, string>> | null = null;
+/** Each site's storage as last read from Zen's, and when its files were last written. */
+const storageCache = new Map<string, { stamp: string; items: Map<string, string> }>();
+
+/** Firefox's folder for a site's storage: "https://example.com:8080" is "https+++example.com+8080". */
+const storageDir = (origin: string) => origin.replace("://", "+++").replace(/:(\d+)$/, "+$1");
+
+/** What a page's localStorage should take from Zen's now: [key, value, what was put in last time (null: never)] to set,
+ *  [key, null, …] to remove. */
+function storageFor(origin: string): [string, string | null, string | null][] {
+  if (!settings.zenSync) return [];
+  try {
+    const profile = findProfile();
+    if (!profile || !/^https?:\/\/[^/+^]+$/.test(origin)) return [];
+    const items = readStorage(join(profile.dir, "storage", "default", storageDir(origin), "ls"));
+    stored ??= readJson(storageFile);
+    const before = stored![origin] ?? {};
+    const after: Record<string, string> = {};
+    const ops: [string, string | null, string | null][] = [];
+    for (const [key, value] of items ?? []) {
+      const sig = storageHash(value);
+      after[key] = sig;
+      if (before[key] !== sig) ops.push([key, value, before[key] ?? null]);
+    }
+    for (const key of Object.keys(before)) if (!(key in after)) ops.push([key, null, before[key]]);
+    if (!ops.length) return [];
+    if (Object.keys(after).length) stored![origin] = after;
+    else delete stored![origin];
+    writeFileSync(storageFile, JSON.stringify(stored));
+    return ops;
+  } catch {
+    return [];
+  }
+}
+
+/** A value's fingerprint: page-preload.cjs's storageHash, the same function (it compares the page's values with these). */
+function storageHash(s: string): string {
+  let h1 = 0xdeadbeef;
+  let h2 = 0x41c6ce57;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    h1 = Math.imul(h1 ^ c, 2654435761);
+    h2 = Math.imul(h2 ^ c, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
+}
+
+/** A site's localStorage in a Firefox profile (its `ls` folder): read from a copy, as the cookies are; null if it has
+ *  none. Values are UTF-8, some compressed with Snappy. */
+function readStorage(dir: string): Map<string, string> | null {
+  const file = join(dir, "data.sqlite");
+  if (!existsSync(file)) return null;
+  const wal = `${file}-wal`;
+  const stamp = `${statSync(file).mtimeMs}:${existsSync(wal) ? statSync(wal).mtimeMs : 0}`;
+  const cached = storageCache.get(dir);
+  if (cached?.stamp === stamp) return cached.items;
+  const tmp = mkdtempSync(join(tmpdir(), "bismuth-storage-"));
+  const items = new Map<string, string>();
+  try {
+    copyFileSync(file, join(tmp, "data.sqlite"));
+    if (existsSync(wal)) copyFileSync(wal, join(tmp, "data.sqlite-wal"));
+    const db = new DatabaseSync(join(tmp, "data.sqlite"));
+    try {
+      const rows = db.prepare("SELECT key, conversion_type, compression_type, value FROM data").all() as { key: string; conversion_type: number; compression_type: number; value: Uint8Array | string }[];
+      for (const r of rows) {
+        try {
+          if (typeof r.value === "string") items.set(r.key, r.value);
+          else {
+            const raw = r.compression_type === 1 ? unsnappy(r.value) : r.value;
+            items.set(r.key, new TextDecoder(r.conversion_type === 1 ? "utf-8" : "utf-16le", { fatal: true }).decode(raw));
+          }
+        } catch {
+          // A value that can't be read is left out.
+        }
+      }
+    } finally {
+      db.close();
+    }
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+  storageCache.set(dir, { stamp, items });
+  return items;
+}
+
+/** Snappy's raw format (what Firefox compresses localStorage with): a length, then literals and back-references. */
+function unsnappy(src: Uint8Array): Uint8Array {
+  let pos = 0;
+  let len = 0;
+  for (let shift = 0; ; shift += 7) {
+    const b = src[pos++];
+    len |= (b & 0x7f) << shift;
+    if (b < 0x80) break;
+  }
+  const out = new Uint8Array(len);
+  let o = 0;
+  while (pos < src.length) {
+    const tag = src[pos++];
+    if ((tag & 3) === 0) {
+      let n = tag >> 2;
+      if (n >= 60) {
+        const bytes = n - 59;
+        n = 0;
+        for (let i = 0; i < bytes; i++) n |= src[pos++] << (8 * i);
+      }
+      n += 1;
+      out.set(src.subarray(pos, pos + n), o);
+      pos += n;
+      o += n;
+      continue;
+    }
+    let n: number;
+    let off: number;
+    if ((tag & 3) === 1) {
+      n = ((tag >> 2) & 7) + 4;
+      off = ((tag >> 5) << 8) | src[pos++];
+    } else if ((tag & 3) === 2) {
+      n = (tag >> 2) + 1;
+      off = src[pos] | (src[pos + 1] << 8);
+      pos += 2;
+    } else {
+      n = (tag >> 2) + 1;
+      off = (src[pos] | (src[pos + 1] << 8) | (src[pos + 2] << 16) | (src[pos + 3] << 24)) >>> 0;
+      pos += 4;
+    }
+    for (let i = 0; i < n; i++, o++) out[o] = out[o - off];
+  }
+  if (o !== len) throw new Error("not Snappy");
+  return out;
 }
 
 let watcher: FSWatcher | null = null;
@@ -353,5 +636,7 @@ function startSync() {
 function stopSync() {
   stopWatching();
   rmSync(syncedFile, { force: true });
+  rmSync(storageFile, { force: true });
+  stored = null;
   win()?.webContents.send("browser-sync-status", status());
 }

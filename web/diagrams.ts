@@ -1,7 +1,7 @@
 // Mermaid diagrams in Markdown: a ```mermaid block is drawn in the theme's colours once mermaid has loaded (its own
 // chunk, fetched the first time a diagram shows). Until then, and when the source doesn't parse (a block still
 // streaming in, a typo), the block stays code.
-import { el } from "./dom";
+import { el, middleCopy } from "./dom";
 import { loadMermaid } from "./lazy";
 import { activeTheme, css, flatten, onTheme, type Color } from "./theme";
 
@@ -101,8 +101,11 @@ export function diagrams(root: HTMLElement) {
     const view = el("div", "mermaid-view");
     view.dataset.source = source;
     // The source stays at hand: the frame's copy button moves onto the drawing.
-    const copy = frame.querySelector(".code-action");
-    if (copy) view.append(copy);
+    const copy = frame.querySelector<HTMLElement>(".code-action");
+    if (copy) {
+      view.append(copy);
+      middleCopy(view, copy);
+    }
     const into = () => frame.replaceWith(view);
     // Drawn before (a file shown again): in at once, so what's laid out (and scrolled to) is the drawing.
     if (!redraw(view, vars, into)) void draw(source).then((svg) => svg && frame.isConnected && (show(view, svg, vars), into()));

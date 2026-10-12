@@ -22,7 +22,7 @@ import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, 
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Subprocess } from "bun";
-import { finalizeItem, mergeItem, summary, titleFrom, UNTITLED, type Harness } from "./harness";
+import { finalizeItem, finishedTurns, mergeItem, summary, titleFrom, UNTITLED, type Harness } from "./harness";
 import { claudeListing, claudeStatus, toClaude, type ClaudeSeen, type McpDef, type McpListing, type McpPlan } from "./mcp";
 import type {
   FileChange,
@@ -117,6 +117,10 @@ type PendingRequest = { threadId: string; request: RuntimeRequest; resolve: (res
 
 type Listed = { mtime: number; size: number; summary: ThreadSummary | null };
 
+/** A side chat that hasn't run yet: its first run forks the parent's transcript, kept through `at` (the last entry of
+ *  the parent's last finished turn, whose last prompt is `through`). */
+type Fork = { parent: string; cwd: string; through: string; at: string; createdAt: number };
+
 export class ClaudeAdapter implements Harness {
   readonly id = "claude" as const;
   readonly name = "Claude Code";
@@ -148,9 +152,12 @@ export class ClaudeAdapter implements Harness {
 
   /** Which project folder each listed session lives in (its transcript sits under that folder's dir). */
   private where = new Map<string, string>();
+  /** Side chats not run yet (the CLI writes a fork's transcript on its first run). */
+  private forks: Record<string, Fork>;
 
   constructor(private stateDir: string) {
     this.archived = new Set(readJson<string[]>(join(stateDir, "claude-archived.json")) ?? []);
+    this.forks = readJson<Record<string, Fork>>(join(stateDir, "claude-forks.json")) ?? {};
     this.windowsByModel = readJson<Record<string, number>>(join(stateDir, "claude-context-windows.json")) ?? {};
     const seen = readJson<Record<string, Record<string, ClaudeSeen | McpStatus | null>>>(join(stateDir, "claude-mcp-seen.json")) ?? {};
     // An earlier build kept the bare status.
@@ -254,6 +261,7 @@ export class ClaudeAdapter implements Harness {
   }
 
   private async loadThread(threadId: string): Promise<Thread> {
+    if (this.forks[threadId]) return this.loadFork(threadId, this.forks[threadId]);
     const cwd = this.where.get(threadId);
     const path = cwd ? join(projectDir(cwd), `${threadId}.jsonl`) : null;
     if (!cwd || !path || !existsSync(path)) throw new Error(`no Claude Code session ${threadId} in a project`);
@@ -286,7 +294,63 @@ export class ClaudeAdapter implements Harness {
     return thread;
   }
 
+  /** A side chat that hasn't run, after a restart: its parent's turns through the fork point. */
+  private async loadFork(threadId: string, fork: Fork): Promise<Thread> {
+    const path = join(projectDir(fork.cwd), `${fork.parent}.jsonl`);
+    if (!existsSync(path)) throw new Error(`no Claude Code session ${fork.parent} to branch from`);
+    const history = await readHistory(path);
+    const end = history.turns.findIndex((t) => t.items.some((i) => i.id === fork.through));
+    const existing = this.threads.get(threadId);
+    if (existing) return existing;
+    const thread: Thread = {
+      id: threadId,
+      harness: "claude",
+      title: UNTITLED,
+      updatedAt: fork.createdAt,
+      createdAt: fork.createdAt,
+      status: "idle",
+      branch: history.branch,
+      cwd: fork.cwd,
+      model: history.model,
+      effort: null,
+      serviceTier: null,
+      activeTurnId: null,
+      turns: history.turns.slice(0, end + 1).slice(-HISTORY_TURNS),
+      requests: [],
+      plan: null,
+      contextTokens: null,
+      contextWindow: history.model ? (this.windowsByModel[history.model] ?? null) : null,
+      notice: null,
+    };
+    this.threads.set(threadId, thread);
+    this.where.set(threadId, fork.cwd);
+    return thread;
+  }
+
   // ---------------- commands ----------------
+
+  /** A side chat: the CLI's own fork (`--fork-session`), made on its first run, of the parent's transcript as it stood
+   *  through its last finished turn (`--resume-session-at`), so it's the very same conversation, cache included. */
+  async fork(parentId: string): Promise<Thread> {
+    const parent = await this.openThread(parentId);
+    if (this.forks[parentId]) throw new Error("Send something in this side chat before branching off it");
+    const turns = finishedTurns(parent);
+    // Its last prompt (a steer folded into it, if any): the turn runs from there to the next prompt.
+    const through = turns.at(-1)!.items.findLast((i) => i.kind === "user")?.id;
+    const at = through ? await turnEnd(join(projectDir(parent.cwd), `${parentId}.jsonl`), through) : null;
+    if (!through || !at) throw new Error("Couldn't find this session's last finished turn in its transcript");
+    const now = Date.now();
+    const thread: Thread = { ...parent, id: randomUUID(), title: UNTITLED, createdAt: now, updatedAt: now, status: "idle", activeTurnId: null, turns, requests: [], plan: null, notice: null };
+    this.forks[thread.id] = { parent: parentId, cwd: parent.cwd, through, at, createdAt: now };
+    this.saveForks();
+    this.threads.set(thread.id, thread);
+    this.where.set(thread.id, thread.cwd);
+    return thread;
+  }
+
+  private saveForks() {
+    writeFileSync(join(this.stateDir, "claude-forks.json"), JSON.stringify(this.forks));
+  }
 
   async newThread(settings: TurnSettings, cwd: string): Promise<Thread> {
     const now = Date.now();
@@ -366,7 +430,7 @@ export class ClaudeAdapter implements Harness {
       "--permission-prompt-tool", "stdio",
       "--permission-mode", "bypassPermissions",
       "--dangerously-skip-permissions",
-      ...(this.onDisk.has(thread.id) ? ["--resume", thread.id] : ["--session-id", thread.id]),
+      ...this.session(thread.id),
       ...(flags.model ? ["--model", flags.model] : []),
       ...(flags.effort ? ["--effort", flags.effort] : []),
       ...runSettings(flags.fast, this.compactWindow(), mcp.off),
@@ -405,6 +469,14 @@ export class ClaudeAdapter implements Harness {
     this.runs.set(thread.id, run);
     void this.pump(run);
     return run;
+  }
+
+  /** The session a run continues: its own transcript, a side chat's parent forked into it, or a new one. */
+  private session(id: string): string[] {
+    if (this.onDisk.has(id)) return ["--resume", id];
+    const fork = this.forks[id];
+    if (fork) return ["--resume", fork.parent, "--fork-session", "--session-id", id, "--resume-session-at", fork.at];
+    return ["--session-id", id];
   }
 
   /** A live process keeps the flags it started with: switch the ones this turn changes. */
@@ -465,6 +537,10 @@ export class ClaudeAdapter implements Harness {
     if (run?.finished) run.proc.kill("SIGTERM");
     this.archived.add(threadId);
     writeFileSync(join(this.stateDir, "claude-archived.json"), JSON.stringify([...this.archived]));
+    if (this.forks[threadId]) {
+      delete this.forks[threadId];
+      this.saveForks();
+    }
     this.threads.delete(threadId);
     this.onEvent(threadId, { type: "thread.archived" });
   }
@@ -539,6 +615,10 @@ export class ClaudeAdapter implements Harness {
         if (f.subtype === "init") {
           run.model = f.model ?? run.model;
           this.onDisk.add(run.threadId);
+          if (this.forks[run.threadId]) {
+            delete this.forks[run.threadId];
+            this.saveForks();
+          }
           this.sawMcp(run, f.mcp_servers);
         } else if (f.subtype === "compact_boundary") this.upsertItem(run.threadId, run.turnId, { id: f.uuid ?? randomUUID(), kind: "notice", text: "Context compacted" });
         else if (f.subtype === "background_tasks_changed") this.backgroundChanged(run, f.tasks ?? []);
@@ -1226,6 +1306,31 @@ function lastEntryAt(path: string): number | null {
     if (r && !r.isSidechain && (r.type === "assistant" || r.type === "user") && r.timestamp) return Date.parse(r.timestamp);
   }
   return null;
+}
+
+/** Whether a transcript entry is a prompt, opening a turn (not a tool's result, the CLI's own note or an interrupt). */
+function opensTurn(r: any): boolean {
+  if (r.type !== "user" || r.isSidechain || r.isMeta || r.isCompactSummary) return false;
+  const content = r.message?.content;
+  if (blocksOf(content).some((b) => b.type === "tool_result")) return false;
+  if (blocksOf(content).map((b) => String(b.text ?? "")).join("\n").trimStart().startsWith("[Request interrupted")) return false;
+  return promptText(content) !== null;
+}
+
+/** The last entry of the turn a prompt is in: the conversation through it, up to the next prompt. Null when the
+ *  transcript has no such prompt. */
+async function turnEnd(path: string, prompt: string): Promise<string | null> {
+  let last: string | null = null;
+  for await (const line of lines(Bun.file(path).stream())) {
+    if (!last && !line.includes(prompt)) continue;
+    const r = parse(line);
+    if (!r?.uuid || r.isSidechain || (r.type !== "user" && r.type !== "assistant")) continue;
+    if (!last) {
+      if (r.uuid === prompt) last = r.uuid;
+    } else if (opensTurn(r)) break;
+    else last = r.uuid;
+  }
+  return last;
 }
 
 /** A session's sidebar entry from the head (first prompt, start time, branch) and tail (latest title) of its

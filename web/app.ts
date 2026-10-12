@@ -8,22 +8,24 @@ import { canRemoveImage, canStopTurn, closePicker, draft, initComposer, removeLa
 import { discardNewDraft, draftHasContent, isNewDraft, newDraft, openNewDraft, setDraft, setNewDraftProject, switchNewDraft } from "./drafts";
 import { $, el, firstLine } from "./dom";
 import { harnessIcon, icon } from "./icons";
-import { bindShortcut, comboFromEvent, dispatchShortcut, keyContext, shellKeeps, shortcutFor } from "./keymap";
-import { closePalette, initPalette, paletteOpen, togglePalette } from "./palette";
+import { bindShortcut, comboFromEvent, dispatchShortcut, keyContext, recentWalk, shellKeeps, shortcutFor, usedNow } from "./keymap";
+import { closePalette, initPalette, openPalette, paletteOpen, togglePalette } from "./palette";
 import { prefs, SHORTCUTS, TERMINAL_SCOPED } from "./prefs";
 import { connectionChanged, threadChanged } from "./notify";
 import { pickerOpen, togglePicker } from "./picker";
 import { closeSettings, focusSettingsSearch, initSettings, selectSettingsTab, settingsOpen, toggleSettings } from "./settings";
 import { usageArrived } from "./usagepage";
 import { isRestarting, restartMessage, restartNeeded } from "./restart";
-import { initPhone, isPhone, onPhoneChange, sessionReady, showSession } from "./phone";
+import { initPhone, initPhoneFrame, isPhone, onPhoneChange, sessionReady, showSession } from "./phone";
 import { initSidebar, jumpOrder, projectArt, renameSession, renaming, sessionOrder, toggleSidebar } from "./sidebar";
 import { actions, call, failCalls, nav, net, on, persist, projectName, projectOf, promptCount, promptsLike, render, setCurrentProject, settleCall, store, targetProject } from "./store";
 import { initTheme } from "./theme";
 import { closeTerminal, cycleTerminal, hideTerminal, initTerminal, newTerminal, terminalExit, terminalOutput, terminalsArrived, toggleMaximize, toggleTerminal } from "./terminal";
 import { initTranscript } from "./transcript";
-import { focusAddress, reloadPage, setAwake } from "./browser";
-import { agentBrowser, reportOwners, browsing, openBrowser, closeActiveFile, reopenClosedFile, collapseFolders, showSidebarView, cycleTabs, expandFolders, filesChanged, goBack, goForward, openReview, initPanels, jumpTab, renameHovered, resyncWatch, showCommit, revealActiveFile, saveActiveFile, toggleExpand, toggleFiles, toggleHiddenFiles, togglePane, togglePreview, turnSnapshot } from "./panels";
+import { focusAddress, reloadPage, setAwake, wireLinks } from "./browser";
+import { setOpener } from "./refs";
+import { adoptSession, forwardKey, host, sideChat, sideSession } from "./sidechat";
+import { newSideChat, sideChatsToOpen, revealSideChat, sideChatChanged, sideChatGone, agentBrowser, reportOwners, browsing, openBrowser, closeActiveFile, reopenClosedFile, collapseFolders, showSidebarView, cycleTabs, expandFolders, filesChanged, goBack, goForward, openReview, initPanels, jumpTab, renameHovered, resyncWatch, showCommit, revealActiveFile, saveActiveFile, toggleExpand, toggleFiles, toggleHiddenFiles, togglePane, togglePreview, turnSnapshot } from "./panels";
 
 declare global {
   interface Window {
@@ -44,10 +46,12 @@ setTimeout(() => $("app").classList.remove("booting"), 2000);
 // The UI reloads whenever a new build is applied (and on Ctrl+R): carry the scroll position across (drafts and their
 // images are kept per session in localStorage, drafts.ts and attachments.ts).
 // The open thread survives via the URL hash; everything else comes back from the core.
-const restore = JSON.parse(sessionStorage.getItem("bismuth.restore") ?? "null") as { scroll: number | null } | null;
-sessionStorage.removeItem("bismuth.restore");
+// (A side chat's frame shares the window's sessionStorage: it leaves the window's to it.)
+const restore = sideChat ? null : (JSON.parse(sessionStorage.getItem("bismuth.restore") ?? "null") as { scroll: number | null } | null);
+if (!sideChat) sessionStorage.removeItem("bismuth.restore");
 let pendingScroll = restore?.scroll ?? null;
 addEventListener("pagehide", () => {
+  if (sideChat) return;
   const s = $("scroller");
   const atBottom = s.scrollHeight - s.scrollTop - s.clientHeight < 70;
   sessionStorage.setItem("bismuth.restore", JSON.stringify({ scroll: atBottom ? null : s.scrollTop }));
@@ -73,14 +77,15 @@ function connect() {
   ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
   ws.onopen = () => {
     banner(null);
-    connectionChanged(false);
+    if (!sideChat) connectionChanged(false);
   };
   ws.onmessage = (ev) => onMessage(JSON.parse(ev.data) as ServerMessage);
   ws.onclose = () => {
     failCalls();
     // A restart takes the core down on purpose (no banner, chime or notification); the live client reloads the
     // window once it's back.
-    if (!isRestarting()) {
+    // (A side chat's frame leaves saying so to the window around it.)
+    if (!isRestarting() && !sideChat) {
       banner("Disconnected from the core — reconnecting…");
       connectionChanged(true);
     }
@@ -89,10 +94,14 @@ function connect() {
 }
 
 function summarize(t: Omit<Thread, "turns" | "requests">): ThreadSummary {
-  return { id: t.id, harness: t.harness, title: t.title, updatedAt: t.updatedAt, createdAt: t.createdAt, status: t.status, branch: t.branch, cwd: t.cwd, settledAt: t.settledAt ?? null, runningSince: t.runningSince ?? null };
+  return { id: t.id, harness: t.harness, title: t.title, updatedAt: t.updatedAt, createdAt: t.createdAt, status: t.status, branch: t.branch, cwd: t.cwd, settledAt: t.settledAt ?? null, runningSince: t.runningSince ?? null, parent: t.parent ?? null };
 }
 
+/** What a side chat's frame leaves to the window around it: the panels, the terminal, restarts. */
+const WINDOW_ONLY = new Set<ServerMessage["type"]>(["restart", "restartNeeded", "terminals", "terminal.output", "terminal.exit", "files.changed", "turnSnapshot"]);
+
 function onMessage(msg: ServerMessage) {
+  if (sideChat && WINDOW_ONLY.has(msg.type)) return;
   switch (msg.type) {
     case "hello": {
       store.device = msg.device;
@@ -100,7 +109,7 @@ function onMessage(msg: ServerMessage) {
       store.projects = msg.projects;
       // Opened on a folder (`bun run app <dir>`): new sessions start there, once per launch (a reload keeps the
       // window's sessionStorage, so it doesn't undo a later pick).
-      if (msg.launch && sessionStorage.getItem("bismuth.launch") !== msg.launch) {
+      if (!sideChat && msg.launch && sessionStorage.getItem("bismuth.launch") !== msg.launch) {
         sessionStorage.setItem("bismuth.launch", msg.launch);
         setCurrentProject(msg.launch);
       }
@@ -111,14 +120,15 @@ function onMessage(msg: ServerMessage) {
       store.queues = new Map(Object.entries(msg.queues ?? {}));
       uiSyncHello(msg.uiState);
       banner(msg.error);
-      const target = decodeURIComponent(location.hash.slice(1)) || store.thread?.id;
+      const target = sideChat ? sideSession() : decodeURIComponent(location.hash.slice(1)) || store.thread?.id;
       if (target) (wanted = target), net.send({ type: "open", threadId: target });
       render("sidebar", "header", "composer", "transcript", "providers");
       // A new connection (a restarted core) watches nothing for this window yet, nor knows its pages' sessions.
-      resyncWatch();
-      reportOwners();
+      if (!sideChat) resyncWatch(), reportOwners();
       $("app").classList.remove("connecting"); // the sidebar has its sessions now, not the empty "Add a project"
-      if (!target) markReady();
+      // A spare side chat frame isn't up until its session is: that one comes on screen settled, not gliding into place.
+      if (!target && sideChat) host()?.warm();
+      else if (!target) markReady();
       break;
     }
     case "restart":
@@ -246,6 +256,29 @@ function harnessTitled<T extends { id: string; title: string }>(t: T): T {
   return title ? { ...t, title } : t;
 }
 
+/** The session on screen (or on its way), or the new-session screen's draft. */
+const shownSession = () => store.opening ?? store.thread?.id ?? openNewDraft().id;
+const RECENT_SESSIONS = "bismuth.recentSessions";
+/** Sessions and drafts as last opened, newest first: the order Mod+Tab goes through them. */
+let recentSessions: string[] = JSON.parse(localStorage.getItem(RECENT_SESSIONS) ?? "[]");
+const sessionWalk = recentWalk(() => usedSession());
+/** The shown session the newest of the recently opened (not while Mod+Tab passes through it). */
+function usedSession() {
+  const id = shownSession();
+  if (sessionWalk.walking() || recentSessions[0] === id) return;
+  recentSessions = usedNow(recentSessions, id).slice(0, 100);
+  localStorage.setItem(RECENT_SESSIONS, JSON.stringify(recentSessions));
+}
+
+/** The address names the session shown (none: the new-session page), so a reload comes back to it. */
+function nameAddress() {
+  const id = store.opening ?? store.thread?.id;
+  if (location.hash.slice(1) !== (id ?? "")) history.replaceState(history.state, "", id ? `#${id}` : location.pathname + location.search);
+}
+// The phone's screens step back through history (phone.ts), to an entry that may name the session shown before the
+// one on screen now (it changed while a panel was over it: a side chat moved to the sidebar).
+addEventListener("popstate", nameAddress);
+
 /** Put a thread on screen: the core's snapshot, or one kept from an earlier visit while that snapshot is on its way.
  *  `adopt`: the composer takes the thread's model and effort (not when only a fresher copy of what's shown came). */
 function show(t: Thread, adopt: boolean) {
@@ -257,15 +290,18 @@ function show(t: Thread, adopt: boolean) {
   seen(t.id);
   // Like Zeron's selection: the project follows the open session, so the next new one starts beside it.
   const p = projectOf(t.cwd);
-  if (p) setCurrentProject(p.id);
+  if (p && !sideChat) setCurrentProject(p.id);
   // The entry keeps its state: the phone layout counts its screens there (phone.ts).
-  if (location.hash.slice(1) !== t.id) history.replaceState(history.state, "", `#${t.id}`);
+  nameAddress();
   nav.push(t.id);
   // The next turn continues with the thread's own model and effort.
   if (adopt && !creating) adoptSettings(t);
   creating = false;
+  if (!sideChat) usedSession();
   render("sidebar", "header", "composer", "transcript");
   sessionReady();
+  // A side chat's frame comes into view once this is painted.
+  if (sideChat) requestAnimationFrame(() => requestAnimationFrame(() => host()?.shown(t.id)));
 }
 
 // Sessions opened lately, as last seen (the open one is kept current by its events). Going back to one shows it at
@@ -309,12 +345,14 @@ function applyEvent(threadId: string, ev: ThreadEvent) {
     ev.thread = titled(ev.thread);
     const prev = store.summaries.get(threadId);
     store.summaries.set(threadId, summarize(ev.thread));
-    threadChanged(threadId, ev.thread.title, prev?.status, ev.thread.status);
-    if (prev?.status === "running" && ev.thread.status !== "running" && store.thread?.id !== threadId) {
+    if (!sideChat) threadChanged(threadId, ev.thread.title, prev?.status, ev.thread.status);
+    // (A side chat isn't in the sidebar to say so: its tab shows it working.)
+    if (!sideChat && !ev.thread.parent && prev?.status === "running" && ev.thread.status !== "running" && store.thread?.id !== threadId) {
       store.done.add(threadId);
       persist();
     }
     render("sidebar");
+    if (!sideChat && (ev.thread.parent || prev?.parent)) sideChatChanged(threadId);
   }
   if (ev.type === "thread.archived") {
     store.summaries.delete(threadId);
@@ -322,7 +360,9 @@ function applyEvent(threadId: string, ev: ThreadEvent) {
     store.done.delete(threadId);
     setDraft(threadId, "");
     forgetStaged(threadId);
-    if (store.thread?.id === threadId) actions.newThread();
+    // (A side chat's frame goes with its tab.)
+    if (store.thread?.id === threadId && !sideChat) actions.newThread();
+    if (!sideChat) sideChatGone(threadId);
     render("sidebar");
     return;
   }
@@ -384,6 +424,9 @@ function ensureTurn(t: Thread, id: string): Turn {
 
 actions.open = (id) => {
   if (isNewDraft(id)) return newScreen(id, true), showSession();
+  // A side chat shows as a tab of its session's panel.
+  const parent = !sideChat && store.summaries.get(id)?.parent;
+  if (parent) return revealSideChat(parent, id);
   closeSettings();
   // Already the open one: on a phone it's still there under the list (back only uncovered the list), so it comes back.
   if ((store.opening ?? store.thread?.id) === id) return showSession();
@@ -400,8 +443,9 @@ function newScreen(id: string, push: boolean) {
   store.thread = null;
   store.opening = null;
   wanted = null;
-  history.replaceState(history.state, "", location.pathname);
+  nameAddress();
   if (push) nav.push(d.id);
+  usedSession();
   render("sidebar", "header", "composer", "transcript");
   draft.focus();
 }
@@ -504,7 +548,9 @@ function banner(text: string | null) {
 // ---------------- boot ----------------
 
 initTheme();
-initPhone({
+// A side chat's frame (sidechat.ts) is the chat column alone: the window around it has the rest.
+if (!sideChat) initPhone({
+  search: () => openPalette("commands"),
   newSession: () => actions.newThread(),
   settings: () => toggleSettings(),
   files: () => (document.getElementById("app")!.classList.contains("files-open") || toggleFiles(), showSidebarView("files")),
@@ -515,36 +561,46 @@ initPhone({
     const t = store.thread && store.summaries.get(store.thread.id);
     return t ? { rename: () => renameSession(t.id), settle: () => actions.settle(t.id, t.settledAt == null), settled: t.settledAt != null } : null;
   },
+  sideChat: () => void newSideChat(),
+  sideChats: sideChatsToOpen,
   closeSettings,
   closeFile: () => togglePane(),
   closeFiles: () => toggleFiles(false),
   closeTerminal: hideTerminal,
 });
-initSidebar();
+if (!sideChat) initSidebar();
 initTranscript();
-initTerminal();
+if (!sideChat) initTerminal();
 initComposer();
-initBackground();
-initSettings();
-initPalette();
-initPanels(() => draft.focus(), () => togglePalette("files"));
+if (sideChat) initSide();
+else {
+  initBackground();
+  initSettings();
+  initPalette();
+  initPanels(() => draft.focus(), () => togglePalette("files"));
+}
 on("header", renderHeader);
 onPhoneChange(() => render("header"));
 
+/** A side chat's frame: files and web links open beside it, in the window around it. */
+function initSide() {
+  setOpener((ref, cited, keep) => host()?.openCited(ref, cited, keep));
+  wireLinks((url, background) => host()?.openWebLink(url, background));
+  window.__bismuthSide = { focus: () => draft.focus(), show: (id) => (adoptSession(id), actions.open(id)) };
+  // Never the new-session page: laid out as a session from the start, a spare takes its session without the
+  // composer gliding down from the page's middle.
+  $("main").classList.remove("new-thread");
+  initPhoneFrame();
+}
+
 // ---------------- shortcuts ----------------
 
-/** The order Next/Previous walks, frozen while the modifier stays held: opening a Codex thread bumps its
- *  update time, so the live sidebar order would shift under a run of presses. */
-let cycleOrder: string[] | null = null;
-addEventListener("keyup", (e: KeyboardEvent) => ["Control", "Meta", "Alt", "Shift"].includes(e.key) && (cycleOrder = null));
-addEventListener("blur", () => (cycleOrder = null));
-
-/** Step through the sidebar's sessions and drafts; from an unlisted new session, start at either end. */
+/** Step through the sessions and drafts, most recently opened first; ones never opened come last, in the sidebar's order. */
 function cycle(step: 1 | -1) {
-  const ids = (cycleOrder ??= sessionOrder());
-  if (!ids.length || pickerOpen()) return;
-  const at = ids.indexOf(store.thread?.id ?? openNewDraft().id);
-  actions.open(ids[at < 0 ? (step > 0 ? 0 : ids.length - 1) : (at + step + ids.length) % ids.length]);
+  if (pickerOpen()) return;
+  const at = shownSession();
+  const id = sessionWalk.next(at, () => [...recentSessions, ...sessionOrder()], step, (id) => store.summaries.has(id) || !!newDraft(id));
+  if (id && id !== at) actions.open(id);
 }
 
 bindShortcut("toggleSidebar", () => !settingsOpen() && toggleSidebar());
@@ -573,6 +629,7 @@ for (let n = 1; n <= 9; n++) bindShortcut(`tab${n}` as `tab${1 | 2 | 3 | 4 | 5 |
 bindShortcut("removeImage", removeLastImage, () => !settingsOpen() && canRemoveImage());
 bindShortcut("stopTurn", stopTurn, () => !settingsOpen() && canStopTurn());
 bindShortcut("newBrowserTab", () => !settingsOpen() && openBrowser());
+bindShortcut("sideChat", () => !settingsOpen() && void newSideChat());
 bindShortcut("focusAddress", focusAddress, () => !settingsOpen() && browsing());
 bindShortcut("reloadPage", reloadPage, () => !settingsOpen() && browsing());
 bindShortcut("newSession", () => actions.newThread());
@@ -582,7 +639,7 @@ bindShortcut("openModelPicker", () => {
   closeSettings();
   togglePicker();
 });
-// Inside the right panel the same keys step through its tabs (Zeron's cycle_navigation).
+// Inside the right panel the same keys step through its tabs (Zeron's cycle_navigation). Both go most recently used first.
 bindShortcut("nextSession", () => cycleTabs(1) || cycle(1));
 bindShortcut("prevSession", () => cycleTabs(-1) || cycle(-1));
 bindShortcut("settleSession", () => {
@@ -608,6 +665,8 @@ for (let n = 1; n <= 9; n++)
   });
 
 addEventListener("keydown", (e: KeyboardEvent) => {
+  // In a side chat's frame, the app's shortcuts act in the window around it.
+  if (sideChat && forwardKey(e)) return;
   const combo = comboFromEvent(e);
   // Mod+W never reaches the window's menu, where it would close bismuth (and the sessions with it).
   if (combo === "mod-w") e.preventDefault();
@@ -647,7 +706,7 @@ addEventListener("keydown", (e: KeyboardEvent) => {
 
 /** Something open that takes the keys (or text the user selected) while focus is on the page itself. */
 const composerBlocked = () =>
-  getSelection()?.isCollapsed === false || paletteOpen() || pickerOpen() || settingsOpen() || renaming() || !!document.querySelector(".card:not(.question):not(.picker), .s-scrim, .lightbox");
+  getSelection()?.isCollapsed === false || paletteOpen() || pickerOpen() || settingsOpen() || renaming() || !!document.querySelector(".card:not(.question):not(.picker):not(.ring-tip), .s-scrim, .lightbox");
 const focusNowhere = () => !document.activeElement || document.activeElement === document.body || document.activeElement === document.documentElement;
 
 /** The composer keeps focus, like a terminal's prompt: a mouse click that leaves focus nowhere useful (the page, a
@@ -702,4 +761,5 @@ function typeIntoComposer(e: KeyboardEvent) {
 
 render("sidebar", "header", "composer", "transcript");
 connect();
-draft.focus();
+// A side chat's frame takes the focus only when given it (its tab opened or clicked).
+if (!sideChat || document.hasFocus()) draft.focus();

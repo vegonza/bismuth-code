@@ -3,10 +3,11 @@ import DOMPurify from "dompurify";
 import hljs from "highlight.js/lib/common";
 import { marked } from "marked";
 import { diagrams } from "./diagrams";
-import { el } from "./dom";
+import { el, middleCopy } from "./dom";
 import { fileGlyph } from "./fileicons";
 import { icon } from "./icons";
 import { mathExtension } from "./mathmd";
+import { onPrefs, prefs, setPrefs } from "./prefs";
 import { citations, linkFiles, rangeText } from "./refs";
 
 /** Blocks past this stay plain: highlighting them on every streamed render would stall the window. */
@@ -21,6 +22,21 @@ export function copyText(text: string, button: HTMLElement, html?: string) {
   else void navigator.clipboard.writeText(text);
   button.replaceChildren(icon("check"));
   setTimeout(() => button.replaceChildren(icon("copy")), 1200);
+}
+
+// Wrapping long lines is one setting for every code block, whichever block's button turned it on.
+const wrapCode = () => document.documentElement.classList.toggle("wrap-code", prefs.wrapCode);
+wrapCode();
+onPrefs((prev) => prev.wrapCode !== prefs.wrapCode && wrapCode());
+
+const ruler = document.createElement("canvas").getContext("2d")!;
+/** Whether a line of the block runs past its width when it isn't wrapped: the wrap button is only offered then. */
+function overflows(pre: HTMLElement) {
+  if (!prefs.wrapCode) return pre.scrollWidth > pre.clientWidth;
+  const style = getComputedStyle(pre);
+  ruler.font = style.font;
+  const room = pre.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+  return (pre.textContent ?? "").split("\n").some((line) => ruler.measureText(line.replaceAll("\t", "        ")).width > room + 0.5);
 }
 
 function codeFrame(pre: HTMLPreElement): HTMLElement {
@@ -47,11 +63,24 @@ function codeFrame(pre: HTMLPreElement): HTMLElement {
   copy.title = "Copy code";
   copy.append(icon("copy"));
   copy.onclick = () => copyText(code?.textContent ?? pre.textContent ?? "", copy);
+  middleCopy(frame, copy);
+  const actions = el("div", "code-actions");
+  actions.append(copy);
+  // A diagram keeps only the copy (diagrams.ts). The wrap button is settled as the block is hovered, which is
+  // when it shows.
+  if (lang !== "mermaid") {
+    const wrap = el("button", "code-action code-wrap");
+    wrap.title = "Wrap long lines";
+    wrap.append(icon("wrapText"));
+    wrap.onclick = () => setPrefs({ wrapCode: !prefs.wrapCode });
+    frame.addEventListener("pointerenter", () => (wrap.hidden = !overflows(pre)));
+    actions.append(wrap);
+  }
   if (file || lang) {
     const head = el("div", "code-head");
-    head.append(file ?? el("span", "lang", lang!), copy);
+    head.append(file ?? el("span", "lang", lang!), actions);
     frame.append(head);
-  } else frame.append(copy);
+  } else frame.append(actions);
   pre.replaceWith(frame);
   frame.append(pre);
   return frame;
@@ -68,24 +97,25 @@ export function gutterAction(host: HTMLElement, button: HTMLElement) {
 }
 
 /** Where there's a gutter (the transcript's rows): quoted prose (drafts, messages the agent writes for you to send)
- *  gets a copy beside it, and a code block without a head (or the diagram it becomes) has its copy moved there. */
+ *  gets a copy beside it, and a code block without a head (or the diagram it becomes) has its actions moved there. */
 function gutterCopies(into: HTMLElement) {
   into.querySelectorAll<HTMLElement>("blockquote:not(blockquote blockquote)").forEach((quote) => {
     const copy = el("button", "code-action");
     copy.title = "Copy quote";
     copy.append(icon("copy"));
     copy.onclick = () => copyText(quote.innerText.trim(), copy);
+    middleCopy(quote, copy);
     gutterAction(quote, copy);
   });
   // The frame's own overflow would clip a rail inside it: it goes in a holder beside the frame, which a diagram
   // later takes the frame's place in (diagrams.ts).
   into.querySelectorAll<HTMLElement>(".code-block:not(:has(.code-head))").forEach((frame) => {
-    const copy = frame.querySelector<HTMLElement>(":scope > .code-action");
-    if (!copy) return;
+    const actions = frame.querySelector<HTMLElement>(":scope > .code-actions");
+    if (!actions) return;
     const host = el("div");
     frame.replaceWith(host);
     host.append(frame);
-    gutterAction(host, copy);
+    gutterAction(host, actions);
   });
 }
 

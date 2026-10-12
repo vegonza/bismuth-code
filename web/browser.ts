@@ -7,7 +7,7 @@
 import { el, miniSpinner } from "./dom";
 import { icon } from "./icons";
 import { displayCombo } from "./keymap";
-import { contextMenu, type MenuEntry } from "./popover";
+import { contextMenu, menuItem, type MenuEntry } from "./popover";
 import { onPrefs, prefs, SHORTCUTS } from "./prefs";
 
 export type SyncStatus = { enabled: boolean; source: string | null; profile: string | null; cookies: number; at: number | null; error: string | null };
@@ -21,6 +21,9 @@ type Api = {
   onSync(fn: (s: SyncStatus) => void): void;
   target(webContentsId: number): Promise<string | null>;
   awake(webContentsId: number, on: boolean): void;
+  /** A page drawn as `viewport` (null: as its frame is): whether what it tells sites it is changed. Missing from (or
+   *  refused by) a shell from before viewports were (desktop/ changes need the app quit and reopened). */
+  viewport?(webContentsId: number, viewport: Viewport | null): Promise<boolean>;
 };
 const desktop = (window as { bismuthDesktop?: { browser?: Api } }).bismuthDesktop;
 const api = desktop?.browser ?? null;
@@ -35,7 +38,9 @@ interface Webview extends HTMLElement {
   goBack(): void;
   goForward(): void;
   reload(): void;
+  setUserAgent(ua: string): void;
   stop(): void;
+  getTitle(): string;
   getWebContentsId(): number;
   inspectElement(x: number, y: number): void;
   undo(): void;
@@ -55,7 +60,7 @@ const idOf = (tab: string) => tab.slice(BROWSER_TAB.length);
 
 /** What's kept of a page across launches: where it was, and what's typed into its address and not gone to yet (kept
  *  with its tab, as a browser's tab keeps it). */
-type Kept = { url: string; title: string; typed?: string };
+type Kept = { url: string; title: string; typed?: string; viewport?: View };
 type Page = Kept & {
   id: string;
   favicon: string | null;
@@ -70,6 +75,15 @@ type Page = Kept & {
   ready: boolean;
   /** Its DevTools target, as agents driving the browser name it (core/browser.ts): known once it's ready. */
   target: string | null;
+  /** When it was last loaded again for being made a phone (or not), so that never happens over and over. */
+  remadeAt?: number;
+  /** The phone's size, of its own (1: as large as it is). */
+  scale: number;
+  /** The viewport the shell was last asked to draw it as (as JSON), and whether it's still answering. */
+  sized: string | null;
+  sizing: boolean;
+  /** Why the shell can't draw it as its view has it ("old": from before it could), said over it; null: it can. */
+  unemulated: string | null;
 };
 
 const KEY = "bismuth.browser";
@@ -81,14 +95,14 @@ function pageOf(tab: string): Page {
   const id = idOf(tab);
   let p = pages.get(id);
   if (!p) {
-    p = { id, url: kept[id]?.url ?? "", title: kept[id]?.title ?? "", typed: kept[id]?.typed, favicon: null, loading: false, back: false, forward: false, error: null, frame: null, view: null, ready: false, target: null };
+    p = { id, url: kept[id]?.url ?? "", title: kept[id]?.title ?? "", typed: kept[id]?.typed, viewport: kept[id]?.viewport, favicon: null, loading: false, back: false, forward: false, error: null, frame: null, view: null, ready: false, target: null, scale: 1, sized: null, sizing: false, unemulated: null };
     pages.set(id, p);
   }
   return p;
 }
 
 function keep(p: Page) {
-  kept[p.id] = { url: p.url, title: p.title, ...(p.typed !== undefined && { typed: p.typed }) };
+  kept[p.id] = { url: p.url, title: p.title, ...(p.typed !== undefined && { typed: p.typed }), ...(p.viewport && { viewport: p.viewport }) };
   save();
 }
 
@@ -174,6 +188,26 @@ const hostOf = (url: string) => {
     return "";
   }
 };
+const originOf = (url: string) => {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return "";
+  }
+};
+/** A page's title as Chromium has it, "" for none (it gives the address, as it shows it, then). */
+function titleOf(v: Webview, url: string): string {
+  const shown = (s: string) => {
+    const bare = s.replace(/^https?:\/\//, "").replace(/\/$/, "");
+    try {
+      return decodeURI(bare);
+    } catch {
+      return bare;
+    }
+  };
+  const title = v.getTitle();
+  return shown(title) === shown(url) ? "" : title;
+}
 /** The tab's label: the page's title, else where it is. */
 export const pageLabel = (tab: string) => {
   const p = pageOf(tab);
@@ -238,6 +272,7 @@ let reloadBtn: HTMLButtonElement;
 let field: HTMLElement;
 let input: HTMLInputElement;
 let externalBtn: HTMLButtonElement;
+let viewBtn: HTMLButtonElement;
 let shown: Page | null = null;
 /** The page whose address the field last showed. */
 let fieldFor: Page | null = null;
@@ -288,7 +323,8 @@ export function mountBrowser(body: HTMLElement, h: Hooks) {
   input.onblur = () => shown && (input.value = shown.typed ?? shown.url);
   field.append(icon("globe"), input);
   externalBtn = button("externalLink", "Open in default browser", () => shown?.url && openExternally(shown.url));
-  bar.append(backBtn, forwardBtn, reloadBtn, field, externalBtn);
+  viewBtn = button("monitorSmartphone", "Viewport", () => shown && viewMenu(shown));
+  bar.append(backBtn, forwardBtn, reloadBtn, field, viewBtn, externalBtn);
   stack = el("div", "bw-pages");
   layer.append(bar, stack);
   body.append(layer);
@@ -306,7 +342,7 @@ export function mountBrowser(body: HTMLElement, h: Hooks) {
     onPrefs((prev) => prev.keymap !== prefs.keymap && sendKeys());
     api.onSync((s) => ((sync = s), syncListeners.forEach((fn) => fn())));
     void api.sync().then((s) => ((sync = s), syncListeners.forEach((fn) => fn())));
-    wireLinks();
+    wireLinks((url, background) => hooks.open(url, null, background));
   }
 }
 
@@ -322,13 +358,205 @@ export function showPage(tab: string | null) {
   syncBar();
 }
 
-/** A page's frame: its <webview> (once it has somewhere to go), what it says while it has nowhere, or that it failed. */
+/** A page's frame: its <webview> (once it has somewhere to go), what it says while it has nowhere, or that it failed.
+ *  The <webview> sits in a device (a phone, or nothing to see) that it never leaves: moved, it would reload. */
 function build(p: Page) {
   p.frame = el("div", "bw-page");
   p.frame.dataset.id = p.id;
+  const device = el("div", "bw-device");
+  const glass = el("div", "bw-glass");
+  const status = el("div", "bw-status");
+  status.append(el("span", "bw-clock", clock()), statusIcons());
+  glass.append(status, el("div", "bw-camera"), el("div", "bw-screen"), navBar(p));
+  device.append(el("span", "bw-key power"), el("span", "bw-key volume"), glass);
+  p.frame.append(device);
   stack.append(p.frame);
+  new ResizeObserver(() => placeView(p)).observe(p.frame);
+  placeView(p);
   if (p.url && api) attach(p);
   drawState(p);
+}
+
+// ---------------- viewports ----------------
+
+/** How a page is laid out: at the panel's size, or on a device's screen (a desktop's, a phone's) drawn in the panel,
+ *  as large as it takes, up to its own size. */
+type View = "fit" | "desktop" | "phone";
+/** A device: its screen (style.css draws it), where on it the page is (a phone's bars take the rest), its body round
+ *  the screen (bezel and band, a side), and the room kept round that in the panel. */
+type Device = { screen: [number, number]; page: [number, number]; body: number; margin: number };
+/** A desktop: this computer's screen, as a page shown full screen on it has it (a desktop's own size, landscape), or
+ *  a common one's should this one not be one (a phone's, a tablet's on its side). Bare, the panel's width. */
+const DESKTOP: Device = (() => {
+  const own = screen.width >= 1280 && screen.width > screen.height;
+  const size: [number, number] = own ? [screen.width, screen.height] : [1920, 1080];
+  return { screen: size, page: size, body: 0, margin: 0 };
+})();
+/** A Pixel's screen (412×915) less its status bar and its navigation bar (40 and 48). */
+const PHONE: Device = { screen: [412, 915], page: [412, 915 - 40 - 48], body: 14, margin: 24 };
+
+/** What the shell draws a page as (desktop/browser.ts), as Chrome's DevTools does its devices: a `width`×`height`
+ *  viewport drawn at `scale` (the page itself drawn smaller, sharp, not a picture of it shrunk), and as a phone, what
+ *  it tells sites it is. */
+type Viewport = { width: number; height: number; scale: number; phone: Phone | null };
+/** What a phone tells sites it is: its user agent, the platform scripts read, and its client hints (Chromium's
+ *  UserAgentMetadata: a shell from before them goes without). */
+type Phone = { ua: string; platform: string; metadata?: object };
+
+const VIEWS: [View, Parameters<typeof icon>[0], string, Device | null][] = [
+  ["fit", "panelRight", "Fit the panel", null],
+  ["desktop", "monitor", "Desktop", DESKTOP],
+  ["phone", "smartphone", "Phone", PHONE],
+];
+const deviceOf = (p: Page) => VIEWS.find(([v]) => v === p.viewport)?.[3] ?? null;
+
+/** The page's device fitted to the frame (its lengths are style.css's, at --k: its screen's as --sw and --sh), and
+ *  the shell asked to draw the page so. */
+function placeView(p: Page) {
+  const frame = p.frame;
+  if (!frame) return;
+  frame.dataset.view = p.viewport ?? "fit";
+  const device = deviceOf(p);
+  const w = frame.clientWidth;
+  const h = frame.clientHeight;
+  p.scale = device && w && h ? Math.max(0.1, Math.min(1, (w - 2 * device.margin) / (device.screen[0] + 2 * device.body), (h - 2 * device.margin) / (device.screen[1] + 2 * device.body))) : 1;
+  frame.style.setProperty("--k", String(p.scale));
+  frame.style.setProperty("--sw", String(device?.screen[0] ?? 0));
+  frame.style.setProperty("--sh", String(device?.screen[1] ?? 0));
+  sizePage(p);
+}
+
+/** The viewport the page is drawn as, for its view (null: its frame's, as it is). */
+function viewportOf(p: Page): Viewport | null {
+  const device = deviceOf(p);
+  if (!device) return null;
+  return { width: device.page[0], height: device.page[1], scale: p.scale, phone: device === PHONE ? ANDROID : null };
+}
+
+/** The shell asked to draw the page as its view has it, once it's up: one ask at a time, then the latest (a panel
+ *  gliding open asks every frame). Made a phone or unmade one, the page is loaded again as what it is now (its site
+ *  sends that version). */
+function sizePage(p: Page) {
+  const v = p.view;
+  if (!v || !p.ready || p.sizing) return;
+  const want = viewportOf(p);
+  const key = JSON.stringify(want);
+  if (key === p.sized) return;
+  p.sized = key;
+  if (!api?.viewport) return unsized(p, want && "old");
+  p.sizing = true;
+  api.viewport(v.getWebContentsId(), want).then(
+    (remade) => {
+      p.sizing = false;
+      unsized(p, null);
+      if (remade) remake(p);
+      sizePage(p);
+    },
+    (err) => {
+      p.sizing = false;
+      // Not asked again until something changes (the view, the panel's size, a new page).
+      unsized(p, want && (/No handler registered/.test(String(err)) ? "old" : String(err?.message ?? err)));
+      sizePage(p);
+    },
+  );
+}
+
+/** Whether (and why) the page can't be drawn as its view has it, said over it. */
+function unsized(p: Page, why: string | null) {
+  if (p.unemulated === why) return;
+  p.unemulated = why;
+  drawState(p);
+}
+
+/** What a phone tells sites it is, as Firefox's and Chrome's phone modes do: Chrome on an Android phone, the version
+ *  the page really runs on (sites send their phone versions by it, not by the screen's size). Its user agent as Chrome
+ *  sends it now (Android's version and the model left out of it, told in the client hints instead). Out of phone
+ *  mode, the browser's own, as the shell has it (desktop/browser.ts: the app's, less Electron's and bismuth's names). */
+const CHROME = /Chrome\/(\d+)/.exec(navigator.userAgent)?.[1] ?? "140";
+const PHONE_UA = `Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROME}.0.0.0 Mobile Safari/537.36`;
+const ANDROID: Phone = {
+  ua: PHONE_UA,
+  platform: "Linux armv81",
+  metadata: {
+    ...((navigator as any).userAgentData?.brands ? { brands: (navigator as any).userAgentData.brands } : {}),
+    platform: "Android",
+    platformVersion: "16.0.0",
+    architecture: "",
+    model: "Pixel 9",
+    mobile: true,
+  },
+};
+const BROWSER_UA = navigator.userAgent.replace(/\s(Electron|bismuth)\/\S+/g, "");
+
+/** The page shown as `view`. */
+function setView(p: Page, view: View) {
+  const was = p.viewport ?? "fit";
+  if (was === view) return;
+  p.viewport = view === "fit" ? undefined : view;
+  keep(p);
+  syncBar();
+  if (p.view && (was === "phone") !== (view === "phone")) {
+    // What the page itself was made with too (a phone's, if it was made as one), under the shell's; not up yet, what
+    // its first page loads with.
+    const ua = view === "phone" ? PHONE_UA : BROWSER_UA;
+    if (p.ready) p.view.setUserAgent(ua);
+    else p.view.setAttribute("useragent", ua);
+  }
+  placeView(p);
+}
+
+/** The page loaded again as what it is now, at most once in a while: should its emulation keep going (the shell's
+ *  debugger let go of), it isn't loaded over and over. */
+function remake(p: Page) {
+  if (!p.view || !p.ready || !p.url || Date.now() - (p.remadeAt ?? 0) < 10_000) return;
+  p.remadeAt = Date.now();
+  p.view.reload();
+}
+
+function viewMenu(p: Page) {
+  const r = viewBtn.getBoundingClientRect();
+  contextMenu(
+    { x: r.right, y: r.bottom + 4 },
+    VIEWS.map(([view, glyph, label, device]) => {
+      const row = menuItem({ icon: glyph, label, hint: device ? device.screen.join("×") : undefined, run: () => setView(p, view) });
+      const check = el("span", "check-slot");
+      if ((p.viewport ?? "fit") === view) check.append(icon("check"));
+      row.append(check);
+      return row;
+    }),
+    { trigger: viewBtn },
+  );
+}
+
+/** The time as a phone's status bar shows it (hours and minutes, no AM or PM), kept current in every phone. */
+const clock = () => new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }).replace(/\s?[AP]\.?M\.?$/i, "");
+setInterval(() => document.querySelectorAll(".bw-clock").forEach((c) => (c.textContent = clock())), 15_000);
+
+/** A phone's status bar's right side, Android's: wifi, signal, battery (sized in em, a pixel at the phone's scale:
+ *  style.css). */
+function statusIcons(): HTMLElement {
+  const box = el("span", "bw-status-icons");
+  box.innerHTML =
+    '<svg viewBox="0 0 24 24" width="17em" height="17em"><path d="M12 20.5 1.3 8.2a16.6 16.6 0 0 1 21.4 0Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>' +
+    '<svg viewBox="0 0 24 24" width="16em" height="16em"><path d="M20.5 3.5v17h-17Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>' +
+    '<svg viewBox="0 0 27 14" width="25em" height="13em"><rect x="0.5" y="0.5" width="23" height="13" rx="4" opacity=".35"/><path d="M4.5.5h14v13h-14a4 4 0 0 1-4-4v-5a4 4 0 0 1 4-4Z"/><path d="M25 4.5v5a1.6 1.6 0 0 0 1.5-1.6V6.1A1.6 1.6 0 0 0 25 4.5Z" opacity=".35"/></svg>';
+  return box;
+}
+
+/** A phone's navigation bar, Android's three buttons: Back goes back in the page, as a phone's does; Home and Recents
+ *  are the phone's, drawn (nothing a page has to go to). */
+function navBar(p: Page): HTMLElement {
+  const nav = el("div", "bw-nav");
+  const back = el("button", "bw-nav-key") as HTMLButtonElement;
+  back.title = "Back";
+  back.innerHTML = '<svg viewBox="0 0 24 24"><path d="M16.5 5.5v13L6.5 12Z" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"/></svg>';
+  back.addEventListener("click", () => goBackPage(p));
+  const home = el("span", "bw-nav-key");
+  home.innerHTML = '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="7.5"/></svg>';
+  const recents = el("span", "bw-nav-key");
+  recents.innerHTML = '<svg viewBox="0 0 24 24"><rect x="5.5" y="5.5" width="13" height="13" rx="2.5"/></svg>';
+  nav.append(back, home, recents);
+  return nav;
 }
 
 function attach(p: Page) {
@@ -336,6 +564,7 @@ function attach(p: Page) {
   // The session before the address: a <webview> takes its partition only before it first loads.
   v.setAttribute("partition", api!.partition);
   v.setAttribute("allowpopups", "");
+  if (p.viewport === "phone") v.setAttribute("useragent", PHONE_UA);
   v.src = p.url;
   p.view = v;
   const nav = () => {
@@ -353,6 +582,10 @@ function attach(p: Page) {
         targetWaiters.get(p.id)?.splice(0).forEach((fn) => fn(t));
       });
     p.ready = true;
+    // Each new document: the shell asked again (nothing changes if nothing has; should its emulation have gone, it's
+    // made again), so a page made as a phone is loaded again once it is one (its scripts ran before, seeing no phone).
+    p.sized = null;
+    sizePage(p);
     nav();
     changed(p);
   });
@@ -368,11 +601,13 @@ function attach(p: Page) {
     changed(p);
   });
   v.addEventListener("did-navigate", (e: any) => {
-    // A new document: its title and icon are on their way, and whatever was typed into the address is dropped.
+    // A new document: whatever was typed into the address is dropped. Its title, Chromium's for it: a page gone back
+    // to or loaded again keeps its own (and isn't told again: the same title set again is no change), a new one's is
+    // on its way. Its icon stays while it's the same site's (one that changes is told), another site's is on its way.
+    if (originOf(e.url) !== originOf(p.url)) p.favicon = null;
     p.url = e.url;
     p.typed = undefined;
-    p.title = "";
-    p.favicon = null;
+    p.title = titleOf(v, e.url);
     nav();
     keep(p);
     changed(p);
@@ -410,7 +645,7 @@ function attach(p: Page) {
     changed(p);
   });
   v.addEventListener("context-menu", (e: any) => pageMenu(p, e.params));
-  p.frame!.prepend(v);
+  p.frame!.querySelector(".bw-screen")!.append(v);
 }
 
 /** Chromium's error, as something to read. */
@@ -451,6 +686,13 @@ function drawState(p: Page) {
     tile.append(icon("triangleAlert"));
     say(p.error.text, p.error.detail);
     action("Try again", () => reloadPage());
+  } else if (p.unemulated) {
+    const as = p.viewport === "phone" ? "a phone" : "a desktop";
+    tile.append(icon(p.viewport === "phone" ? "smartphone" : "monitor"));
+    // A shell from before viewports (desktop/ changes need the app quit and reopened).
+    if (p.unemulated === "old") say("Quit and reopen bismuth", `Showing pages as ${as} needs the app restarted once.`);
+    else say(`Couldn't show it as ${as}`, p.unemulated);
+    action("Fit the panel", () => setView(p, "fit"));
   } else return;
   p.frame.append(state);
 }
@@ -469,6 +711,10 @@ function syncBar() {
   reloadBtn.replaceChildren(icon(p.loading ? "x" : "rotateCw"));
   reloadBtn.title = p.loading ? "Stop" : prefs.keymap.reloadPage ? `Reload · ${displayCombo(prefs.keymap.reloadPage)}` : "Reload";
   externalBtn.disabled = !p.url;
+  const view = VIEWS.find(([v]) => v === (p.viewport ?? "fit"))!;
+  viewBtn.replaceChildren(icon(p.viewport ? view[1] : "monitorSmartphone"));
+  viewBtn.classList.toggle("on", !!p.viewport);
+  viewBtn.title = `Viewport: ${view[2]}`;
   // Typing into it stays as typed; another tab shown, its own address (or what's typed into it).
   if (document.activeElement !== input || fieldFor !== p) input.value = p.typed ?? p.url;
   fieldFor = p;
@@ -517,8 +763,8 @@ export function reloadPage() {
   if (p.ready) p.view.reload();
   else p.view.src = p.url;
 }
-export function goBackPage() {
-  if (shown?.ready && shown.view?.canGoBack()) shown.view.goBack();
+export function goBackPage(p = shown) {
+  if (p?.ready && p.view?.canGoBack()) p.view.goBack();
 }
 export function goForwardPage() {
   if (shown?.ready && shown.view?.canGoForward()) shown.view.goForward();
@@ -591,20 +837,20 @@ export function openWebLink(url: string, background = false) {
 }
 
 /** Web links the app renders (Markdown's, marked `data-web`) open as tabs: a click in front, a middle click behind.
- *  Right-click offers the other ways. */
-function wireLinks() {
+ *  Right-click offers the other ways. `open` makes the tab (a side chat's frame asks the window around it). */
+export function wireLinks(open: (url: string, background: boolean) => void) {
   const linkAt = (e: MouseEvent) => (e.target as Element | null)?.closest?.<HTMLAnchorElement>("a[data-web]") ?? null;
   document.addEventListener("click", (e) => {
     const a = linkAt(e);
     if (!a || e.defaultPrevented || e.button !== 0) return;
     e.preventDefault();
-    hooks.open(a.href, null, e.ctrlKey || e.metaKey);
+    open(a.href, e.ctrlKey || e.metaKey);
   });
   document.addEventListener("auxclick", (e) => {
     const a = linkAt(e);
     if (!a || e.button !== 1) return;
     e.preventDefault();
-    hooks.open(a.href, null, true);
+    open(a.href, true);
   });
   document.addEventListener("contextmenu", (e) => {
     const a = linkAt(e);
@@ -612,7 +858,7 @@ function wireLinks() {
     e.preventDefault();
     const url = a.href;
     contextMenu({ x: e.clientX, y: e.clientY }, [
-      { icon: "globe", label: "Open in new tab", run: () => hooks.open(url, null, false) },
+      { icon: "globe", label: "Open in new tab", run: () => open(url, false) },
       { icon: "externalLink", label: "Open in default browser", run: () => openExternally(url) },
       { icon: "clipboardCopy", label: "Copy link address", run: () => copy(url) },
     ]);

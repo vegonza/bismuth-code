@@ -34,6 +34,10 @@ export interface Harness {
   newThread(settings: TurnSettings, cwd: string): Promise<Thread>;
   /** Starts a turn, or steers the running one. */
   send(threadId: string, text: string, settings: TurnSettings): Promise<void>;
+  /** A side chat: a new session with this one's context through its last finished turn, forked the harness's own
+   *  way so the model is sent the very same conversation (and its prompt cache carries over). Turns the parent has
+   *  running aren't part of it. The core announces it (as a side chat). */
+  fork(threadId: string): Promise<Thread>;
   interrupt(threadId: string): Promise<void>;
   archive(threadId: string): Promise<void>;
   respond(requestId: string, response: RequestResponse): void;
@@ -43,6 +47,13 @@ export const UNTITLED = "New thread";
 
 /** A title from a prompt's first non-empty line. */
 export const titleFrom = (text: string) => text.trim().split("\n")[0].slice(0, 80);
+
+/** A fork's copy of the parent's finished turns (a turn in flight is left out), or why there's nothing to fork. */
+export function finishedTurns(parent: Thread): Turn[] {
+  const turns = parent.turns.filter((t) => t.status !== "inProgress" && t.id !== parent.activeTurnId);
+  if (!turns.length) throw new Error("Nothing to branch from yet: wait for the first answer");
+  return structuredClone(turns);
+}
 
 export function summary(t: Thread): ThreadSummary {
   return { id: t.id, harness: t.harness, title: t.title, updatedAt: t.updatedAt, createdAt: t.createdAt, status: t.status, branch: t.branch, cwd: t.cwd };

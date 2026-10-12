@@ -136,6 +136,16 @@ window.addEventListener("storage", (e) => {
   render("sidebar", "header", "composer");
 });
 
+/** Entries of a map kept in localStorage that other windows write too (a side chat's frame, sidechat.ts): only these
+ *  keys are written (undefined removes one), into the map as it's stored now, so another window's entries aren't put
+ *  back as this one last read them. */
+export function writeEntries(name: string, entries: Record<string, unknown>) {
+  const all = JSON.parse(localStorage.getItem(name) ?? "{}") as Record<string, unknown>;
+  for (const [key, value] of Object.entries(entries)) if (value === undefined) delete all[key];
+  else all[key] = value;
+  localStorage.setItem(name, JSON.stringify(all));
+}
+
 // The socket lives in app.ts; modules send through this hook so they don't import it.
 export const net = { send: (_msg: ClientMessage) => {}, open: () => false };
 

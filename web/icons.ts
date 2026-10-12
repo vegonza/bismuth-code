@@ -61,6 +61,7 @@ import refreshCw from "lucide-static/icons/refresh-cw.svg" with { type: "text" }
 import rotateCw from "lucide-static/icons/rotate-cw.svg" with { type: "text" };
 import layers from "lucide-static/icons/layers.svg" with { type: "text" };
 import files from "lucide-static/icons/files.svg" with { type: "text" };
+import monitorSmartphone from "lucide-static/icons/monitor-smartphone.svg" with { type: "text" };
 import rotateCcw from "lucide-static/icons/rotate-ccw.svg" with { type: "text" };
 import slidersHorizontal from "lucide-static/icons/sliders-horizontal.svg" with { type: "text" };
 import sun from "lucide-static/icons/sun.svg" with { type: "text" };
@@ -69,6 +70,7 @@ import gripVertical from "lucide-static/icons/grip-vertical.svg" with { type: "t
 import trash2 from "lucide-static/icons/trash-2.svg" with { type: "text" };
 import listFilter from "lucide-static/icons/list-filter.svg" with { type: "text" };
 import messageCircle from "lucide-static/icons/message-circle.svg" with { type: "text" };
+import messageCirclePlus from "lucide-static/icons/message-circle-plus.svg" with { type: "text" };
 import maximize2 from "lucide-static/icons/maximize-2.svg" with { type: "text" };
 import minimize2 from "lucide-static/icons/minimize-2.svg" with { type: "text" };
 import externalLink from "lucide-static/icons/external-link.svg" with { type: "text" };
@@ -82,6 +84,7 @@ import cloudUpload from "lucide-static/icons/cloud-upload.svg" with { type: "tex
 import cloud from "lucide-static/icons/cloud.svg" with { type: "text" };
 import gitCommitHorizontal from "lucide-static/icons/git-commit-horizontal.svg" with { type: "text" };
 import tag from "lucide-static/icons/tag.svg" with { type: "text" };
+import wrapText from "lucide-static/icons/wrap-text.svg" with { type: "text" };
 import openai from "./icons/openai-mark.svg" with { type: "text" };
 import claude from "./icons/claude-mark.svg" with { type: "text" };
 import cursor from "./icons/cursor-mark.svg" with { type: "text" };
@@ -89,12 +92,12 @@ import type { HarnessId } from "../shared/model";
 
 const ICONS = {
   box, calendar, clock, claude, cursor, ellipsis, laptop, list,
-  bell, blocks, chartNoAxesColumn, info, image, keyboard, moon, refreshCw, rotateCcw, rotateCw, layers, files, slidersHorizontal, sun, x,
+  bell, blocks, chartNoAxesColumn, info, image, keyboard, moon, refreshCw, rotateCcw, rotateCw, layers, files, monitorSmartphone, slidersHorizontal, sun, x,
   circleCheck, undo2, arrowLeft, arrowRight, arrowUp, bot, brain, check, chevronDown, chevronLeft, chevronRight, copy, file,
   filePlus, fileDiff, folder, folderPlus, house, gitBranch, globe, monitor, openai, panelLeft, pencil, plug, plus, search, settings,
-  squarePen, squareTerminal, star, triangleAlert, wrench, zap, maximize2, minimize2, gripVertical, trash2, messageCircle,
+  squarePen, squareTerminal, star, triangleAlert, wrench, zap, maximize2, minimize2, gripVertical, trash2, messageCircle, messageCirclePlus,
   panelRight, folderTree, eye, eyeClosed, bookOpen, download, code, minus, externalLink, folderOpen, copyPlus, clipboardCopy, save, arrowDown, listFilter,
-  gitCompare, cloudUpload, smartphone, qrCode, cloud, gitCommitHorizontal, tag, gitBranchPlus,
+  gitCompare, cloudUpload, smartphone, qrCode, cloud, gitCommitHorizontal, tag, gitBranchPlus, wrapText,
 };
 
 export type IconName = keyof typeof ICONS;

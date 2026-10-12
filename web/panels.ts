@@ -16,10 +16,10 @@ import { changesStore, changesView, lineCounts, SCOPES, type ChangesStore } from
 import { graphView } from "./graph";
 import { changesSource, commitSource, reviewView } from "./review";
 import { baseSpec, changeCount, hasBase, showChangesSpec, showsChanges } from "./gitdiff";
-import { $, el, picturesIn, picturesPending } from "./dom";
+import { $, el, miniSpinner, picturesIn, picturesPending } from "./dom";
 import { fileGlyph, iconKey, loadIcons } from "./fileicons";
 import { icon, type IconName } from "./icons";
-import { displayCombo } from "./keymap";
+import { displayCombo, recentWalk, usedNow } from "./keymap";
 import { csvView, dropCsv, sheetView } from "./csvview";
 import { diagrams } from "./diagrams";
 import { renderLatex } from "./latex";
@@ -29,12 +29,13 @@ import { dropNotebook, notebookDirty, notebookSaved, notebookText, notebookView 
 import { dropPdf, pdfBar, pdfView } from "./pdfview";
 import { canSavePdf, savePdf } from "./printpdf";
 import { onPrefs, prefs, setPrefs, type ChangesScope, type ShortcutId } from "./prefs";
-import { call, on, store, tildePath, workFolder } from "./store";
+import { actions, call, net, on, store, tildePath, workFolder } from "./store";
 import { reducedMotion, RESIZE_MS } from "./motion";
 import { contextMenu as openContextMenu, menuPoint, toggleSwitch, type MenuEntry, type Popover } from "./popover";
 import { dialog, select as selectMenu } from "./widgets";
 import { onTheme } from "./theme";
-import { dropPage, focusAddress, focusPage, forgetPages, goBackPage, goForwardPage, holdsPages, isBrowserTab, makePage, mountBrowser, newPage, pageGlyph, pageLabel, pageTargets, pageUrl, reloadPage, showPage, showsPage, tabOfTarget, targetOf } from "./browser";
+import { dropPage, focusAddress, focusPage, forgetPages, goBackPage, goForwardPage, holdsPages, isBrowserTab, makePage, mountBrowser, newPage, openWebLink, pageGlyph, pageLabel, pageTargets, pageUrl, reloadPage, showPage, showsPage, tabOfTarget, targetOf } from "./browser";
+import { dropSideChat, focusSideChat, isSideTab, mountSideChats, prepareSideChat, showSideChat, SIDE_TAB, sideChat, sideOf } from "./sidechat";
 
 // Zeron's settings.rs widths.
 const FILES_DEFAULT = 286;
@@ -52,16 +53,20 @@ const SUGGEST_MAX = 50;
 
 // ---------------- persisted state ----------------
 
-/** `preview`: the tab a single click opened, replaced by the next one until it's kept (VS Code's preview editor). */
-type SessionPanels = { files: boolean; surfaces: boolean; tabs: string[]; active: string | null; preview?: string | null };
+/** `preview`: the tab a single click opened, replaced by the next one until it's kept (VS Code's preview editor).
+ *  `seen`: the tabs most recently shown, newest first (the order Mod+Tab goes through them). */
+type SessionPanels = { files: boolean; surfaces: boolean; tabs: string[]; active: string | null; preview?: string | null; seen?: string[] };
 /** `recent`: each folder's files most recently shown, newest first (Go to file lists them before anything's typed). */
 /** `view`: what the sidebar shows, the folder's files or its git changes. `changedOnly`: the tree shows only what
  *  changed (in the scope picked), for reviewing. */
-type Saved = { filesW: number; paneW: number; showAll: boolean; sessions: Record<string, SessionPanels>; expanded: Record<string, string[]>; recent: Record<string, string[]>; view?: SidebarView; changedOnly?: boolean };
+/** `owners`: pages held for a session other than the one whose panel shows them (a side chat's, in its parent's). */
+type Saved = { filesW: number; paneW: number; showAll: boolean; sessions: Record<string, SessionPanels>; expanded: Record<string, string[]>; recent: Record<string, string[]>; view?: SidebarView; changedOnly?: boolean; owners?: Record<string, string> };
 type SidebarView = "files" | "changes";
 const saved: Saved = { filesW: FILES_DEFAULT, paneW: PANE_DEFAULT, showAll: false, sessions: {}, expanded: {}, recent: {}, ...JSON.parse(localStorage.getItem("bismuth.panels") ?? "{}") };
 const nothingOpen = (s: SessionPanels | undefined) => !s || (!s.files && !s.surfaces && !s.tabs.length);
 function persist() {
+  // A side chat's frame (sidechat.ts) shows no panels: the window around it keeps them.
+  if (sideChat) return;
   // Sessions with nothing open aren't worth keeping.
   for (const [id, s] of Object.entries(saved.sessions)) if (nothingOpen(s)) delete saved.sessions[id];
   localStorage.setItem("bismuth.panels", JSON.stringify(saved));
@@ -709,7 +714,7 @@ let pendingAt: { key: string; at: At; focus: boolean } | null = null;
 export function openFile(path: string, { preview = false, at, focus = false }: OpenOptions = {}) {
   if (path === REVIEW) return openReview();
   if (path.startsWith(COMMIT_TAB)) return openCommit(path.slice(COMMIT_TAB.length), !preview);
-  if (isBrowserTab(path)) return openTab(path, focus);
+  if (isBrowserTab(path) || isSideTab(path)) return openTab(path, focus);
   const s = session();
   const r = root();
   if (!s || !r) return;
@@ -761,6 +766,7 @@ function activate(path: string, focus = false) {
   if (path === REVIEW) return void (review.reread(), renderPane(), changesData.refresh());
   if (path.startsWith(COMMIT_TAB)) return void (renderPane(), graph.select(path.slice(COMMIT_TAB.length)));
   if (isBrowserTab(path)) return void (persist(), renderPane(), focus && focusPage());
+  if (isSideTab(path)) return void (persist(), renderPane(), focus && focusSideChat(path));
   remember(r, path);
   if (focus) pendingAt = { key: docKey(r, path), at: { line: -1, character: 0 }, focus };
   void loadFile(r, path, true);
@@ -812,11 +818,16 @@ function shut(paths: string[], forget = false) {
   for (const p of paths) {
     const i = s.tabs.indexOf(p);
     if (i < 0) continue;
-    if (!forget) closed.push({ path: p, at: i });
+    // A side chat with nothing of its own yet is gone with its tab (it's archived): there's nothing to bring back.
+    const blank = isSideTab(p) && unsent(sideOf(p));
+    if (!forget && !blank) closed.push({ path: p, at: i });
     s.tabs.splice(i, 1);
     if (s.preview === p) s.preview = null;
-    if (isBrowserTab(p)) dropPage(p);
-    else dropDoc(r, p);
+    if (isBrowserTab(p)) dropPage(p), delete saved.owners?.[p];
+    else if (isSideTab(p)) {
+      dropSideChat(p);
+      if (blank && !forget) net.send({ type: "archive", threadId: sideOf(p) });
+    } else dropDoc(r, p);
   }
   closedTabs.set(id, closed.slice(-REOPEN_MAX));
   if (s.active && !s.tabs.includes(s.active)) s.active = s.tabs[Math.min(at, s.tabs.length - 1)] ?? null;
@@ -831,12 +842,32 @@ function shut(paths: string[], forget = false) {
 
 const closeTab = (path: string) => closeTabs([path]);
 
-/** Mod+Tab inside the host steps through its tabs (Zeron's cycle_navigation). True when it did. */
+const walk = recentWalk(() => {
+  const s = session();
+  if (!s?.surfaces || !s.active) return;
+  noteSeen(s);
+  if (isBrowserTab(s.active) && pane.contains(document.activeElement)) focusPage();
+  else if (isSideTab(s.active) && pane.contains(document.activeElement)) focusSideChat(s.active);
+});
+
+/** The shown tab the newest of its session's recently shown (not while Mod+Tab passes through it). */
+function noteSeen(s: SessionPanels) {
+  if (walk.walking() || !s.active || s.seen?.[0] === s.active) return;
+  s.seen = usedNow(s.seen ?? [], s.active).filter((t) => s.tabs.includes(t));
+  persist();
+}
+
+/** Mod+Tab inside the host steps through its tabs (Zeron's cycle_navigation), most recently shown first. True when it did. */
 export function cycleTabs(step: 1 | -1): boolean {
   const s = session();
   if (!s?.surfaces || !pane.contains(document.activeElement) || s.tabs.length < 2) return false;
-  const at = s.active ? s.tabs.indexOf(s.active) : -1;
-  activate(s.tabs[(at + step + s.tabs.length) % s.tabs.length], !!live && live.view.hasFocus);
+  // Tabs never shown (opened behind) come last, in the bar's order.
+  const next = walk.next(s.active, () => [...(s.seen ?? []), ...s.tabs], step, (t) => s.tabs.includes(t));
+  if (!next) return false;
+  const editing = !!live && live.view.hasFocus && !isBrowserTab(next);
+  activate(next, editing);
+  // Focus stays in the host but out of a page, where letting go of the modifier would go unseen: the page has it after.
+  if (!editing) paneInner.focus({ preventScroll: true });
   return true;
 }
 
@@ -876,7 +907,7 @@ function openTab(path: string, focus = false) {
   persist();
   if (!s.surfaces) setPane(true);
   renderPane();
-  if (focus) focusPage();
+  if (focus) isSideTab(path) ? focusSideChat(path) : focusPage();
 }
 
 /** A new browser tab (Mod+T, a link, a page's link to a new tab): beside `from`'s tab or the shown one, at `url`, or
@@ -900,8 +931,8 @@ export function openBrowser(url = "", from: string | null = null, background = f
   return tab;
 }
 
-/** The session whose panel holds a tab. */
-const ownerOf = (tab: string) => Object.entries(saved.sessions).find(([, s]) => s.tabs.includes(tab))?.[0] ?? null;
+/** The session a tab's page is for: the one whose panel holds it, or the side chat it opened for. */
+const ownerOf = (tab: string) => saved.owners?.[tab] ?? Object.entries(saved.sessions).find(([, s]) => s.tabs.includes(tab))?.[0] ?? null;
 
 /** Which session holds each page, all of them, told to the core (a window that holds pages: the desktop's), so each
  *  session's agent sees its own (core/browser.ts). On connecting, and when pages change sessions. */
@@ -915,12 +946,14 @@ export function reportOwners() {
 export async function agentBrowser(msg: Extract<ServerMessage, { type: "browser" }>) {
   const done = (answer: { targetId?: string; error?: string }) => void call("browser.done", { id: msg.id, ...answer }).catch(() => {});
   if (!holdsPages()) return done({ error: "Pages open in bismuth's desktop app" });
+  // A side chat's pages show in its parent's panel (it has none of its own), still its own.
+  const panel = store.summaries.get(msg.session)?.parent ?? msg.session;
   try {
     if (msg.op === "open") {
       let tab: string;
-      if (panelsKey() === msg.session) tab = openBrowser(msg.url)!;
+      if (panelsKey() === panel) tab = openBrowser(msg.url)!;
       else {
-        const s = (saved.sessions[msg.session] ??= { files: false, surfaces: false, tabs: [], active: null });
+        const s = (saved.sessions[panel] ??= { files: false, surfaces: false, tabs: [], active: null });
         tab = newPage(msg.url);
         const at = s.active ? s.tabs.indexOf(s.active) : -1;
         s.tabs.splice(at < 0 ? s.tabs.length : at + 1, 0, tab);
@@ -929,22 +962,24 @@ export async function agentBrowser(msg: Extract<ServerMessage, { type: "browser"
         persist();
         makePage(tab);
       }
+      if (panel !== msg.session) (saved.owners ??= {})[tab] = msg.session, persist();
       return done({ targetId: await targetOf(tab) });
     }
     const tab = tabOfTarget(msg.targetId);
     if (!tab || ownerOf(tab) !== msg.session) return done({ error: "That page isn't open in this session" });
     if (msg.op === "close") closeAnywhere(tab);
-    else if (panelsKey() === msg.session) openTab(tab);
-    else (saved.sessions[msg.session].active = tab), persist();
+    else if (panelsKey() === panel) openTab(tab);
+    else (saved.sessions[panel].active = tab), persist();
     done({});
   } catch (err: any) {
     done({ error: String(err?.message ?? err) });
   }
 }
 
-/** A tab closed in whichever session holds it (the one shown as a click on its ×). */
-function closeAnywhere(tab: string) {
-  if (session()?.tabs.includes(tab)) return closeTab(tab);
+/** A tab closed in whichever session holds it (the one shown as a click on its ×). `gone`: what it showed is gone
+ *  already (a side chat archived), so there's nothing to ask, keep or bring back. */
+function closeAnywhere(tab: string, gone = false) {
+  if (session()?.tabs.includes(tab)) return gone ? shut([tab], true) : closeTab(tab);
   for (const s of Object.values(saved.sessions)) {
     const i = s.tabs.indexOf(tab);
     if (i < 0) continue;
@@ -953,8 +988,95 @@ function closeAnywhere(tab: string) {
     // Its last tab gone, the host is put away, as when it closes in the session shown.
     if (!s.tabs.length) s.surfaces = false;
   }
-  dropPage(tab);
+  if (isSideTab(tab)) dropSideChat(tab);
+  else dropPage(tab), delete saved.owners?.[tab];
   persist();
+}
+
+// ---------------- side chats ----------------
+
+/** A side chat with no turn of its own yet: the core titles one by its first prompt (unknown: not listed, which a
+ *  fork with nothing of its own may not be). */
+const unsent = (id: string) => (store.summaries.get(id)?.title ?? UNTITLED) === UNTITLED;
+const UNTITLED = "New thread";
+
+let forking = false;
+/** A side chat off the open session (sidechat.ts): its context through its last finished turn, in a tab beside the
+ *  shown one. */
+export async function newSideChat() {
+  const t = store.thread;
+  if (!t || forking) return void (!t && flash("Open a session to branch a side chat off it"));
+  forking = true;
+  try {
+    const child = await call("threads.fork", { id: t.id });
+    const tab = SIDE_TAB + child.id;
+    // The panel opens on the conversation already there (a spare frame takes it at once), not on an empty frame.
+    await prepareSideChat(tab, 500);
+    if (panelsKey() === t.id) return openTab(tab, true);
+    // Another session shown by now: the tab waits in the one it came from.
+    const s = (saved.sessions[t.id] ??= { files: false, surfaces: false, tabs: [], active: null });
+    s.tabs.splice(s.active ? s.tabs.indexOf(s.active) + 1 : s.tabs.length, 0, tab);
+    s.active = tab;
+    s.surfaces = true;
+    persist();
+  } catch (err: any) {
+    flash(String(err?.message ?? err));
+  } finally {
+    forking = false;
+  }
+}
+
+/** A side chat moved to the sidebar: a session of its own, opened in the chat. */
+function promoteSideChat(tab: string) {
+  const id = sideOf(tab);
+  void call("threads.promote", { id })
+    .then(() => {
+      shut([tab], true);
+      actions.open(id);
+    })
+    .catch((err) => flash(String(err?.message ?? err)));
+}
+
+/** A side chat brought up from elsewhere (its notification): its session opened, its tab shown. */
+export function revealSideChat(parent: string, id: string) {
+  const tab = SIDE_TAB + id;
+  if (panelsKey() === parent) return openTab(tab, true);
+  const s = (saved.sessions[parent] ??= { files: false, surfaces: false, tabs: [], active: null });
+  if (!s.tabs.includes(tab)) s.tabs.push(tab);
+  s.active = tab;
+  s.surfaces = true;
+  persist();
+  actions.open(parent);
+}
+
+/** A side chat archived (its session was): its tab goes, wherever it is. */
+export function sideChatGone(id: string) {
+  closeAnywhere(SIDE_TAB + id, true);
+}
+
+/** A side chat's title or state changed: its tab follows. */
+export function sideChatChanged(id: string) {
+  if (session()?.tabs.includes(SIDE_TAB + id)) renderBar();
+}
+
+/** The open session's side chats, the most recently active first. */
+const sessionSideChats = () => [...store.summaries.values()].filter((t) => t.parent && t.parent === store.thread?.id).sort((a, b) => b.updatedAt - a.updatedAt);
+
+/** The open session's side chats to go back to (the phone's ··· menu). */
+export const sideChatsToOpen = () => sessionSideChats().map((t) => ({ label: sideLabel(SIDE_TAB + t.id), open: () => openTab(SIDE_TAB + t.id, true) }));
+
+const sideLabel = (tab: string) => {
+  const t = store.summaries.get(sideOf(tab));
+  return !t || t.title === UNTITLED ? "Side chat" : t.title;
+};
+
+/** A side chat's glyph: the activity spinner while it works. */
+function sideGlyph(tab: string): HTMLElement {
+  const t = store.summaries.get(sideOf(tab));
+  if (t?.status !== "running" && t?.status !== "waiting") return icon("messageCircle", undefined, "rp-tab-glyph");
+  const box = el("span", "rp-tab-glyph bw-tab-spin");
+  box.append(miniSpinner());
+  return box;
 }
 
 /** A page shows in the host (its keys are the page's: back and forward go through its history). */
@@ -1107,6 +1229,8 @@ let goToFile = () => {};
 
 let app: HTMLElement;
 let pane: HTMLElement;
+/** What has focus in the host when nothing in it does (a click on its chrome, Mod+Tab between tabs). */
+let paneInner: HTMLElement;
 let explorer: HTMLElement;
 let toggles: HTMLElement;
 
@@ -1224,6 +1348,7 @@ function renderPane() {
   // Left open with no tabs (from before tabs were opened this way): a new tab in it.
   if (!s.tabs.length) (s.tabs = [newPage()]), persist();
   if (!s.active || !s.tabs.includes(s.active)) s.active = s.tabs[0];
+  noteSeen(s);
   renderBar();
   renderBody();
   syncWatch();
@@ -1309,11 +1434,12 @@ function renderBar() {
     const isReview = path === REVIEW;
     const commit = path.startsWith(COMMIT_TAB) ? path.slice(COMMIT_TAB.length) : null;
     const web = isBrowserTab(path);
+    const side = isSideTab(path);
     const subject = commit ? (reviewFor(r, path) as CommitView).subject() : null;
-    const label = isReview ? "Changes" : commit ? (subject ?? commit.slice(0, 7)) : web ? pageLabel(path) : baseName(path);
-    tab.title = isReview ? "Changes" : commit ? `${subject ?? "Commit"} · ${commit.slice(0, 7)}` : web ? pageUrl(path) || "New tab" : isAbs(path) ? tildePath(path) : path;
+    const label = isReview ? "Changes" : commit ? (subject ?? commit.slice(0, 7)) : web ? pageLabel(path) : side ? sideLabel(path) : baseName(path);
+    tab.title = isReview ? "Changes" : commit ? `${subject ?? "Commit"} · ${commit.slice(0, 7)}` : web ? pageUrl(path) || "New tab" : side ? (unsent(sideOf(path)) ? "Side chat" : `Side chat · ${sideLabel(path)}`) : isAbs(path) ? tildePath(path) : path;
     const lead = el("span", "rp-tab-lead");
-    const glyph = isReview ? icon("gitCompare", undefined, "rp-tab-glyph") : commit ? icon("gitCommitHorizontal", undefined, "rp-tab-glyph") : web ? pageGlyph(path) : fileGlyph(path);
+    const glyph = isReview ? icon("gitCompare", undefined, "rp-tab-glyph") : commit ? icon("gitCommitHorizontal", undefined, "rp-tab-glyph") : web ? pageGlyph(path) : side ? sideGlyph(path) : fileGlyph(path);
     const close = el("button", "rp-tab-close");
     close.title = hint("Close", "closeFile");
     close.append(icon("x"));
@@ -1414,6 +1540,8 @@ function renderBody() {
     ? "none"
     : isBrowserTab(path)
       ? "browser"
+    : isSideTab(path)
+      ? "side"
     : isReviewTab(path)
       ? "review"
     : !d || d.loading
@@ -1434,8 +1562,8 @@ function renderBody() {
     retire();
     // A view kept across redraws (a notebook's) keeps the focus it had: being moved into the new frame drops it.
     const focused = document.activeElement;
-    // A page isn't in the slot: it stays in the browser's layer over it (browser.ts), shown below.
-    contentSlot.replaceChildren(...(!path ? [] : isBrowserTab(path) ? [] : isReviewTab(path) ? [reviewFor(r, path).view.el] : [viewer(r, path, key, d)]));
+    // A page isn't in the slot: it stays in the browser's layer over it (browser.ts), shown below; a side chat in its own.
+    contentSlot.replaceChildren(...(!path || isBrowserTab(path) || isSideTab(path) ? [] : isReviewTab(path) ? [reviewFor(r, path).view.el] : [viewer(r, path, key, d)]));
     if (path && isReviewTab(path)) reviewFor(r, path).view.shown();
     if (focused instanceof HTMLElement && focused !== document.activeElement && contentSlot.contains(focused)) focused.focus({ preventScroll: true });
     const scroll = contentSlot.querySelector<HTMLElement>(".fv-scroll");
@@ -1443,6 +1571,7 @@ function renderBody() {
     if (scroll && spot) restoreSpot(scroll, spot);
   }
   showPage(path && isBrowserTab(path) ? path : null);
+  showSideChat(path && isSideTab(path) ? path : null);
   applyPendingAt();
 }
 
@@ -1490,7 +1619,21 @@ function tools(): HTMLElement {
   };
   tool("gitCompare", "Changes", "showReview", () => openReview());
   tool("files", "Files", "quickOpen", goToFile);
+  if (store.thread) tool("messageCirclePlus", "Side chat", "sideChat", () => void newSideChat());
   box.append(el("div", "rp-tools-head", "Tools"), grid);
+  // The session's side chats whose tabs were closed, to open again.
+  const s = session();
+  const closed = sessionSideChats().filter((t) => !s?.tabs.includes(SIDE_TAB + t.id));
+  if (closed.length) {
+    const list = el("div", "rp-tools-grid");
+    for (const t of closed) {
+      const b = el("button", "rp-tool");
+      b.append(icon("messageCircle"), el("span", "grow", sideLabel(SIDE_TAB + t.id)));
+      b.onclick = () => openTab(SIDE_TAB + t.id, true);
+      list.append(b);
+    }
+    box.append(el("div", "rp-tools-head", "Side chats"), list);
+  }
   return box;
 }
 
@@ -1785,7 +1928,7 @@ export const REVIEW = "bismuth:changes";
 const COMMIT_TAB = "bismuth:commit:";
 const isReviewTab = (path: string) => path === REVIEW || path.startsWith(COMMIT_TAB);
 /** A tab that isn't a file: a review, or a web page. */
-const isSurfaceTab = (path: string) => isReviewTab(path) || isBrowserTab(path);
+const isSurfaceTab = (path: string) => isReviewTab(path) || isBrowserTab(path) || isSideTab(path);
 let graph: ReturnType<typeof graphView>;
 type CommitView = { view: ReturnType<typeof reviewView>; subject: () => string | null };
 /** The commits' reviews open, by their tab's doc key: read once each, let go of with the tab. */
@@ -2785,6 +2928,10 @@ function tabMenu(e: MouseEvent, path: string) {
     items.push("-", { icon: "clipboardCopy", label: "Copy commit hash", run: () => copy(path.slice(COMMIT_TAB.length)) });
     return contextMenu({ x: e.clientX, y: e.clientY }, items);
   }
+  if (isSideTab(path)) {
+    items.push("-", { icon: "panelLeft", label: "Move to sessions", run: () => promoteSideChat(path) });
+    return contextMenu({ x: e.clientX, y: e.clientY }, items);
+  }
   items.push("-", { icon: "clipboardCopy", label: "Copy path", run: () => copy(absolute(r, path)) });
   if (!isAbs(path)) items.push({ icon: "folderTree", label: "Reveal in files panel", run: () => revealInTree(path) });
   items.push({ icon: "folderOpen", label: "Reveal in file manager", run: () => void call("files.reveal", { root: r, path }).catch((err) => flash(String(err?.message ?? err))) });
@@ -2812,6 +2959,7 @@ function moved(r: string, from: string, to: string) {
   t.expanded = new Set([...t.expanded].map(map));
   keepExpanded(r, t);
   if (!s) return;
+  if (s.seen) s.seen = s.seen.map(map);
   for (const [i, p] of s.tabs.entries()) {
     const next = map(p);
     if (next === p) continue;
@@ -3140,7 +3288,7 @@ export function initPanels(refocus: () => void, findFile: () => void) {
   app = $("app");
 
   pane = el("aside", "rp");
-  const paneInner = el("div", "rp-inner");
+  paneInner = el("div", "rp-inner");
   paneBar = el("div", "rp-bar");
   paneBody = el("div", "rp-body");
   noticeSlot = el("div", "fv-notice-slot");
@@ -3152,6 +3300,12 @@ export function initPanels(refocus: () => void, findFile: () => void) {
     open: (url, from, background) => openBrowser(url, from, background),
     target: (target, tab) => void call("browser.owners", { owners: [[target, tab && ownerOf(tab)]] }).catch(() => {}),
     tools,
+  });
+  // A side chat's frame opens files and web links here, beside it.
+  mountSideChats(paneBody, {
+    openCited,
+    openWebLink,
+    key: (k) => dispatchEvent(new KeyboardEvent("keydown", { ...k, bubbles: true, cancelable: true })),
   });
   // Pages whose tabs closed in an earlier run (only open tabs can be reopened) are let go of.
   forgetPages(Object.values(saved.sessions).flatMap((s) => s.tabs));

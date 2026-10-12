@@ -4,10 +4,11 @@
 import { attachmentName, attachmentUrl, clipboardHtml, openLightbox, parseUserMessage, type SentImage } from "./attachments";
 import { fileChip, labelFile, mentionChip } from "./editor";
 import type { FileChange, Item, Thread, Turn } from "../shared/model";
-import { $, basename, el, elapsed, firstLine, gradientSpinner, timestamp } from "./dom";
+import { $, basename, el, elapsed, firstLine, miniSpinner, timestamp } from "./dom";
 import { fileGlyph } from "./fileicons";
 import { icon, type IconName } from "./icons";
 import { copyText, renderMarkdown } from "./markdown";
+import { rollText } from "./motion";
 import { openCitedPath } from "./refs";
 import { on, promptCount, promptsLike, store } from "./store";
 import { isViewTool, viewFrame, viewOf } from "./views";
@@ -19,6 +20,7 @@ type Row =
   | { kind: "md"; key: string; text: string; done: boolean; ts: number | null; copy: string | null; gap: number }
   | { kind: "group"; key: string; items: ToolItem[]; live: boolean; gap: number }
   | { kind: "notice"; key: string; text: string; gap: number }
+  | { kind: "fork"; key: string; title: string; gap: number }
   | { kind: "question"; key: string; item: QuestionItem; waiting: boolean; gap: number }
   | { kind: "view"; key: string; id: string; title: string; viewport: number | null; gap: number }
   | { kind: "error"; key: string; label: string; text: string; warning: boolean; gap: number };
@@ -61,7 +63,7 @@ function buildRows(thread: Thread): Row[] {
   const rows: Row[] = [];
   type Draft = Row extends infer R ? (R extends Row ? Omit<R, "gap"> : never) : never;
   const gapFor = (row: Draft, prev: Row | undefined, turnStart: boolean) =>
-    turnStart ? 16 : row.kind === "md" && prev?.kind === "md" ? 12 : [row.kind, prev?.kind].some((k) => k === "group" || k === "view") ? 12 : 8;
+    row.kind === "fork" || turnStart ? 16 : row.kind === "md" && prev?.kind === "md" ? 12 : [row.kind, prev?.kind].some((k) => k === "group" || k === "view") ? 12 : 8;
   const push = (row: Draft, turnStart = false) => rows.push({ ...row, gap: gapFor(row, rows.at(-1), turnStart) } as Row);
   const pendingRow = (key: string, text: string, at: number) => {
     push({ kind: "user", key, item: { id: key, kind: "user", text, images: 0 }, ts: at }, true);
@@ -84,7 +86,11 @@ function buildRows(thread: Thread): Row[] {
     if (turn) heads.set(turn.id, s);
   }
 
-  thread.turns.forEach((turn) => {
+  // A copy of another session's context (a side chat): the seam after the turns that came with it (Zeron's fork marker).
+  const forked = thread.forked;
+  const seam = (n: number) => forked && n === forked.turns && push({ kind: "fork", key: `fork:${thread.id}`, title: store.summaries.get(forked.from)?.title ?? forked.title });
+  thread.turns.forEach((turn, n) => {
+    seam(n);
     const head = heads.get(turn.id);
     if (head) pendingRow(`sent:${head.id}`, head.text, head.at);
     const live = turn.status === "inProgress";
@@ -141,6 +147,7 @@ function buildRows(thread: Thread): Row[] {
       }
     }
   });
+  seam(thread.turns.length);
   // The prompt just sent shows at once, ahead of the harness's echo (Codex takes a second or more on a new
   // session's first turn).
   const echo = store.echo;
@@ -182,6 +189,8 @@ function signature(row: Row): string {
           .join("|");
     case "notice":
       return `n${row.text}${row.gap}`;
+    case "fork":
+      return `f${row.title}${row.gap}`;
     case "question":
       return `q${JSON.stringify(row.item.answers)}:${row.waiting}:${row.gap}`;
     case "view":
@@ -566,6 +575,12 @@ function buildRow(row: Row): HTMLElement {
     case "notice":
       inner.append(el("div", "fork-marker", row.text));
       break;
+    case "fork": {
+      const seam = el("div", "fork-seam");
+      seam.append(el("div", "fork-marker", "Forked from"), el("div", "fork-from", row.title));
+      inner.append(seam);
+      break;
+    }
     case "question":
       inner.append(questionChip(row));
       break;
@@ -582,7 +597,10 @@ function buildRow(row: Row): HTMLElement {
 
 // ---------------- working trailer ----------------
 
-const FLAVOUR = ["Zeroning", "Thinking", "Pondering", "Scheming", "Brewing", "Weaving", "Tinkering", "Musing", "Composing", "Sifting", "Untangling", "Distilling", "Sketching", "Plotting", "Riffing", "Combobulating", "Percolating", "Marinating", "Noodling", "Puzzling", "Conjuring"];
+const FLAVOUR = [
+  "Six-sevening", "Cooking", "Yapping", "Rizzing", "Mewing", "Glazing", "Mogging", "Vibing", "Yeeting", "Simping", "Slaying", "Grinding", "Manifesting",
+  "Bamboozling", "Kerfuffling", "Galumphing", "Skedaddling", "Finagling", "Wrangling", "Faffing", "Waffling", "Bumbling", "Moseying", "Zhuzhing", "Bedazzling", "Schmoozing", "Frolicking", "Shimmying", "Booping", "Vrooming",
+];
 const seen = new Map<string, number>(); // turn id -> first time we saw it running, when the core has no start time
 
 function activeTurn(): Turn | null {
@@ -606,8 +624,9 @@ function renderTrailer() {
   for (const ch of thread.id) seed = (seed * 31 + ch.charCodeAt(0)) >>> 0;
   const word = FLAVOUR[(seed + Math.floor(secs / 7)) % FLAVOUR.length];
   box.hidden = false;
-  if (!box.firstChild) box.append(gradientSpinner(), el("span", "word"), el("span", "elapsed"));
-  box.querySelector(".word")!.textContent = `${word}…`;
+  if (!box.firstChild) box.append(miniSpinner(), el("span", "word"), el("span", "elapsed"));
+  // A new flavour word rolls in, as the model picker's label does.
+  rollText(box.querySelector<HTMLElement>(".word")!, `${word}…`);
   box.querySelector(".elapsed")!.textContent = elapsed(secs);
 }
 

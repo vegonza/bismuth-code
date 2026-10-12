@@ -18,7 +18,15 @@ export type ThreadSummary = {
   settledAt?: number | null;
   // Set by the core: when the run in flight began (its turn's start), null while idle. The sidebar's "Working 4m".
   runningSince?: number | null;
+  // Set by the core for a side chat: the session it branched from (a native fork of its context), whose right pane
+  // holds it as a tab. Null once moved to the sidebar, and for every other session.
+  parent?: string | null;
+  // Set by the core for a session branched off another (a side chat, then too once moved to the sidebar): the one
+  // its context was copied from, by id and by the title it had then, and how many of its first turns came with it.
+  forked?: Forked | null;
 };
+
+export type Forked = { from: string; title: string; turns: number };
 
 /** A folder sessions run in (Zeron's Space, on this one device). */
 export type Project = {
@@ -270,6 +278,11 @@ export type RpcMethods = {
   "projects.settleAll": { params: { id: string }; result: null };
   // Settle a session (out of the active list) or bring it back.
   "threads.settle": { params: { id: string; settled: boolean }; result: null };
+  // A side chat off a session: a new one in its harness with the same context (a native fork, so the prompt cache
+  // carries over) through its last finished turn. A turn still running isn't part of it.
+  "threads.fork": { params: { id: string }; result: ThreadSummary };
+  // A side chat becomes a session of its own, in the sidebar.
+  "threads.promote": { params: { id: string }; result: null };
   "app.restart": { params: { mode: RestartMode }; result: RestartResult };
   "autoCompact.get": { params: {}; result: AutoCompactSnapshot };
   "terminals.open": { params: { projectId: string; cols: number; rows: number }; result: TerminalInfo };

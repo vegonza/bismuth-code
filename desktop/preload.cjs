@@ -20,5 +20,8 @@ contextBridge.exposeInMainWorld("bismuthDesktop", {
     target: (id) => ipcRenderer.invoke("browser-target", id),
     /** A page an agent holds kept rendering though it isn't shown (by its webContents id), or let sleep again. */
     awake: (id, on) => ipcRenderer.send("browser-awake", id, on),
+    /** A page (by its webContents id) drawn as a viewport (its size and scale, and as a phone what it tells sites it
+     *  is), or as its frame is (null); resolves to whether what it tells sites changed (it's loaded again as that). */
+    viewport: (id, viewport) => ipcRenderer.invoke("browser-viewport", id, viewport),
   },
 });

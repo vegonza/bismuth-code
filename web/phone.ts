@@ -9,14 +9,19 @@ import { icon, type IconName } from "./icons";
 import { openPopover, type Popover } from "./popover";
 import icon256 from "../assets/icon-256.png";
 import icon512 from "../assets/icon.png";
+import { sideChat } from "./sidechat";
 
-const narrow = matchMedia("(max-width: 640px)");
+// A side chat's frame (sidechat.ts) is as narrow as its panel: the window around it says whether this is a phone.
+const narrow = (sideChat ? window.parent : window).matchMedia("(max-width: 640px)");
 
-export const isPhone = () => narrow.matches;
+// The frame is the chat column alone, without the phone's screens (initPhoneFrame).
+export const isPhone = () => narrow.matches && !sideChat;
 export const onPhoneChange = (fn: () => void) => narrow.addEventListener("change", fn);
 
 /** What the app does for the phone's controls (app.ts wires them; this module stays free of the screens' modules). */
 export type PhoneActions = {
+  /** The palette's search over commands and sessions (the desktop's Mod+K). */
+  search: () => void;
   newSession: () => void;
   settings: () => void;
   files: () => void;
@@ -26,6 +31,9 @@ export type PhoneActions = {
   terminal: () => void;
   /** The session's own actions (none on the new-session page). */
   session: () => { rename: () => void; settle: (() => void) | null; settled: boolean } | null;
+  /** A new side chat off the session, and its side chats to go back to, newest first (sidechat.ts). */
+  sideChat: () => void;
+  sideChats: () => { label: string; open: () => void }[];
   // Taking each screen away.
   closeSettings: () => void;
   closeFile: () => void;
@@ -84,7 +92,7 @@ function goHome() {
 }
 
 /** The screens stacked over the list, bottom first: each is open when its desktop counterpart is. */
-const layers = (): (() => void)[] => {
+const screens = (): (() => void)[] => {
   const stack: (() => void)[] = [];
   if (!home) {
     stack.push(goHome);
@@ -94,6 +102,21 @@ const layers = (): (() => void)[] => {
   }
   if (app.classList.contains("settings-open")) stack.push(actions.closeSettings);
   return stack;
+};
+
+/** What floats over the screens (the palette, a dialog, the lightbox, a menu), less one already gliding out. Each
+ *  closes on Escape, so back is its Escape. */
+const FLOATS = ":is(body, #app, #settings) > :is(.s-scrim, .lightbox, .ctx-menu, .view-menu, .s-menu):not([class*='menu-out'])";
+
+function dismiss(float: Element) {
+  const at = float.contains(document.activeElement) ? document.activeElement! : (float.firstElementChild ?? float);
+  at.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+}
+
+/** The screens, then what floats over them on top. */
+const layers = (): (() => void)[] => {
+  const float = [...document.querySelectorAll(FLOATS)].at(-1);
+  return float ? [...screens(), () => dismiss(float)] : screens();
 };
 
 // The browser's history holds an entry per screen opened by a tap, so its back (button, gesture) takes the top one
@@ -197,6 +220,9 @@ function sessionMenu(trigger: HTMLElement) {
   card.append(menuRow("folderTree", "Files", actions.files), menuRow("gitCompare", "Changes", actions.changes), menuRow("squareTerminal", "Terminal", actions.terminal));
   const s = actions.session();
   if (s) {
+    // Side chats open over the session too, in the panel a file opens in.
+    card.append(el("div", "menu-separator"), menuRow("messageCirclePlus", "New side chat", actions.sideChat));
+    for (const c of actions.sideChats()) card.append(menuRow("messageCircle", c.label, c.open));
     card.append(el("div", "menu-separator"), menuRow("pencil", "Rename", s.rename));
     if (s.settle) card.append(menuRow(s.settled ? "rotateCcw" : "circleCheck", s.settled ? "Bring back" : "Settle", s.settle));
   }
@@ -219,13 +245,16 @@ export function initPhone(wire: PhoneActions) {
   actions = wire;
   app = $("app");
   const root = document.documentElement;
-  if (matchMedia("(hover: none) and (pointer: coarse)").matches) dropHover();
-  if (iOS) longPress();
+  initTouch();
   swipePanels();
 
-  // Home: new session and Settings at the top right (the list's view options keep their place at the left).
+  // Home: search, new session and Settings at the top right (the list's view options keep their place at the left).
   const homeBar = el("div", "ph-home-bar");
-  homeBar.append(button("", "plus", "New session", () => actions.newSession()), button("", "settings", "Settings", () => actions.settings()));
+  homeBar.append(
+    button("", "search", "Search", () => actions.search()),
+    button("", "plus", "New session", () => actions.newSession()),
+    button("", "settings", "Settings", () => actions.settings()),
+  );
   // Over the list: back at the top left, and a session's ··· at the top right.
   const backBtn = button("ph-back", "chevronLeft", "Back", back);
   const more = button("ph-more", "ellipsis", "Session actions", sessionMenu);
@@ -240,14 +269,18 @@ export function initPhone(wire: PhoneActions) {
   narrow.addEventListener("change", apply);
   apply();
   addEventListener("popstate", onPop);
-  // Screens open and close with the desktop's own state (the panels, the terminal, Settings): history follows.
+  // Screens open and close with the desktop's own state (the panels, the terminal, Settings), and floats come and go
+  // where FLOATS looks (Settings is built on first open): history follows.
+  let settings: HTMLElement | null = null;
   const watch = new MutationObserver(() => {
+    if (!settings && (settings = document.getElementById("settings"))) watch.observe(settings, { childList: true });
     syncHistory();
     paintBars();
-    app.classList.toggle("ph-top-session", !home && layers().length === 1);
+    app.classList.toggle("ph-top-session", !home && screens().length === 1);
   });
-  watch.observe(app, { attributeFilter: ["class"] });
+  watch.observe(app, { attributeFilter: ["class"], childList: true });
   watch.observe($("main"), { attributeFilter: ["class"] });
+  watch.observe(document.body, { childList: true });
   // A theme change rewrites the colours on the root.
   new MutationObserver(paintBars).observe(root, { attributeFilter: ["style", "data-appearance"] });
 
@@ -268,7 +301,20 @@ export function initPhone(wire: PhoneActions) {
   fit();
 }
 
+/** A side chat's frame on a phone: the phone's chat column (style.css) and touch, without its screens or buttons. */
+export function initPhoneFrame() {
+  const apply = () => document.documentElement.classList.toggle("phone", narrow.matches);
+  narrow.addEventListener("change", apply);
+  apply();
+  initTouch();
+}
+
 // ---------------- touch ----------------
+
+function initTouch() {
+  if (matchMedia("(hover: none) and (pointer: coarse)").matches) dropHover();
+  if (iOS) longPress();
+}
 
 /** A touch screen keeps `:hover` on whatever was tapped last, so a tapped button stays lit: without a pointer that
  *  hovers, hover styles go (each selector that needs a hover is dropped from its rule, and a rule left with none goes).
