@@ -7,6 +7,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import { devtoolsPort, guardWebviews, initBrowser, openDevtools } from "./browser.ts";
 
 const root = resolve(import.meta.dirname, "..");
 const icon = join(root, "assets", "icon.png");
@@ -22,6 +23,7 @@ app.setName("bismuth");
 
 // One app for every project: launching again (with another folder) hands it to the running window.
 if (!app.requestSingleInstanceLock({ dir })) app.exit(0);
+openDevtools();
 
 // Launched from a .desktop entry, PATH often lacks ~/.bun/bin.
 function bunPath() {
@@ -31,6 +33,8 @@ function bunPath() {
 }
 
 let server: ChildProcess | null = null;
+/** Chromium's DevTools port, for the core's browser agents use (core/browser.ts). */
+let cdpPort: number | null = null;
 let quitting = false;
 /** The port the running core serves on: a restart reuses it, so the window's origin (and its storage) stays. */
 let port = 0;
@@ -85,7 +89,7 @@ function startServer(requested: number): Promise<string> {
     const child = spawn(bunPath(), [join(root, "core", "main.ts"), ...(dir ? [dir] : [])], {
       cwd: root,
       // The launch cwd only seeds the very first project list (see core/projects.ts).
-      env: { ...process.env, PORT: String(requested), BISMUTH_DESKTOP: "1", BISMUTH_LAUNCH_CWD: process.cwd() },
+      env: { ...process.env, PORT: String(requested), BISMUTH_DESKTOP: "1", BISMUTH_LAUNCH_CWD: process.cwd(), ...(cdpPort ? { BISMUTH_CDP_PORT: String(cdpPort) } : {}) },
       stdio: ["pipe", "pipe", "inherit"],
     });
     server = child;
@@ -124,8 +128,10 @@ function createWindow(url: string) {
     icon,
     backgroundColor: "#0e0f11",
     show: false,
-    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, preload: join(root, "desktop", "preload.cjs") },
+    // webviewTag: the browser tabs' pages (desktop/browser.ts holds each one to a web page's rights).
+    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, webviewTag: true, preload: join(root, "desktop", "preload.cjs") },
   });
+  guardWebviews(w.webContents);
   // Hidden for good: with autoHideMenuBar, a lone Alt would pop Electron's default File/Edit/View bar over the UI.
   // The menu stays attached, so its accelerators (copy/paste, reload, devtools, zoom) keep working.
   w.setMenuBarVisibility(false);
@@ -191,6 +197,8 @@ app.whenReady().then(async () => {
   // Electron's default menu, less its Window menu: Ctrl+M (Minimize) on a compositor without minimizing (Hyprland)
   // left the window on screen with Chromium no longer drawing it, a frozen app; and Ctrl+W (Close) would close bismuth.
   Menu.setApplicationMenu(Menu.buildFromTemplate([{ role: "fileMenu" }, { role: "editMenu" }, { role: "viewMenu" }]));
+  initBrowser(() => win);
+  cdpPort = await devtoolsPort();
   try {
     const url = await startCore();
     createWindow(url);

@@ -21,10 +21,10 @@ export function comboFromEvent(e: KeyboardEvent): string | null {
 }
 
 /** The shell's own keys (Ctrl+W deletes a word, Ctrl+H is backspace, Ctrl+R searches history, Ctrl+P is the previous command,
- *  Ctrl+D ends the input)
+ *  Ctrl+D ends the input, Ctrl+L clears the screen, Ctrl+T swaps two characters)
  *  and the terminal's copy (Ctrl+Shift+C): whatever they're bound to, in a focused terminal they're left to it. With Cmd
  *  as mod on macOS, nothing clashes. */
-const SHELL_COMBOS = new Set(["mod-w", "mod-h", "mod-r", "mod-p", "mod-d", "mod-shift-c"]);
+const SHELL_COMBOS = new Set(["mod-w", "mod-h", "mod-r", "mod-p", "mod-d", "mod-l", "mod-t", "mod-shift-c"]);
 export const shellKeeps = (combo: string) => !MAC && SHELL_COMBOS.has(combo);
 
 /** "mod-shift-a" → "Ctrl+Shift+A". */
@@ -86,6 +86,9 @@ export const LABELS: Record<ShortcutId, string> = {
   tab9: "File tab 9",
   removeImage: "Remove last attached image",
   stopTurn: "Stop generation",
+  newBrowserTab: "New browser tab",
+  focusAddress: "Focus address bar",
+  reloadPage: "Reload page",
 };
 
 const handlers: Partial<Record<ShortcutId, () => void>> = {};

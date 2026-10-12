@@ -22,7 +22,8 @@ import { actions, call, failCalls, nav, net, on, persist, projectName, projectOf
 import { initTheme } from "./theme";
 import { closeTerminal, cycleTerminal, hideTerminal, initTerminal, newTerminal, terminalExit, terminalOutput, terminalsArrived, toggleMaximize, toggleTerminal } from "./terminal";
 import { initTranscript } from "./transcript";
-import { closeActiveFile, reopenClosedFile, collapseFolders, showSidebarView, cycleTabs, expandFolders, filesChanged, goBack, goForward, openReview, initPanels, jumpTab, renameHovered, resyncWatch, showCommit, revealActiveFile, saveActiveFile, toggleExpand, toggleFiles, toggleHiddenFiles, togglePane, togglePreview, turnSnapshot } from "./panels";
+import { focusAddress, reloadPage, setAwake } from "./browser";
+import { agentBrowser, reportOwners, browsing, openBrowser, closeActiveFile, reopenClosedFile, collapseFolders, showSidebarView, cycleTabs, expandFolders, filesChanged, goBack, goForward, openReview, initPanels, jumpTab, renameHovered, resyncWatch, showCommit, revealActiveFile, saveActiveFile, toggleExpand, toggleFiles, toggleHiddenFiles, togglePane, togglePreview, turnSnapshot } from "./panels";
 
 declare global {
   interface Window {
@@ -113,8 +114,9 @@ function onMessage(msg: ServerMessage) {
       const target = decodeURIComponent(location.hash.slice(1)) || store.thread?.id;
       if (target) (wanted = target), net.send({ type: "open", threadId: target });
       render("sidebar", "header", "composer", "transcript", "providers");
-      // A new connection (a restarted core) watches nothing for this window yet.
+      // A new connection (a restarted core) watches nothing for this window yet, nor knows its pages' sessions.
       resyncWatch();
+      reportOwners();
       $("app").classList.remove("connecting"); // the sidebar has its sessions now, not the empty "Add a project"
       if (!target) markReady();
       break;
@@ -124,6 +126,12 @@ function onMessage(msg: ServerMessage) {
       break;
     case "restartNeeded":
       restartNeeded(msg.files);
+      break;
+    case "browser":
+      void agentBrowser(msg);
+      break;
+    case "browserAwake":
+      setAwake(msg.targets);
       break;
     case "uiState":
       uiSyncRemote(msg.key, msg.value);
@@ -519,7 +527,7 @@ initComposer();
 initBackground();
 initSettings();
 initPalette();
-initPanels(() => draft.focus());
+initPanels(() => draft.focus(), () => togglePalette("files"));
 on("header", renderHeader);
 onPhoneChange(() => render("header"));
 
@@ -564,6 +572,9 @@ bindShortcut("revealFile", () => !settingsOpen() && revealActiveFile());
 for (let n = 1; n <= 9; n++) bindShortcut(`tab${n}` as `tab${1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9}`, () => !settingsOpen() && jumpTab(n));
 bindShortcut("removeImage", removeLastImage, () => !settingsOpen() && canRemoveImage());
 bindShortcut("stopTurn", stopTurn, () => !settingsOpen() && canStopTurn());
+bindShortcut("newBrowserTab", () => !settingsOpen() && openBrowser());
+bindShortcut("focusAddress", focusAddress, () => !settingsOpen() && browsing());
+bindShortcut("reloadPage", reloadPage, () => !settingsOpen() && browsing());
 bindShortcut("newSession", () => actions.newThread());
 bindShortcut("newSessionIn", () => togglePalette("projects"));
 bindShortcut("quickOpen", () => togglePalette("files"));

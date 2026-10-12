@@ -1,12 +1,13 @@
 // Settings → General: where New project's folder browser opens, and what Enter and Ctrl+Enter do with a prompt
 // while the agent is working (queue it for when the turn ends, or steer it in now), how the file explorer orders files,
-// and whether the file editor takes Vim's keys.
-import { el } from "./dom";
+// whether the file editor takes Vim's keys, and (in the desktop app) whether browser tabs are signed in as Zen is.
+import { canSync, onSyncStatus, setSync, syncStatus } from "./browser";
+import { el, timeAgo } from "./dom";
 import { displayCombo } from "./keymap";
 import { prefs, setPrefs, type FileSort, type WorkingSend } from "./prefs";
 import { refresh } from "./settings";
 import { call, tildePath } from "./store";
-import { card, errorStrip, pageColumn, pageHeader, row, section, select, toggle } from "./widgets";
+import { card, errorStrip, pageColumn, pageHeader, row, rowText, section, select, toggle } from "./widgets";
 
 /** The base folder field: saved on Enter or leaving it once the core can list it; empty means home. */
 function baseFolder(): HTMLElement[] {
@@ -99,6 +100,33 @@ function vimKeys(): HTMLElement {
   return row("Vim keys", meta, toggle(prefs.vimKeys, "Vim keys", (on) => setPrefs({ vimKeys: on })));
 }
 
+/** What the cookie sync has done, said under its switch. */
+function syncMeta(): (string | Node)[] {
+  const s = syncStatus();
+  if (!s) return [];
+  if (!s.source) return ["No Zen or Firefox profile found"];
+  if (!s.enabled) return [`Off: pages keep the sign-ins they have`];
+  const parts: (string | Node)[] = [`Copied from ${s.source} as they change`, `${s.cookies.toLocaleString()} cookies`];
+  if (s.at) parts.push(Date.now() - s.at < 60_000 ? "synced just now" : `synced ${timeAgo(s.at)} ago`);
+  if (s.error) parts.push(s.error);
+  return parts;
+}
+
+let syncRow: HTMLElement | null = null;
+onSyncStatus(() => {
+  if (!syncRow?.isConnected) return;
+  const text = syncRow.querySelector(".s-row-text");
+  const fresh = rowText(`Sign-ins from ${syncStatus()?.source ?? "Zen"}`, syncMeta());
+  if (text) text.replaceWith(fresh);
+});
+
+/** Browser tabs signed in as Zen (or Firefox) is: its cookies copied in, one way, whenever they change there. */
+function zenSync(): HTMLElement {
+  const s = syncStatus();
+  syncRow = row(`Sign-ins from ${s?.source ?? "Zen"}`, syncMeta(), toggle(s?.enabled ?? true, "Sync sign-ins", (on) => setSync(on)));
+  return syncRow;
+}
+
 export function renderGeneral(): HTMLElement {
   const page = pageColumn();
   const folders = section("Projects", card(...baseFolder()));
@@ -106,5 +134,6 @@ export function renderGeneral(): HTMLElement {
   const sending = section("While the agent works", card(sendKey("enter"), sendKey("mod-enter")));
   const files = section("Files", card(fileSort(), vimKeys()));
   page.append(pageHeader("General"), folders, sending, files);
+  if (canSync()) page.append(section("Browser", card(zenSync())));
   return page;
 }

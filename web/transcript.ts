@@ -10,7 +10,7 @@ import { icon, type IconName } from "./icons";
 import { copyText, renderMarkdown } from "./markdown";
 import { openCitedPath } from "./refs";
 import { on, promptCount, promptsLike, store } from "./store";
-import { VIEW_TOOL, viewFrame, viewOf } from "./views";
+import { isViewTool, viewFrame, viewOf } from "./views";
 
 type ToolItem = Exclude<Item, { kind: "user" | "assistant" | "plan" | "notice" | "question" }>;
 type QuestionItem = Extract<Item, { kind: "question" }>;
@@ -349,7 +349,7 @@ function toolView(item: ToolItem): ToolView {
     }
     case "tool": {
       const agent = item.name.startsWith("subagent ·");
-      const view = item.name === VIEW_TOOL;
+      const view = isViewTool(item.name);
       const mcp = !agent && !view && item.name.includes(" · ");
       let detail = agent ? item.name.replace(/^subagent · /, "") : item.name;
       if (view) {

@@ -1,5 +1,6 @@
 // Codex adapter: owns one `codex app-server` process (JSON-RPC over stdio) and normalizes
 // its threads/turns/items/server-requests into the provider-agnostic model in shared/model.ts.
+import { randomUUID } from "node:crypto";
 import type * as C from "../codex-protocol/v2";
 import type { InitializeParams } from "../codex-protocol";
 import { readFileSync } from "node:fs";
@@ -7,7 +8,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { finalizeItem, mergeItem, summary, titleFrom, UNTITLED, type Harness } from "./harness";
 import { JsonRpcPeer, RpcError, type Id } from "./jsonrpc";
-import { fromCodex, toCodex, type McpListing, type McpPlan } from "./mcp";
+import { fromCodex, toCodex, type McpDef, type McpListing, type McpPlan } from "./mcp";
 import type {
   FileChange,
   Item,
@@ -62,6 +63,13 @@ export class CodexAdapter implements Harness {
   /** What sessions in a project get of the MCP servers (Ctrl+K → MCP servers): Codex's own ones switched off or on,
    *  and ones another harness defines carried over. */
   mcpPlan: (cwd: string) => Promise<McpPlan> = async () => ({ off: [], on: [], add: {} });
+  /** Servers a session's runs get of their own (`key`: the session's id, or a new one's key): the browser's. */
+  sessionMcp: (cwd: string, key: string) => Record<string, McpDef> = () => ({});
+  /** A new session's key (what its own servers were given before it had an id) and its id, once it has one. */
+  onSessionKey: (key: string, id: string) => void = () => {};
+  /** The keys sessions started here were given; a session started elsewhere (or before a restart) goes by its id. */
+  private keys = new Map<string, string>();
+  private keyOf = (threadId: string) => this.keys.get(threadId) ?? threadId;
   /** Each project folder's plan as last asked for (before a session there starts or resumes, and on a switch). */
   private plans = new Map<string, McpPlan>();
   /** The overrides each loaded session got: Codex keeps them until the session is resumed again. */
@@ -135,9 +143,10 @@ export class CodexAdapter implements Harness {
 
   /** Thread config carrying bismuth's overrides for a session in `cwd` (the auto-compact limit, the project's MCP
    *  plan), recorded for the session it starts or resumes. */
-  private threadConfig(cwd: string | null) {
+  private threadConfig(cwd: string | null, key: string) {
     const limit = this.compactLimit();
-    const plan = cwd ? this.plans.get(cwd) : undefined;
+    const cached = cwd ? this.plans.get(cwd) : undefined;
+    const plan = cwd && cached ? { ...cached, add: { ...cached.add, ...this.sessionMcp(cwd, key) } } : cached;
     // Codex reads the keys as dotted paths: a name with a dot in it can't be addressed.
     const mcp: [string, unknown][] = [
       ...(plan?.off ?? []).map((name) => [`mcp_servers.${name}.enabled`, false] as [string, unknown]),
@@ -290,7 +299,7 @@ export class CodexAdapter implements Harness {
     // Its folder as the list had it; a session the list hasn't shown gets its project's switches by a reopen below.
     const listedCwd = this.lastList?.find((t) => t.id === threadId)?.cwd ?? null;
     await this.planMcp(listedCwd);
-    const config = this.threadConfig(listedCwd);
+    const config = this.threadConfig(listedCwd, this.keyOf(threadId));
     const res: C.ThreadResumeResponse = await this.rpc().request("thread/resume", {
       threadId,
       ...FULL_ACCESS_THREAD,
@@ -324,7 +333,8 @@ export class CodexAdapter implements Harness {
 
   async newThread(settings: TurnSettings, cwd: string): Promise<Thread> {
     await this.planMcp(cwd);
-    const config = this.threadConfig(cwd);
+    const key = `new-${randomUUID()}`;
+    const config = this.threadConfig(cwd, key);
     const res: C.ThreadStartResponse = await this.rpc().request("thread/start", {
       cwd,
       ...(settings.model ? { model: settings.model } : {}),
@@ -332,6 +342,8 @@ export class CodexAdapter implements Harness {
       ...config.params,
     } satisfies C.ThreadStartParams);
     const thread: LoadedThread = { ...baseThread(res.thread, res.model, res.reasoningEffort, res.serviceTier), turns: [] };
+    this.keys.set(thread.id, key);
+    this.onSessionKey(key, thread.id);
     this.applied(thread.id, config);
     this.threads.set(thread.id, thread);
     this.emitThread(thread);
@@ -716,7 +728,7 @@ export class CodexAdapter implements Harness {
     for (const t of this.threads.values()) {
       // One without a turn has nothing on disk to resume from: unloading it would lose it.
       if (!t.turns.length) continue;
-      const want = this.threadConfig(t.cwd);
+      const want = this.threadConfig(t.cwd, this.keyOf(t.id));
       if (this.appliedLimit(t.id) === want.limit && this.appliedMcp.get(t.id) === want.mcp) continue;
       if (t.activeTurnId) (this.reopenWhenIdle.add(t.id), afterTurn++);
       else (void this.reopen(t.id), now++);
@@ -731,7 +743,7 @@ export class CodexAdapter implements Harness {
     let p = this.reopening.get(threadId);
     if (p) return p;
     p = (async () => {
-      const config = this.threadConfig(t.cwd);
+      const config = this.threadConfig(t.cwd, this.keyOf(t.id));
       try {
         await this.rpc().request("thread/unsubscribe", { threadId } satisfies C.ThreadUnsubscribeParams, QUERY_TIMEOUT_MS);
         await this.rpc().request("thread/resume", { threadId, ...FULL_ACCESS_THREAD, ...config.params, excludeTurns: true } satisfies C.ThreadResumeParams, OPEN_TIMEOUT_MS);

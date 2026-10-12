@@ -25,6 +25,8 @@ Before adding UI behaviour, look for where the app already does it and use that,
 - Copy to clipboard with the copied feedback: `copyText` (`web/markdown.ts`), `copyAction` (`web/widgets.ts`).
 - Motion: `web/motion.ts`, `web/listmotion.ts`. Popovers and menus: `web/popover.ts`. Icons: `web/icons.ts`.
 
+**Heads up: features keep breaking the column dividers.** Anything positioned inside a column stays below its hairline (`.rp::before`/`.fp::before`, z-index 2), and before you finish, check every divider runs unbroken from top to bottom with your new thing on screen.
+
 ## Applying changes
 
 Edits to files do **not** affect the running app. At the end of a turn that changed the app, run:

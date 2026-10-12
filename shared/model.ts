@@ -290,10 +290,15 @@ export type RpcMethods = {
   "queue.edit.finish": { params: { threadId: string; id: string; text: string | null; settings: TurnSettings | null }; result: null };
   "autoCompact.set": { params: { harness: "claude" | "codex"; value: number | null }; result: AutoCompactSnapshot & { reopened: { now: number; afterTurn: number } | null } };
   "mcp.list": { params: { projectId: string }; result: McpSnapshot };
-  // A harness's switch for a server, in this project or all of them. Switching it back to what it would be anyway
-  // drops the override. Loaded Codex sessions reopen to pick it up (idle ones now, ones mid-turn when their turn
-  // ends); Claude's and Cursor's next runs get it.
-  "mcp.set": { params: { projectId: string; harness: HarnessId; name: string; enabled: boolean; scope: McpScope }; result: McpSnapshot };
+  // Harnesses' switches for a server (one, or every one at once), in this project or all of them. Switching it back
+  // to what it would be anyway drops the override. Loaded Codex sessions reopen to pick it up (idle ones now, ones
+  // mid-turn when their turn ends); Claude's and Cursor's next runs get it.
+  "mcp.set": { params: { projectId: string; harnesses: HarnessId[]; name: string; enabled: boolean; scope: McpScope }; result: McpSnapshot };
+  // Which session holds which browser page (by its DevTools target; null: none any more). `all`: every page the
+  // window has (a reconnected window's), the rest forgotten. Agents see their own session's pages (core/browser.ts).
+  "browser.owners": { params: { owners: [string, string | null][]; all?: boolean }; result: null };
+  // The window's answer to a `browser` ask: the page's target (an opened tab's), or why it couldn't.
+  "browser.done": { params: { id: string; targetId?: string; error?: string }; result: null };
   "remote.get": { params: {}; result: RemoteAccess };
   "remote.set": { params: { enabled: boolean }; result: RemoteAccess };
 };
@@ -329,7 +334,8 @@ export type McpUse = {
 };
 export type McpServer = {
   name: string;
-  from: HarnessId | "bismuth"; // the harness whose config defines it (the first, when several do), or bismuth's own (views)
+  from: HarnessId | "bismuth"; // the harness whose config defines it (the first, when several do), or bismuth's own
+  title?: string; // bismuth's own: what it's called in the list (name is what the agents see)
   source: string; // where: "~/.codex/config.toml", ".mcp.json", "Plugin"…
   target: string | null; // the command it runs or the URL it talks to
   uses: Partial<Record<HarnessId, McpUse>>; // one per available harness
@@ -390,6 +396,12 @@ export type ServerMessage =
   | { type: "restart"; state: "scheduled" | "cancelled" | "restarting" | "failed"; running: number; error: string | null }
   // `bun run apply` changed code only a restart loads (core/, shared/): the files, for the "Restart needed" notice.
   | { type: "restartNeeded"; files: string[] }
+  // A session's agent driving the browser (core/browser.ts) wants a tab opened at `url` in its session's panel, or
+  // the one holding a page's DevTools target closed or shown. The desktop window does it and answers with browser.done.
+  | { type: "browser"; id: string; op: "open"; session: string; url: string }
+  | { type: "browser"; id: string; op: "close" | "show"; session: string; targetId: string }
+  // The pages agents hold now (by DevTools target): kept awake, rendering and laid out, wherever their tabs are.
+  | { type: "browserAwake"; targets: string[] }
   // Another window changed a shared UI setting (core/uistate.ts): a localStorage entry, null when removed.
   | { type: "uiState"; key: string; value: string | null }
   | { type: "harnesses"; harnesses: HarnessInfo[]; models: ModelOption[] } // a harness came up (install) or went down

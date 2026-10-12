@@ -17,7 +17,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Subprocess } from "bun";
 import { finalizeItem, mergeItem, summary, titleFrom, UNTITLED, type Harness } from "./harness";
-import { toCursor, type McpPlan } from "./mcp";
+import { toCursor, type McpDef, type McpPlan } from "./mcp";
 import type { Item, ModelOption, PlanStep, RequestResponse, Thread, ThreadEvent, ThreadSummary, Turn, TurnSettings, TurnStatus, UsageWindow } from "../shared/model";
 
 /** The pinned SDK (public beta, ~weekly releases): bump deliberately and revalidate the shim against its typings. */
@@ -65,6 +65,8 @@ export class CursorAdapter implements Harness {
   /** What runs in a project get of the MCP servers (Ctrl+K → MCP servers): the ones another harness defines, passed
    *  inline (Cursor's own are switched in Cursor's own list). */
   mcpPlan: (cwd: string) => Promise<McpPlan> = async () => ({ off: [], on: [], add: {} });
+  /** Servers a session's runs get of their own (`key`: the session's id, or a new one's key): the browser's. */
+  sessionMcp: (cwd: string, key: string) => Record<string, McpDef> = () => ({});
 
   private node: string | null = null;
   private shim = "";
@@ -245,7 +247,8 @@ export class CursorAdapter implements Harness {
   async send(threadId: string, text: string, settings: TurnSettings) {
     const thread = await this.openThread(threadId);
     // Asked before anything else, so nothing else can start a run for the thread in between.
-    const mcp = await this.mcpPlan(thread.cwd).catch(() => ({ off: [], on: [], add: {} }) as McpPlan);
+    const plan = await this.mcpPlan(thread.cwd).catch(() => ({ off: [], on: [], add: {} }) as McpPlan);
+    const mcp: McpPlan = { ...plan, add: { ...plan.add, ...this.sessionMcp(thread.cwd, threadId) } };
     const run = this.runs.get(threadId);
     if (run && !run.finished) {
       run.steers.push(text);

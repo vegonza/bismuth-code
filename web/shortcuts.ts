@@ -12,6 +12,7 @@ const GROUPS: [string, (id: ShortcutId) => boolean][] = [
   ["Jump to session", (id) => id.startsWith("jump")],
   ["Terminal", (id) => ["toggleTerminal", "newTerminal", "closeTerminal", "nextTerminal", "prevTerminal", "maximizeTerminal"].includes(id)],
   ["Files", (id) => ["quickOpen", "saveFile", "closeFile", "reopenFile", "togglePreview", "goBack", "goForward", "toggleHiddenFiles", "expandFolders", "collapseFolders", "revealFile"].includes(id)],
+  ["Browser", (id) => ["newBrowserTab", "focusAddress", "reloadPage"].includes(id)],
   ["Source control", (id) => ["showChanges", "showReview"].includes(id)],
   ["Jump to file tab", (id) => /^tab\d$/.test(id)],
   ["Composer", (id) => ["removeImage", "stopTurn"].includes(id)],

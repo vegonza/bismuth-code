@@ -1,8 +1,8 @@
 // The right side (Zeron's right pane: shell.rs `render_right_pane`, shell/files_panel.rs, files/): two columns that
 // open on their own.
-// - The surface host: tabs across its top band, the open tab below, and a short list of what can open while there's
-//   none. Files are its only kind of tab for now; others go beside them. Mod+Alt+B toggles it (it never hides the
-//   explorer), the expand button gives it the chat's room too, and closing its last tab puts it away.
+// - The surface host: tabs across its top band, the open tab below. Its tabs are files, the changes' reviews, and web
+//   pages (browser.ts); a new tab's page lists the rest. Mod+Alt+B toggles it (opened empty, on a new tab; it never
+//   hides the explorer), the expand button gives it the chat's room too, and closing its last tab puts it away.
 // - The file explorer, the rightmost column: the session folder's tree (ignored files hidden until the eye shows
 //   them, git changes coloured). Mod+E toggles it; opening a file opens the host beside it. Mod+P finds the folder's
 //   files by name (the palette's Go to file, palette.ts).
@@ -10,11 +10,11 @@
 // per-chat panels; the new-session screen keeps its own per project, which a session started there begins with.
 import { Transaction, type TransactionSpec } from "@codemirror/state";
 import { isPhone } from "./phone";
-import { BRANCH, UNPUSHED, type FileContent, type FileEntry, type FileLocation, type FileRef, type GitStatus, type WriteResult } from "../shared/model";
+import { BRANCH, UNPUSHED, type FileContent, type FileEntry, type FileLocation, type FileRef, type GitStatus, type ServerMessage, type WriteResult } from "../shared/model";
 import { codeState, codeView, EditorView, keyModeSpec, type CodeHooks, type EditorState } from "./code";
 import { changesStore, changesView, lineCounts, SCOPES, type ChangesStore } from "./changes";
 import { graphView } from "./graph";
-import { commitSource, reviewView, uncommittedSource } from "./review";
+import { changesSource, commitSource, reviewView } from "./review";
 import { baseSpec, changeCount, hasBase, showChangesSpec, showsChanges } from "./gitdiff";
 import { $, el, picturesIn, picturesPending } from "./dom";
 import { fileGlyph, iconKey, loadIcons } from "./fileicons";
@@ -34,6 +34,7 @@ import { reducedMotion, RESIZE_MS } from "./motion";
 import { contextMenu as openContextMenu, menuPoint, toggleSwitch, type MenuEntry, type Popover } from "./popover";
 import { dialog, select as selectMenu } from "./widgets";
 import { onTheme } from "./theme";
+import { dropPage, focusAddress, focusPage, forgetPages, goBackPage, goForwardPage, holdsPages, isBrowserTab, makePage, mountBrowser, newPage, pageGlyph, pageLabel, pageTargets, pageUrl, reloadPage, showPage, showsPage, tabOfTarget, targetOf } from "./browser";
 
 // Zeron's settings.rs widths.
 const FILES_DEFAULT = 286;
@@ -296,6 +297,7 @@ async function fetchGit(r: string): Promise<boolean> {
  *  the explorer's marks and every file's copy to compare with are read again. */
 function rescope() {
   for (const d of docs.values()) d.baseGen = -1;
+  rescopeReview();
   const r = root();
   const s = session();
   if (!r || !s) return;
@@ -351,8 +353,8 @@ function refresh(delay = 0) {
       void Promise.all([loadGit(r), ...dirs.map((d) => load(r, d))]).then(() => root() === r && renderExplorer());
     }
     if (s.surfaces && s.active) void loadFile(r, s.active, true);
-    // The review open without the explorer (which reads git, and with it the changes): read them here.
-    if (s.surfaces && s.tabs.includes(REVIEW) && !(s.files || peeking)) void changesData.refresh();
+    // The review open without the explorer, which reads git (whether on a branch, for the scopes) and the changes with it.
+    if (s.surfaces && s.tabs.includes(REVIEW) && !(s.files || peeking)) void loadGit(r);
   }, delay);
 }
 
@@ -463,7 +465,7 @@ function hooksFor(r: string, path: string): CodeHooks {
 /** Read a file (again): a text file's editor follows the disk while it has no unsaved edits; with some, a change
  *  on disk is held for the bar to offer. */
 async function loadFile(r: string, path: string, again = false) {
-  if (isReviewTab(path)) return;
+  if (isSurfaceTab(path)) return;
   const key = docKey(r, path);
   let d = docs.get(key);
   if (d && !again) return;
@@ -659,6 +661,8 @@ export function togglePane() {
 function setPane(open: boolean) {
   const s = session();
   if (!s || s.surfaces === open) return;
+  // Opened with nothing in it: a new tab, whose page offers the rest (and goes once something's picked).
+  if (open && !s.tabs.length) return void openBrowser();
   s.surfaces = open;
   if (!open) expanded = false;
   persist();
@@ -705,6 +709,7 @@ let pendingAt: { key: string; at: At; focus: boolean } | null = null;
 export function openFile(path: string, { preview = false, at, focus = false }: OpenOptions = {}) {
   if (path === REVIEW) return openReview();
   if (path.startsWith(COMMIT_TAB)) return openCommit(path.slice(COMMIT_TAB.length), !preview);
+  if (isBrowserTab(path)) return openTab(path, focus);
   const s = session();
   const r = root();
   if (!s || !r) return;
@@ -716,8 +721,7 @@ export function openFile(path: string, { preview = false, at, focus = false }: O
       dropDoc(r, old);
     } else {
       // New tabs open beside the shown one, as VS Code's do.
-      const at = s.active ? s.tabs.indexOf(s.active) : -1;
-      s.tabs.splice(at < 0 ? s.tabs.length : at + 1, 0, path);
+      placeTab(s, path);
     }
     if (preview) s.preview = path;
   } else if (!preview && s.preview === path) s.preview = null;
@@ -756,6 +760,7 @@ function activate(path: string, focus = false) {
   // The review shown again reads every diff afresh.
   if (path === REVIEW) return void (review.reread(), renderPane(), changesData.refresh());
   if (path.startsWith(COMMIT_TAB)) return void (renderPane(), graph.select(path.slice(COMMIT_TAB.length)));
+  if (isBrowserTab(path)) return void (persist(), renderPane(), focus && focusPage());
   remember(r, path);
   if (focus) pendingAt = { key: docKey(r, path), at: { line: -1, character: 0 }, focus };
   void loadFile(r, path, true);
@@ -810,7 +815,8 @@ function shut(paths: string[], forget = false) {
     if (!forget) closed.push({ path: p, at: i });
     s.tabs.splice(i, 1);
     if (s.preview === p) s.preview = null;
-    dropDoc(r, p);
+    if (isBrowserTab(p)) dropPage(p);
+    else dropDoc(r, p);
   }
   closedTabs.set(id, closed.slice(-REOPEN_MAX));
   if (s.active && !s.tabs.includes(s.active)) s.active = s.tabs[Math.min(at, s.tabs.length - 1)] ?? null;
@@ -851,11 +857,114 @@ export function reopenClosedFile() {
   openFile(last.path, { focus: true });
 }
 
+/** A new tab beside the shown one; a new tab's page shown (blank, nowhere to go yet) gives it its place, as a
+ *  browser's new tab becomes what it opens. */
+function placeTab(s: SessionPanels, path: string) {
+  const at = s.active ? s.tabs.indexOf(s.active) : -1;
+  if (at >= 0 && isBrowserTab(s.active!) && !pageUrl(s.active!)) {
+    dropPage(s.active!);
+    s.tabs[at] = path;
+  } else s.tabs.splice(at < 0 ? s.tabs.length : at + 1, 0, path);
+}
+
+/** A tab that's already listed (or put beside the shown one) shown. */
+function openTab(path: string, focus = false) {
+  const s = session();
+  if (!s) return;
+  if (!s.tabs.includes(path)) placeTab(s, path);
+  s.active = path;
+  persist();
+  if (!s.surfaces) setPane(true);
+  renderPane();
+  if (focus) focusPage();
+}
+
+/** A new browser tab (Mod+T, a link, a page's link to a new tab): beside `from`'s tab or the shown one, at `url`, or
+ *  blank with its address to type into (the blank one there is, if any). `background`: left behind the shown tab, if the host shows one. */
+export function openBrowser(url = "", from: string | null = null, background = false): string | null {
+  const s = session();
+  // Nowhere to put a tab (no project open): the system's browser has it.
+  if (!s || !root()) return (url && window.open(url, "_blank", "noopener"), null);
+  // One new tab at a time: asked for another, the one there is shown, its address ready for typing.
+  const blank = url ? undefined : s.tabs.find((t) => isBrowserTab(t) && !pageUrl(t));
+  if (blank) return (openTab(blank), focusAddress(), blank);
+  const tab = newPage(url);
+  const at = from && s.tabs.includes(from) ? s.tabs.indexOf(from) : s.active ? s.tabs.indexOf(s.active) : -1;
+  s.tabs.splice(at < 0 ? s.tabs.length : at + 1, 0, tab);
+  if (background && s.surfaces && s.active) return (persist(), renderBar(), tab);
+  s.active = tab;
+  persist();
+  if (!s.surfaces) setPane(true);
+  renderPane();
+  if (!url) focusAddress();
+  return tab;
+}
+
+/** The session whose panel holds a tab. */
+const ownerOf = (tab: string) => Object.entries(saved.sessions).find(([, s]) => s.tabs.includes(tab))?.[0] ?? null;
+
+/** Which session holds each page, all of them, told to the core (a window that holds pages: the desktop's), so each
+ *  session's agent sees its own (core/browser.ts). On connecting, and when pages change sessions. */
+export function reportOwners() {
+  if (holdsPages()) void call("browser.owners", { owners: pageTargets().map(([target, tab]) => [target, ownerOf(tab)]), all: true }).catch(() => {});
+}
+
+/** A session's agent driving the browser (core/browser.ts): a tab opened in the session's panel (shown, if it's the
+ *  session shown; else made there, to show when it is), or one of its tabs closed or shown. The answer goes back to
+ *  the core. */
+export async function agentBrowser(msg: Extract<ServerMessage, { type: "browser" }>) {
+  const done = (answer: { targetId?: string; error?: string }) => void call("browser.done", { id: msg.id, ...answer }).catch(() => {});
+  if (!holdsPages()) return done({ error: "Pages open in bismuth's desktop app" });
+  try {
+    if (msg.op === "open") {
+      let tab: string;
+      if (panelsKey() === msg.session) tab = openBrowser(msg.url)!;
+      else {
+        const s = (saved.sessions[msg.session] ??= { files: false, surfaces: false, tabs: [], active: null });
+        tab = newPage(msg.url);
+        const at = s.active ? s.tabs.indexOf(s.active) : -1;
+        s.tabs.splice(at < 0 ? s.tabs.length : at + 1, 0, tab);
+        s.active = tab;
+        s.surfaces = true;
+        persist();
+        makePage(tab);
+      }
+      return done({ targetId: await targetOf(tab) });
+    }
+    const tab = tabOfTarget(msg.targetId);
+    if (!tab || ownerOf(tab) !== msg.session) return done({ error: "That page isn't open in this session" });
+    if (msg.op === "close") closeAnywhere(tab);
+    else if (panelsKey() === msg.session) openTab(tab);
+    else (saved.sessions[msg.session].active = tab), persist();
+    done({});
+  } catch (err: any) {
+    done({ error: String(err?.message ?? err) });
+  }
+}
+
+/** A tab closed in whichever session holds it (the one shown as a click on its ×). */
+function closeAnywhere(tab: string) {
+  if (session()?.tabs.includes(tab)) return closeTab(tab);
+  for (const s of Object.values(saved.sessions)) {
+    const i = s.tabs.indexOf(tab);
+    if (i < 0) continue;
+    s.tabs.splice(i, 1);
+    if (s.active === tab) s.active = s.tabs[Math.min(i, s.tabs.length - 1)] ?? null;
+    // Its last tab gone, the host is put away, as when it closes in the session shown.
+    if (!s.tabs.length) s.surfaces = false;
+  }
+  dropPage(tab);
+  persist();
+}
+
+/** A page shows in the host (its keys are the page's: back and forward go through its history). */
+export const browsing = () => !!session()?.surfaces && showsPage();
+
 /** The shown file's absolute path copied (the palette's Copy path of current file). */
 export function copyActivePath() {
   const s = session();
   const r = root();
-  if (!s?.surfaces || !s.active || isReviewTab(s.active) || !r) return flash("No file open");
+  if (!s?.surfaces || !s.active || isSurfaceTab(s.active) || !r) return flash("No file open");
   copy(absolute(r, s.active));
   flash("Copied path");
 }
@@ -864,7 +973,7 @@ export function copyActivePath() {
 export function revealActiveFile() {
   const s = session();
   const r = root();
-  if (!s?.surfaces || !s.active || isReviewTab(s.active) || !r) return flash("No file open");
+  if (!s?.surfaces || !s.active || isSurfaceTab(s.active) || !r) return flash("No file open");
   void call("files.reveal", { root: r, path: s.active }).catch((err) => flash(String(err?.message ?? err)));
 }
 
@@ -872,7 +981,7 @@ export function revealActiveFile() {
 export function saveActiveFile() {
   const s = session();
   const r = root();
-  if (s?.surfaces && s.active && r) void saveDoc(r, s.active);
+  if (s?.surfaces && s.active && r && !isSurfaceTab(s.active)) void saveDoc(r, s.active);
 }
 
 /** Mod+N: the Nth open file (opening the panel if it was put away). */
@@ -914,6 +1023,8 @@ function jump(to: At & { path: string }, record = true) {
 
 /** Alt+Left / Alt+Right: back to where a jump left from, and forward again. */
 export function goBack() {
+  // A page shown: its own history.
+  if (browsing()) return goBackPage();
   const to = backStack.pop();
   if (!to || to.r !== root()) return;
   const from = here();
@@ -921,6 +1032,7 @@ export function goBack() {
   jump(to, false);
 }
 export function goForward() {
+  if (browsing()) return goForwardPage();
   const to = forwardStack.pop();
   if (!to || to.r !== root()) return;
   const from = here();
@@ -957,7 +1069,7 @@ async function goToDefinition(r: string, path: string, pos: number) {
 /** The file shown in the host, which the tree marks. */
 function currentFile(): string | null {
   const s = session();
-  return s?.surfaces && s.active && !isReviewTab(s.active) ? s.active : null;
+  return s?.surfaces && s.active && !isSurfaceTab(s.active) ? s.active : null;
 }
 
 /** The tree's mark moved to the shown file, without redrawing the tree. */
@@ -988,6 +1100,8 @@ function reveal(path: string) {
 }
 
 let focusComposer = () => {};
+/** Go to file (the palette's, palette.ts). */
+let goToFile = () => {};
 
 // ---------------- layout ----------------
 
@@ -1107,6 +1221,9 @@ function renderPane() {
   markCurrent();
   // Closing glides: the last content stays until the column is shut.
   if (!s?.surfaces || !r) return;
+  // Left open with no tabs (from before tabs were opened this way): a new tab in it.
+  if (!s.tabs.length) (s.tabs = [newPage()]), persist();
+  if (!s.active || !s.tabs.includes(s.active)) s.active = s.tabs[0];
   renderBar();
   renderBody();
   syncWatch();
@@ -1191,11 +1308,12 @@ function renderBar() {
     const tab = el("div", `rp-tab${path === s.active ? " active" : ""}${path === s.preview ? " preview" : ""}${dirty ? " dirty" : ""}`);
     const isReview = path === REVIEW;
     const commit = path.startsWith(COMMIT_TAB) ? path.slice(COMMIT_TAB.length) : null;
+    const web = isBrowserTab(path);
     const subject = commit ? (reviewFor(r, path) as CommitView).subject() : null;
-    const label = isReview ? "Changes" : commit ? (subject ?? commit.slice(0, 7)) : baseName(path);
-    tab.title = isReview ? "Changes" : commit ? `${subject ?? "Commit"} · ${commit.slice(0, 7)}` : isAbs(path) ? tildePath(path) : path;
+    const label = isReview ? "Changes" : commit ? (subject ?? commit.slice(0, 7)) : web ? pageLabel(path) : baseName(path);
+    tab.title = isReview ? "Changes" : commit ? `${subject ?? "Commit"} · ${commit.slice(0, 7)}` : web ? pageUrl(path) || "New tab" : isAbs(path) ? tildePath(path) : path;
     const lead = el("span", "rp-tab-lead");
-    const glyph = isReview ? icon("gitCompare", undefined, "rp-tab-glyph") : commit ? icon("gitCommitHorizontal", undefined, "rp-tab-glyph") : fileGlyph(path);
+    const glyph = isReview ? icon("gitCompare", undefined, "rp-tab-glyph") : commit ? icon("gitCommitHorizontal", undefined, "rp-tab-glyph") : web ? pageGlyph(path) : fileGlyph(path);
     const close = el("button", "rp-tab-close");
     close.title = hint("Close", "closeFile");
     close.append(icon("x"));
@@ -1255,7 +1373,12 @@ function renderBar() {
   expand.append(icon(expanded ? "minimize2" : "maximize2"));
   expand.onclick = toggleExpand;
   const before = paneBar.querySelector<HTMLElement>(".rp-tabs")?.scrollLeft ?? 0;
-  paneBar.replaceChildren(strip, ...controls, expand);
+  // A new tab, just past the last one (Codex's): its page offers the rest.
+  const add = el("button", "wc-btn rp-ctl rp-new");
+  add.title = hint("New tab", "newBrowserTab");
+  add.append(icon("plus"));
+  add.onclick = () => openBrowser();
+  paneBar.replaceChildren(strip, add, ...controls, expand);
   strip.scrollLeft = before;
   // Tabs past the strip's edges fade under them (Zeron's EdgeFade), following the scroll.
   const fades = () => {
@@ -1288,7 +1411,9 @@ function renderBody() {
   const d = path ? docs.get(key) : undefined;
   renderNotice(r, path, d);
   const what = !path
-    ? "picker"
+    ? "none"
+    : isBrowserTab(path)
+      ? "browser"
     : isReviewTab(path)
       ? "review"
     : !d || d.loading
@@ -1309,13 +1434,15 @@ function renderBody() {
     retire();
     // A view kept across redraws (a notebook's) keeps the focus it had: being moved into the new frame drops it.
     const focused = document.activeElement;
-    contentSlot.replaceChildren(!path ? picker() : isReviewTab(path) ? reviewFor(r, path).view.el : viewer(r, path, key, d));
+    // A page isn't in the slot: it stays in the browser's layer over it (browser.ts), shown below.
+    contentSlot.replaceChildren(...(!path ? [] : isBrowserTab(path) ? [] : isReviewTab(path) ? [reviewFor(r, path).view.el] : [viewer(r, path, key, d)]));
     if (path && isReviewTab(path)) reviewFor(r, path).view.shown();
     if (focused instanceof HTMLElement && focused !== document.activeElement && contentSlot.contains(focused)) focused.focus({ preventScroll: true });
     const scroll = contentSlot.querySelector<HTMLElement>(".fv-scroll");
     const spot = scroll?.dataset.key ? spots.get(scroll.dataset.key) : undefined;
     if (scroll && spot) restoreSpot(scroll, spot);
   }
+  showPage(path && isBrowserTab(path) ? path : null);
   applyPendingAt();
 }
 
@@ -1350,18 +1477,20 @@ function renderNotice(r: string, path: string | null, d: Doc | undefined) {
   noticeSlot.replaceChildren(bar);
 }
 
-/** The host with nothing open: what it can show (Zeron's render_surface_picker). Files for now. */
-function picker(): HTMLElement {
-  const box = el("div", "rp-picker");
-  const list = el("div", "rp-picker-list");
-  const row = el("button", "rp-picker-row");
-  row.append(icon("folderTree"), el("span", "", "Files"));
-  row.onclick = () => {
-    if (!filesOpen()) toggleFiles();
-    else treeEl.focus();
+/** What the host can open besides a page, with their keys: on a new tab's page (browser.ts, Codex's new tab). */
+function tools(): HTMLElement {
+  const box = el("div", "rp-tools");
+  const grid = el("div", "rp-tools-grid");
+  const tool = (glyph: IconName, label: string, id: ShortcutId, run: () => void) => {
+    const b = el("button", "rp-tool");
+    b.append(icon(glyph), el("span", "grow", label));
+    if (prefs.keymap[id]) b.append(el("span", "palette-kbd", displayCombo(prefs.keymap[id])));
+    b.onclick = run;
+    grid.append(b);
   };
-  list.append(row);
-  box.append(list, el("div", "rp-picker-hint", "Open a file from the files panel to view it here."));
+  tool("gitCompare", "Changes", "showReview", () => openReview());
+  tool("files", "Files", "quickOpen", goToFile);
+  box.append(el("div", "rp-tools-head", "Tools"), grid);
   return box;
 }
 
@@ -1648,11 +1777,15 @@ let swiping = false;
 let changesData: ChangesStore;
 let changes: ReturnType<typeof changesView>;
 let review: ReturnType<typeof reviewView>;
+/** The review's changes read again for the scope picked now. */
+let rescopeReview = () => {};
 /** The review's tab (review.ts) among a session's files: every changed file's diff. */
 export const REVIEW = "bismuth:changes";
 /** A commit's review tab: this, then its hash. */
 const COMMIT_TAB = "bismuth:commit:";
 const isReviewTab = (path: string) => path === REVIEW || path.startsWith(COMMIT_TAB);
+/** A tab that isn't a file: a review, or a web page. */
+const isSurfaceTab = (path: string) => isReviewTab(path) || isBrowserTab(path);
 let graph: ReturnType<typeof graphView>;
 type CommitView = { view: ReturnType<typeof reviewView>; subject: () => string | null };
 /** The commits' reviews open, by their tab's doc key: read once each, let go of with the tab. */
@@ -1684,10 +1817,7 @@ export function openCommit(hash: string, keep = false) {
     if (old) {
       s.tabs[s.tabs.indexOf(old)] = path;
       dropDoc(r, old);
-    } else {
-      const at = s.active ? s.tabs.indexOf(s.active) : -1;
-      s.tabs.splice(at < 0 ? s.tabs.length : at + 1, 0, path);
-    }
+    } else placeTab(s, path);
     if (!keep) s.preview = path;
   } else if (keep && s.preview === path) s.preview = null;
   s.active = path;
@@ -1803,6 +1933,14 @@ function renderScope(r: string, t: Tree) {
   const key = `${r}\0${t.repo}:${t.branched}:${shown}`;
   if (key === scopeDrawn && scopePick.isConnected) return;
   scopeDrawn = key;
+  const pick = scopeMenu(r, t, released);
+  scopePick.replaceWith(pick);
+  scopePick = pick;
+}
+
+/** The dropdown picking the changes' scope, each with what it comes to: the explorer's, and the review's heading. */
+function scopeMenu(r: string, t: Tree, onClose?: () => void): HTMLButtonElement {
+  const shown = scopeOf(t);
   const offered = SCOPES.filter(([scope]) => scope !== "branch" || t.branched);
   const at = offered.findIndex(([scope]) => scope === shown);
   const pick = selectMenu({
@@ -1810,14 +1948,16 @@ function renderScope(r: string, t: Tree) {
     selected: at,
     menuWidth: 236,
     onSelect: (i) => showChangesSince(offered[i][0]),
-    onClose: released,
+    onClose,
   });
   pick.classList.add("fp-scope");
   pick.disabled = !t.repo;
   pick.title = t.repo ? `Changes shown — ${offered[at][1]}: ${offered[at][2]}` : "Not in a git repository";
-  scopePick.replaceWith(pick);
-  scopePick = pick;
+  return pick;
 }
+
+/** What the review's changes are called, by scope ("No …" when there are none). */
+const SCOPE_NOUN: Record<ChangesScope, string> = { turn: "changes in the last turn", uncommitted: "uncommitted changes", unpushed: "unpushed changes", branch: "changes on this branch" };
 
 /** A sideways scroll over the panel (a touchpad's swipe, Shift+wheel) drags the views under it, as Zen's spaces: they
  *  follow the fingers (held back at first, then slower than a scroll), the next one coming in beside, never past it
@@ -1995,16 +2135,16 @@ export function showCommit() {
 export function openReview(path?: string) {
   const s = session();
   if (!s || !root()) return;
-  if (!s.tabs.includes(REVIEW)) {
-    const at = s.active ? s.tabs.indexOf(s.active) : -1;
-    s.tabs.splice(at < 0 ? s.tabs.length : at + 1, 0, REVIEW);
-  }
+  if (!s.tabs.includes(REVIEW)) placeTab(s, REVIEW);
   const fresh = s.active !== REVIEW;
   s.active = REVIEW;
   persist();
   if (!s.surfaces) setPane(true);
   if (fresh) review.reread();
   renderPane();
+  // Without the explorer, git's read here too: whether the folder's on a branch of its own decides the scopes.
+  const r = root()!;
+  if (!(s.files || peeking)) void loadGit(r);
   void changesData.refresh().then(() => review.scrollTo(path));
 }
 
@@ -2501,7 +2641,8 @@ export function suggestedFiles(): Suggestion[] {
   const add = (group: Suggestion["group"], paths: string[]) => {
     for (const path of paths) if (out.length < SUGGEST_MAX && !seen.has(path)) seen.add(path), out.push({ path, group });
   };
-  add("open", s.active ? [s.active, ...s.tabs.filter((p) => p !== s.active)] : s.tabs);
+  const files = s.tabs.filter((p) => !isSurfaceTab(p));
+  add("open", s.active && files.includes(s.active) ? [s.active, ...files.filter((p) => p !== s.active)] : files);
   add("recent", saved.recent[r] ?? []);
   add("changed", Object.keys(t.git).filter((p) => t.git[p] !== "deleted"));
   // The top level's files, then those of every folder listed so far, shallowest first.
@@ -2551,7 +2692,8 @@ function syncWatch() {
     }
     if (s.surfaces) for (const p of s.tabs) dirs.add(dirOf(p));
   }
-  const sig = r ? `${r}\0${[...dirs].sort().join("\0")}` : "";
+  // JSON, not joined: the top folder is "", so a join can't tell it listed from nothing listed.
+  const sig = r ? JSON.stringify([r, ...[...dirs].sort()]) : "";
   if (sig === watchSig) return;
   // The folder watched before, if this is another (a session switch): let go of it.
   if (watchRoot && watchRoot !== r) void call("files.watch", { root: watchRoot, dirs: [] }).catch(() => {});
@@ -2629,6 +2771,16 @@ function tabMenu(e: MouseEvent, path: string) {
     { icon: "x", label: "Close all", run: () => closeTabs([...s.tabs]) },
   ];
   if (path === REVIEW) return contextMenu({ x: e.clientX, y: e.clientY }, items);
+  if (isBrowserTab(path)) {
+    const url = pageUrl(path);
+    items.push(
+      "-",
+      { icon: "rotateCw", label: "Reload", disabled: !url || path !== s.active, run: () => reloadPage() },
+      { icon: "clipboardCopy", label: "Copy address", disabled: !url, run: () => copy(url) },
+      { icon: "externalLink", label: "Open in default browser", disabled: !url, run: () => void window.open(url, "_blank", "noopener") },
+    );
+    return contextMenu({ x: e.clientX, y: e.clientY }, items);
+  }
   if (path.startsWith(COMMIT_TAB)) {
     items.push("-", { icon: "clipboardCopy", label: "Copy commit hash", run: () => copy(path.slice(COMMIT_TAB.length)) });
     return contextMenu({ x: e.clientX, y: e.clientY }, items);
@@ -2955,6 +3107,8 @@ function startPeek() {
   if (!peekable() || peeking) return;
   peeking = true;
   renderExplorer();
+  // Hidden, nothing was watched: what changed meanwhile (a commit) is read again, as when it's opened.
+  refresh();
   // Placed off the edge first (at once: placing it isn't a slide), then slid in, from wherever it is should it still be
   // sliding out.
   if (!app.classList.contains("files-peek")) {
@@ -2979,8 +3133,9 @@ function endPeek(refocus = false) {
 
 // ---------------- mount ----------------
 
-export function initPanels(refocus: () => void) {
+export function initPanels(refocus: () => void, findFile: () => void) {
   focusComposer = refocus;
+  goToFile = findFile;
   setOpener(openCited);
   app = $("app");
 
@@ -2992,6 +3147,14 @@ export function initPanels(refocus: () => void) {
   contentSlot = el("div", "fv-slot");
   paneBody.append(noticeSlot, contentSlot);
   paneInner.append(paneBar, paneBody);
+  mountBrowser(paneBody, {
+    changed: (tab) => session()?.tabs.includes(tab) && renderBar(),
+    open: (url, from, background) => openBrowser(url, from, background),
+    target: (target, tab) => void call("browser.owners", { owners: [[target, tab && ownerOf(tab)]] }).catch(() => {}),
+    tools,
+  });
+  // Pages whose tabs closed in an earlier run (only open tabs can be reopened) are let go of.
+  forgetPages(Object.values(saved.sessions).flatMap((s) => s.tabs));
   // Mod+A in a rendered file (Markdown, an image's page) selects that file's content, not the whole window.
   paneBody.addEventListener("keydown", (e) => {
     if (e.key !== "a" || !(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || live?.view.hasFocus) return;
@@ -3024,7 +3187,22 @@ export function initPanels(refocus: () => void) {
     },
   });
   changes = changesView(changesData);
-  review = reviewView(uncommittedSource(changesData), (path) => openFile(path));
+  const reviewed = changesSource(changesData, {
+    since: () => {
+      const r = root();
+      return r ? changesSince(r) : null;
+    },
+    noun: () => {
+      const r = root();
+      return SCOPE_NOUN[r ? scopeOf(treeOf(r)) : "uncommitted"];
+    },
+    picker: () => {
+      const r = root();
+      return r ? scopeMenu(r, treeOf(r)) : el("span");
+    },
+  });
+  rescopeReview = reviewed.rescope;
+  review = reviewView(reviewed.source, (path) => openFile(path));
   graph = graphView({ root, open: (hash, keep) => openCommit(hash, keep), flash });
   changes.el.append(graph.el);
   changesData.listen(() => (syncToggles(), explorerShown() && renderTabs(), graph.sync(changesData.current())));
@@ -3175,8 +3353,15 @@ export function initPanels(refocus: () => void) {
     if (id === shown) return;
     // A session just started from the new-session screen begins with the panels that were open there.
     const was = shown && shown.startsWith(NEW_SCREEN) ? saved.sessions[shown] : null;
-    if (was && id && store.thread?.cwd === shown!.slice(NEW_SCREEN.length) && nothingOpen(saved.sessions[id]) && store.echo?.threadId === id)
-      (saved.sessions[id] = structuredClone(was)), persist();
+    if (was && id && store.thread?.cwd === shown!.slice(NEW_SCREEN.length) && nothingOpen(saved.sessions[id]) && store.echo?.threadId === id) {
+      saved.sessions[id] = structuredClone(was);
+      // Its pages go with it (a page is one tab's): the new-session screen keeps its files.
+      was.tabs = was.tabs.filter((p) => !isBrowserTab(p));
+      if (was.active && isBrowserTab(was.active)) was.active = was.tabs[0] ?? null;
+      if (!was.tabs.length) was.surfaces = false;
+      persist();
+      reportOwners();
+    }
     shown = id;
     expanded = false;
     endPeek();

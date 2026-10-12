@@ -58,6 +58,9 @@ import image from "lucide-static/icons/image.svg" with { type: "text" };
 import keyboard from "lucide-static/icons/keyboard.svg" with { type: "text" };
 import moon from "lucide-static/icons/moon.svg" with { type: "text" };
 import refreshCw from "lucide-static/icons/refresh-cw.svg" with { type: "text" };
+import rotateCw from "lucide-static/icons/rotate-cw.svg" with { type: "text" };
+import layers from "lucide-static/icons/layers.svg" with { type: "text" };
+import files from "lucide-static/icons/files.svg" with { type: "text" };
 import rotateCcw from "lucide-static/icons/rotate-ccw.svg" with { type: "text" };
 import slidersHorizontal from "lucide-static/icons/sliders-horizontal.svg" with { type: "text" };
 import sun from "lucide-static/icons/sun.svg" with { type: "text" };
@@ -86,7 +89,7 @@ import type { HarnessId } from "../shared/model";
 
 const ICONS = {
   box, calendar, clock, claude, cursor, ellipsis, laptop, list,
-  bell, blocks, chartNoAxesColumn, info, image, keyboard, moon, refreshCw, rotateCcw, slidersHorizontal, sun, x,
+  bell, blocks, chartNoAxesColumn, info, image, keyboard, moon, refreshCw, rotateCcw, rotateCw, layers, files, slidersHorizontal, sun, x,
   circleCheck, undo2, arrowLeft, arrowRight, arrowUp, bot, brain, check, chevronDown, chevronLeft, chevronRight, copy, file,
   filePlus, fileDiff, folder, folderPlus, house, gitBranch, globe, monitor, openai, panelLeft, pencil, plug, plus, search, settings,
   squarePen, squareTerminal, star, triangleAlert, wrench, zap, maximize2, minimize2, gripVertical, trash2, messageCircle,

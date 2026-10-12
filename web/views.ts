@@ -9,8 +9,9 @@ import { el } from "./dom";
 import { openCitedPath } from "./refs";
 import { activeTheme, onTheme, themeVars } from "./theme";
 
-/** The tool's name as every adapter names an MCP call: server · tool. */
-export const VIEW_TOOL = "bismuth · render";
+/** The tool's name as every adapter names an MCP call: server · tool (`bismuth` in conversations from before the
+ *  server was `bismuth-preview`). */
+export const isViewTool = (name: string) => name === "bismuth-preview · render" || name === "bismuth · render";
 const MIN_H = 40;
 const MAX_H = 900;
 /** Sizes views last reported, so a frame built again (a re-render, coming back to the thread) opens at its size. */
@@ -69,7 +70,7 @@ const tell = (frame: HTMLIFrameElement, extra: object = {}) =>
 
 /** The view a finished render call showed: its page id, title and viewport width, from the call's result and arguments. */
 export function viewOf(item: { name: string; input: string; output: string; status: string }): { id: string; title: string; viewport: number | null } | null {
-  if (item.name !== VIEW_TOOL || item.status !== "completed") return null;
+  if (!isViewTool(item.name) || item.status !== "completed") return null;
   const id = item.output.match(/bismuth-view:([0-9a-f]{20})/)?.[1];
   if (!id) return null;
   let title = "View";

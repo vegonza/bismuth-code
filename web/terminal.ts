@@ -13,6 +13,7 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Terminal as XTerm, type ITheme } from "@xterm/xterm";
 import type { TerminalInfo } from "../shared/model";
 import { draft } from "./composer";
+import { openWebLink } from "./browser";
 import { $, el } from "./dom";
 import { icon } from "./icons";
 import { comboFromEvent, displayCombo, keyContext, shellKeeps, shortcutFor } from "./keymap";
@@ -125,7 +126,8 @@ function viewFor(info: TerminalInfo): View {
   });
   const fit = new FitAddon();
   term.loadAddon(fit);
-  term.loadAddon(new WebLinksAddon((_e, uri) => window.open(uri, "_blank")));
+  // A link's address opens as a browser tab (Ctrl+click behind the shown one).
+  term.loadAddon(new WebLinksAddon((e, uri) => openWebLink(uri, e.ctrlKey || e.metaKey)));
   const v: View = { info, term, fit, host, lastSeq: 0, title: "", input: "", inputTimer: null, resizeTimer: null };
   term.attachCustomKeyEventHandler((e) => {
     if (e.type !== "keydown") return true;

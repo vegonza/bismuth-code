@@ -1,5 +1,5 @@
 // Views: an agent shows UI inline in the conversation, built with the project's own frontend. bismuth serves an MCP
-// server of its own (`bismuth`, passed to every run like servers carried over: see mcp.ts) whose `render` tool takes
+// server of its own (`bismuth-preview`, passed to every run like servers carried over: see mcp.ts) whose `render` tool takes
 // a view's source. The project builds it: `.bismuth/view/build <view-file> <out.html>`, a script the project keeps
 // (an agent writes it the first time, from the setup this hands back, starting from view-templates/), writes one
 // self-contained page, or fails with errors that go back to the agent and nothing is shown. bismuth adds the script
@@ -11,7 +11,7 @@ import { extname, join } from "node:path";
 import { openChrome } from "./chrome";
 import type { McpDef } from "./mcp";
 
-export const VIEW_SERVER = "bismuth";
+export const VIEW_SERVER = "bismuth-preview";
 const BUILD_MS = 120_000;
 const MAX_HTML_BYTES = 8 * 1024 * 1024;
 /** Local images a page names are inlined (inlineImages): each up to this, the page with them up to MAX_PAGE_BYTES. */
@@ -154,7 +154,7 @@ export class Views {
         return ok({
           protocolVersion: typeof msg.params?.protocolVersion === "string" ? msg.params.protocolVersion : "2025-06-18",
           capabilities: { tools: {} },
-          serverInfo: { name: VIEW_SERVER, title: "bismuth", version: "1.0.0" },
+          serverInfo: { name: VIEW_SERVER, title: "bismuth inline preview", version: "1.0.0" },
         });
       case "ping":
         return ok({});

@@ -2,7 +2,7 @@
 // with the language's colours and the unchanged lines between changes folded; a file's diff is read when it comes near
 // the screen. What it reviews is its source's: the uncommitted changes (the Changes view's, so the two agree), or a
 // commit picked in the graph.
-import type { GitChange, GitCommitChanges } from "../shared/model";
+import type { GitChange, GitChanges, GitCommitChanges } from "../shared/model";
 import { diffView, type EditorView } from "./code";
 import { baseName, dirName, LETTER, lineCounts, type ChangesStore } from "./changes";
 import { el, timeAgo } from "./dom";
@@ -62,27 +62,72 @@ export function commitSource(root: string, hash: string) {
   return { source, subject: () => data?.commit.subject ?? null };
 }
 
-/** The uncommitted changes, as the Changes view lists them. */
-export function uncommittedSource(store: ChangesStore): ReviewSource {
+/** What the changes are counted from (the explorer's scope, panels.ts): `since` as `files.base` and `git.changes` take it
+ *  (null: the last commit; "": no session for "Last turn"), what to call them, and the dropdown that picks it. */
+export type ReviewScope = { since: () => string | null; noun: () => string; picker: () => HTMLElement };
+
+/** The changes in the scope picked: the uncommitted ones as the Changes view has them (so the two agree), the others
+ *  (the last turn's, the unpushed, the branch's) read here whenever the repository is. `rescope` after the scope moved. */
+export function changesSource(store: ChangesStore, scope: ReviewScope) {
   const { hooks } = store;
-  return {
-    key: () => hooks.root() ?? "",
-    files: () => store.current()?.files ?? null,
-    before: (f) => call("files.base", { root: hooks.root()!, path: f.from ?? f.path, since: null }),
+  const listeners = new Set<() => void>();
+  const tell = () => listeners.forEach((fn) => fn());
+  let data: { key: string; changes: GitChanges } | null = null;
+  const keyOf = () => `${hooks.root() ?? ""}\0${scope.since()}`;
+  let seq = 0;
+  async function read() {
+    const r = hooks.root();
+    const since = scope.since();
+    if (!r || !since) return tell();
+    const key = keyOf();
+    const mine = ++seq;
+    try {
+      const changes = await call("git.changes", { root: r, since });
+      if (mine === seq && key === keyOf()) data = { key, changes };
+    } catch (err: any) {
+      if (mine === seq && key === keyOf()) data = { key, changes: { repo: true, branch: null, upstream: null, ahead: 0, behind: 0, remotes: false, files: [] } };
+      hooks.flash(String(err?.message ?? err));
+    }
+    if (mine === seq) tell();
+  }
+  /** What's shown, read for the scope as it stands (null: on its way). */
+  const current = (): GitChanges | null => {
+    const since = scope.since();
+    if (since === null) return store.current();
+    if (since === "") return null;
+    return data?.key === keyOf() ? data.changes : null;
+  };
+  store.listen(() => void read());
+  const source: ReviewSource = {
+    key: keyOf,
+    files: () => (scope.since() === "" ? [] : (current()?.files ?? null)),
+    before: (f) => call("files.base", { root: hooks.root()!, path: f.from ?? f.path, since: scope.since() }),
     after: (f) => (f.status === "deleted" ? Promise.resolve("") : call("files.read", { root: hooks.root()!, path: f.path }).then((c) => (c.kind === "text" ? c.text : null))),
     head: (files) => {
       const added = files.reduce((n, f) => n + (f.added ?? 0), 0);
       const removed = files.reduce((n, f) => n + (f.removed ?? 0), 0);
-      return [el("span", "rv-title", "Uncommitted changes"), el("span", "rv-meta", `${files.length} ${files.length === 1 ? "file" : "files"}`), lineCounts(added, removed)];
+      return [scope.picker(), el("span", "rv-meta", `${files.length} ${files.length === 1 ? "file" : "files"}`), lineCounts(added, removed)];
     },
-    empty: () => (store.current()?.repo === false ? "This folder isn't in a git repository." : "No uncommitted changes."),
-    discard: (f) => store.discard([f]),
-    listen: (fn) => store.listen(fn),
+    empty: () => {
+      const c = current();
+      if (scope.since() === "") return "No session open: its last turn's changes show here.";
+      if (c?.repo === false) return "This folder isn't in a git repository.";
+      if (c?.turn === false) return "This session has no turn kept yet.";
+      return `No ${scope.noun()}.`;
+    },
+    // Undone back to the last commit: only for what's uncommitted.
+    get discard() {
+      return scope.since() === null ? (f: GitChange) => store.discard([f]) : undefined;
+    },
+    listen: (fn) => listeners.add(fn),
   };
+  return { source, rescope: () => void read() };
 }
 
 /** A diff this many changed lines long waits for a click to be drawn. */
 const LARGE_DIFF = 3000;
+/** About a diff's line's height, for a section's before it's drawn. */
+const LINE_PX = 20;
 
 type Section = { sig: string; el: HTMLElement; slot: HTMLElement; view: EditorView | null; loaded: Promise<void> | null; file: GitChange };
 
@@ -117,6 +162,7 @@ export function reviewView(source: ReviewSource, open: (path: string) => void) {
       const show = el("button", "rv-note-btn", "Show this diff");
       show.onclick = () => void load(s, true);
       s.slot.replaceChildren(el("div", "rv-note", `${(f.added ?? 0) + (f.removed ?? 0)} lines changed: a large diff`), show);
+      s.slot.style.minHeight = "";
       return Promise.resolve();
     }
     s.slot.replaceChildren(el("div", "rv-note", "Reading…"));
@@ -136,7 +182,7 @@ export function reviewView(source: ReviewSource, open: (path: string) => void) {
       if (before === after) return void s.slot.replaceChildren(el("div", "rv-note", f.status === "renamed" ? "Renamed, unchanged" : "No changes to show"));
       s.slot.replaceChildren();
       s.view = diffView(s.slot, before, after, f.path);
-    })();
+    })().finally(() => (s.slot.style.minHeight = ""));
     return s.loaded;
   }
 
@@ -177,6 +223,12 @@ export function reviewView(source: ReviewSource, open: (path: string) => void) {
     };
     const slot = el("div", "rv-diff");
     sec.append(top, slot);
+    // About as tall as its diff until it's drawn (off screen, or still being read), so only the files near the screen
+    // are read: empty, they'd all be near at once.
+    const lines = (f.added ?? 0) + (f.removed ?? 0);
+    const guess = lines > LARGE_DIFF ? 80 : 8 + (lines + 6) * LINE_PX;
+    slot.style.minHeight = `${guess}px`;
+    sec.style.setProperty("--rv-h", `${33 + guess}px`);
     const s: Section = { sig: sigOf(f), el: sec, slot, view: null, loaded: null, file: f };
     near.observe(sec);
     return s;

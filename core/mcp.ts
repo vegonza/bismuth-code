@@ -22,8 +22,8 @@ export type McpDef =
 export type McpNative = { name: string; source: string; def: McpDef | null; configured: boolean; locked: string | null; dormant?: true };
 /** A harness's servers for a project, and how the ones it ran there were doing (carried ones too). */
 export type McpListing = { natives: McpNative[]; status: Record<string, { status: McpStatus | null; tools: number | null }> };
-/** A server bismuth itself serves to every run (core/views.ts): on unless switched off. */
-export type McpBuiltin = { name: string; source: string; target: string };
+/** A server bismuth itself serves to every run (core/views.ts, core/browser.ts): on unless switched off. */
+export type McpBuiltin = { name: string; title: string; source: string; target: string };
 /** What a harness's runs in a project get: its own servers forced off or on, and the ones carried over. */
 export type McpPlan = { off: string[]; on: string[]; add: Record<string, McpDef> };
 
@@ -42,6 +42,10 @@ export class McpOverrides {
   constructor(stateDir: string) {
     this.file = join(stateDir, "mcp-overrides.json");
     this.stored = readJson(this.file) ?? {};
+    // Views' server was `bismuth` before the browser's came beside it: its switches follow it.
+    for (const at of Object.values(this.stored))
+      for (const mine of Object.values(at))
+        if (mine && "bismuth" in mine) (mine["bismuth-preview"] ??= mine.bismuth), delete mine.bismuth;
   }
 
   /** A harness's switches in a project: the project's own over the ones for all projects. */
@@ -83,6 +87,7 @@ export class McpOverrides {
   table(cwd: string, harnesses: HarnessId[], listings: Partial<Record<HarnessId, McpListing>>, builtins: McpBuiltin[] = []): McpServer[] {
     const own: McpServer[] = builtins.map((b) => ({
       name: b.name,
+      title: b.title,
       from: "bismuth",
       source: b.source,
       target: b.target,

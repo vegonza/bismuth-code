@@ -111,6 +111,8 @@ export function renderMarkdown(text: string, into: HTMLElement, base = "", gutte
   into.querySelectorAll("a").forEach((a) => {
     a.target = "_blank";
     a.rel = "noreferrer";
+    // A web address: opens as a browser tab in the desktop app (browser.ts).
+    if (/^https?:\/\//i.test(a.getAttribute("href") ?? "")) a.dataset.web = "";
   });
   linkFiles(into, base);
   if (gutter) gutterCopies(into);

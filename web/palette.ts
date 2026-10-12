@@ -17,7 +17,7 @@ import { restartApp } from "./restart";
 import { closeSettings, openSettings, refresh } from "./settings";
 import { projectArt, renameSession, sessionRow, sortedSummaries, toggleSidebar } from "./sidebar";
 import { newTerminal, toggleMaximize, toggleTerminal } from "./terminal";
-import { closeActiveFile, reopenClosedFile, collapseFolders, copyActivePath, downloadPdf, expandFolders, findFiles, loadSuggestions, openFile, openReview, showChangesSince, showCommit, suggestedFiles, toggleChanges, toggleExpand, toggleFiles, revealActiveFile, toggleHiddenFiles, togglePane, togglePreview } from "./panels";
+import { openBrowser, closeActiveFile, reopenClosedFile, collapseFolders, copyActivePath, downloadPdf, expandFolders, findFiles, loadSuggestions, openFile, openReview, showChangesSince, showCommit, suggestedFiles, toggleChanges, toggleExpand, toggleFiles, revealActiveFile, toggleHiddenFiles, togglePane, togglePreview } from "./panels";
 import { actions, call, on, projectName, store, targetProject, tildePath, workFolder } from "./store";
 
 const HISTORY_RESULT_LIMIT = 30;
@@ -55,6 +55,7 @@ const COMMANDS: Command[] = [
   { label: "Expand all folders", icon: "folderOpen", combo: () => bound("expandFolders"), run: () => (closeSettings(), void expandFolders()) },
   { label: "Collapse all folders", icon: "folder", combo: () => bound("collapseFolders"), run: () => (closeSettings(), collapseFolders()) },
   { label: "Close file", icon: "x", combo: () => bound("closeFile"), run: () => (closeSettings(), closeActiveFile()) },
+  { label: "New browser tab", icon: "globe", combo: () => bound("newBrowserTab"), run: () => (closeSettings(), openBrowser()) },
   { label: "Reopen closed file", icon: "rotateCcw", combo: () => bound("reopenFile"), run: () => (closeSettings(), reopenClosedFile()) },
   { label: "Copy path of current file", icon: "clipboardCopy", combo: () => null, run: () => (closeSettings(), copyActivePath()) },
   { label: "Reveal current file in file manager", icon: "folderOpen", combo: () => bound("revealFile"), run: () => (closeSettings(), revealActiveFile()) },
@@ -492,7 +493,7 @@ function onKey(e: KeyboardEvent) {
     // ←/→ move between the harnesses, not the caret: the list is a grid.
     moveMcpColumn(e.key === "ArrowRight" ? 1 : -1);
   } else if (e.key === "Enter" && mod && palette.view === "mcp") {
-    if (!e.repeat && mcpRows[active]) void switchMcp(mcpRows[active], mcpHarnesses()[mcpColumn], "all");
+    if (!e.repeat && mcpRows[active]) void switchMcp(mcpRows[active], mcpColumns()[mcpColumn], "all");
   } else if (e.key === "Enter" && mod && folders) {
     // Adds the folder that's open (the breadcrumbs' last), never the highlight: that rests on the first row.
     if (!e.repeat) void addOpenFolder();
@@ -639,6 +640,8 @@ type McpUse = NonNullable<McpServer["uses"][HarnessId]>;
 /** MCP servers for a project (null: there's none yet). */
 function openMcp(project: Project | null) {
   mcpProject = project;
+  // The keyboard starts on the all-harnesses switch.
+  mcpColumn = 0;
   showView("mcp");
 }
 
@@ -649,6 +652,16 @@ function pickProjectForMcp() {
 }
 
 const mcpHarnesses = () => HARNESS_ORDER.filter((h) => mcpSnapshot?.harnesses.includes(h));
+/** One switch for all the harnesses (with more than one): first, as most changes are for all of them. Then one per
+ *  harness. */
+type McpColumn = HarnessId | "all";
+const mcpColumns = (): McpColumn[] => {
+  const hs = mcpHarnesses();
+  return hs.length > 1 ? ["all", ...hs] : hs;
+};
+/** The harnesses the all switch flips: those whose switch for the server isn't locked. */
+const switchable = (s: McpServer) => mcpHarnesses().filter((h) => s.uses[h] && !s.uses[h]!.locked);
+const allOn = (s: McpServer) => switchable(s).length > 0 && switchable(s).every((h) => s.uses[h]!.enabled);
 
 async function loadMcp() {
   const project = mcpProject;
@@ -663,34 +676,37 @@ async function loadMcp() {
     mcpSnapshot = { harnesses: [], servers: [] };
     mcpError = String(err?.message ?? err);
   }
-  mcpColumn = Math.min(mcpColumn, Math.max(0, mcpHarnesses().length - 1));
+  mcpColumn = Math.min(mcpColumn, Math.max(0, mcpColumns().length - 1));
   if (palette?.view === "mcp") renderList();
 }
 
 /** The servers in the order their harnesses come, each a row of switches. */
 function mcpEntries(q: string[]): Entry[] {
   mcpRows = (mcpSnapshot?.servers ?? [])
-    .filter((s) => matches(q, `${s.name} ${fromName(s)} ${s.source} ${s.target ?? ""}`))
+    .filter((s) => matches(q, `${s.title ?? ""} ${s.name} ${fromName(s)} ${s.source} ${s.target ?? ""}`))
     // bismuth's own first, then by the harness that defines them.
     .sort((a, b) => fromOrder(a) - fromOrder(b) || a.name.localeCompare(b.name));
-  return mcpRows.map((s) => ({ group: "servers", render: (q) => mcpRow(s, q), pick: () => void switchMcp(s, mcpHarnesses()[mcpColumn], "project") }));
+  return mcpRows.map((s) => ({ group: "servers", render: (q) => mcpRow(s, q), pick: () => void switchMcp(s, mcpColumns()[mcpColumn], "project") }));
 }
 
 const fromName = (s: McpServer) => (s.from === "bismuth" ? "bismuth" : HARNESS_NAMES[s.from]);
 const fromOrder = (s: McpServer) => (s.from === "bismuth" ? -1 : HARNESS_ORDER.indexOf(s.from));
 
-/** Name, the harness and file that define it, then a switch per harness. */
+/** Name, the harness and file that define it, then a switch for all the harnesses and one per harness. */
 function mcpRow(s: McpServer, q: string[]): HTMLElement {
   const item = el("div", "palette-command palette-mcp");
   item.title = s.target ?? "";
   const label = el("span", "label");
   const name = el("span", "name");
-  name.append(highlight(s.name, q));
+  name.append(highlight(s.title ?? s.name, q));
   const where = el("span", "path");
-  where.append(highlight(s.from === "bismuth" ? s.source : `${fromName(s)} · ${s.source}`, q));
+  where.append(highlight(s.from === "bismuth" ? `${s.name} · ${s.source}` : `${fromName(s)} · ${s.source}`, q));
   label.append(name, where);
   item.append(label);
-  mcpHarnesses().forEach((h, col) => {
+  const all = mcpColumns().includes("all");
+  if (all) item.append(mcpAllCell(s));
+  mcpHarnesses().forEach((h, i) => {
+    const col = i + (all ? 1 : 0);
     const use = s.uses[h];
     const cell = el("span", "mcp-cell");
     cell.dataset.col = String(col);
@@ -715,13 +731,43 @@ function mcpRow(s: McpServer, q: string[]): HTMLElement {
   return item;
 }
 
+/** Every harness's switch at once: on when they all are. */
+function mcpAllCell(s: McpServer): HTMLElement {
+  const col = 0;
+  const hs = switchable(s);
+  const on = allOn(s);
+  const cell = el("span", "mcp-cell mcp-all");
+  cell.dataset.col = String(col);
+  cell.classList.toggle("locked", !hs.length);
+  const scopes = new Set(hs.map((h) => s.uses[h]!.scope));
+  const scope = scopes.size === 1 ? [...scopes][0] : null;
+  if (scope) cell.classList.add(`scope-${scope}`);
+  cell.setAttribute("role", "switch");
+  cell.setAttribute("aria-checked", String(on));
+  cell.setAttribute("aria-label", `${s.title ?? s.name} for every harness`);
+  const some = hs.filter((h) => s.uses[h]!.enabled).map((h) => HARNESS_NAMES[h]);
+  cell.title = [
+    on ? "On for every harness" : some.length ? `On for ${some.join(" and ")}` : "Off for every harness",
+    hs.length ? `Click: ${on ? "off" : "on"} for all, this project · ${displayCombo("mod")}-click: all projects` : "Can't be switched here",
+  ].join("\n");
+  const glyph = el("span", "mcp-glyph");
+  glyph.append(icon("layers"));
+  cell.append(glyph, toggleSwitch(on));
+  cell.onclick = (e) => {
+    e.stopPropagation();
+    mcpColumn = col;
+    void switchMcp(s, "all", e.ctrlKey || e.metaKey ? "all" : "project");
+  };
+  return cell;
+}
+
 function mcpCellTitle(s: McpServer, h: HarnessId, use: McpUse): string {
   const who = HARNESS_NAMES[h];
   const lines = [
     `${who}: ${use.enabled ? "on" : "off"}` +
       (use.scope === "project" ? " for this project" : use.scope === "all" ? " for all projects" : use.native ? ", as its own config has it" : ""),
   ];
-  if (s.from === "bismuth") lines.push(`Built into bismuth: ${s.target}`);
+  if (s.from === "bismuth") lines.push(`Built into bismuth (${s.name}): ${s.target}`);
   else if (!use.native && !use.locked) lines.push(`Carried over from ${fromName(s)} (${s.source})`);
   if (use.status) lines.push(MCP_STATUS[use.status] + (use.status === "connected" && use.tools != null ? ` · ${use.tools} tool${use.tools === 1 ? "" : "s"}` : ""));
   if (use.locked) lines.push(use.locked);
@@ -731,7 +777,7 @@ function mcpCellTitle(s: McpServer, h: HarnessId, use: McpUse): string {
 
 /** The keyboard's harness column, marked on the highlighted row. */
 function moveMcpColumn(step: number) {
-  const n = mcpHarnesses().length;
+  const n = mcpColumns().length;
   if (!n) return;
   mcpColumn = (mcpColumn + step + n) % n;
   markMcpColumn();
@@ -743,24 +789,29 @@ function markMcpColumn() {
   );
 }
 
-/** Flips a harness's switch for a server at once; the core's answer (or its refusal) settles it. */
-async function switchMcp(s: McpServer, h: HarnessId | undefined, scope: McpScope) {
+/** Flips a harness's switch for a server (or every harness's, "all") at once; the core's answer (or its refusal)
+ *  settles it. All of them go on unless they all are. */
+async function switchMcp(s: McpServer, col: McpColumn | undefined, scope: McpScope) {
   const project = mcpProject;
-  const use = h ? s.uses[h] : undefined;
-  if (!project || !mcpSnapshot || !h || !use) return;
-  if (use.locked) {
+  if (!project || !mcpSnapshot || !col) return;
+  const use = col === "all" ? undefined : s.uses[col];
+  if (col !== "all" && !use) return;
+  if (use?.locked) {
     mcpError = use.locked;
     return renderList();
   }
-  const enabled = !use.enabled;
+  const harnesses = col === "all" ? switchable(s) : [col];
+  if (!harnesses.length) return;
+  const enabled = col === "all" ? !allOn(s) : !use!.enabled;
   const seq = ++mcpSeq;
   const before = mcpSnapshot;
   mcpError = null;
-  const flipped: McpUse = { ...use, enabled, scope, status: null, tools: null };
-  mcpSnapshot = { ...before, servers: before.servers.map((x) => (x === s ? { ...x, uses: { ...x.uses, [h]: flipped } } : x)) };
+  const uses = { ...s.uses };
+  for (const h of harnesses) uses[h] = { ...uses[h]!, enabled, scope, status: null, tools: null };
+  mcpSnapshot = { ...before, servers: before.servers.map((x) => (x === s ? { ...x, uses } : x)) };
   renderList();
   try {
-    const snapshot = await call("mcp.set", { projectId: project.id, harness: h, name: s.name, enabled, scope });
+    const snapshot = await call("mcp.set", { projectId: project.id, harnesses, name: s.name, enabled, scope });
     if (seq !== mcpSeq) return;
     mcpSnapshot = snapshot;
   } catch (err: any) {

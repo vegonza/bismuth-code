@@ -10,7 +10,7 @@ export type BackgroundEffect = "none" | "dither" | "ascii" | "halftone" | "scanl
 /** Pan/zoom of the new-thread background: the focal point (0–1 on each axis) and a 1–4× magnification. */
 export type Framing = { focalX: number; focalY: number; zoom: number };
 
-export const SHORTCUTS = ["toggleSidebar", "toggleRightPane", "expandRightPane", "toggleFiles", "showChanges", "showReview", "toggleTerminal", "newSession", "newSessionIn", "openModelPicker", "nextSession", "prevSession", "settleSession", "renameSession", "jump1", "jump2", "jump3", "jump4", "jump5", "jump6", "jump7", "jump8", "jump9", "newTerminal", "closeTerminal", "nextTerminal", "prevTerminal", "maximizeTerminal", "closeFile", "reopenFile", "saveFile", "togglePreview", "goBack", "goForward", "toggleHiddenFiles", "expandFolders", "collapseFolders", "revealFile", "quickOpen", "tab1", "tab2", "tab3", "tab4", "tab5", "tab6", "tab7", "tab8", "tab9", "removeImage", "stopTurn"] as const;
+export const SHORTCUTS = ["toggleSidebar", "toggleRightPane", "expandRightPane", "toggleFiles", "showChanges", "showReview", "toggleTerminal", "newSession", "newSessionIn", "openModelPicker", "nextSession", "prevSession", "settleSession", "renameSession", "jump1", "jump2", "jump3", "jump4", "jump5", "jump6", "jump7", "jump8", "jump9", "newTerminal", "closeTerminal", "nextTerminal", "prevTerminal", "maximizeTerminal", "closeFile", "reopenFile", "saveFile", "togglePreview", "goBack", "goForward", "toggleHiddenFiles", "expandFolders", "collapseFolders", "revealFile", "quickOpen", "tab1", "tab2", "tab3", "tab4", "tab5", "tab6", "tab7", "tab8", "tab9", "removeImage", "stopTurn", "newBrowserTab", "focusAddress", "reloadPage"] as const;
 export type ShortcutId = (typeof SHORTCUTS)[number];
 /** Shortcuts that act on the terminal drawer. They may share a combination with one that acts on the session
  *  (Next terminal and Next session are both Mod+Tab): while a terminal has focus its own wins, elsewhere the
@@ -83,6 +83,10 @@ export const DEFAULT_KEYMAP: Keymap = {
   removeImage: "shift-backspace",
   // Stops the open session's running turn, wherever focus is (Escape doesn't).
   stopTurn: "mod-shift-backspace",
+  // Browser tabs, as Zeron has them: Mod+T a new one, Mod+L its address. Reload is F5 (Mod+R is the files panel's).
+  newBrowserTab: "mod-t",
+  focusAddress: "mod-l",
+  reloadPage: "f5",
 };
 
 export type Prefs = {

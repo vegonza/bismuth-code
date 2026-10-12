@@ -20,7 +20,7 @@ import { blob, changes, commit, commitChanges, discard, init, log, pull, push, s
 import { baseText, createEntry, duplicateEntry, gitState, rawFile, listDirectory, openExternal, previewFile, readFile, renameEntry, resolveRefs, revealEntry, searchFiles, trashEntries, writeFile } from "./files";
 import { definition, killLanguageServers } from "./lsp";
 import { FolderWatch, gitDirOf } from "./watch";
-import { cursorListing, McpOverrides, setCursorServer, type McpBuiltin, type McpListing, type McpPlan } from "./mcp";
+import { cursorListing, McpOverrides, setCursorServer, type McpBuiltin, type McpDef, type McpListing, type McpPlan } from "./mcp";
 import { HOME, listFolder, Projects } from "./projects";
 import { MessageQueue, type Row } from "./queue";
 import { RemoteAccessControl } from "./remote";
@@ -29,6 +29,7 @@ import { Terminals } from "./terminals";
 import { SharedUiState } from "./uistate";
 import { MAX_UPLOAD_BYTES, Uploads } from "./uploads";
 import { VIEW_SERVER, Views } from "./views";
+import { Browser, BROWSER_SERVER } from "./browser";
 import * as ui from "./ui";
 import type { ClientMessage, HarnessId, HarnessInfo, McpSnapshot, ModelOption, RestartMode, RestartResult, RpcMethods, ServerMessage, Thread, ThreadSummary, TurnSettings, UsageReport } from "../shared/model";
 
@@ -48,13 +49,35 @@ const views = new Views(ui.STATE, () => server.port!, () => {
   return { appearance: prefs.scheme === "light" ? "light" : "dark" };
 });
 const sharedUi = new SharedUiState(ui.STATE);
+// The browser agents drive (core/browser.ts): the window's own browser tabs, through Chromium's DevTools port.
+const browserAsks = new Map<string, { resolve: (targetId: string | undefined) => void; reject: (err: Error) => void; left: number }>();
+const browser = new Browser(ui.STATE, () => server.port!, Number(process.env.BISMUTH_CDP_PORT) || null, {
+  open: async (session, url) => (await askWindow({ op: "open", session, url }))!,
+  close: async (session, targetId) => void (await askWindow({ op: "close", session, targetId })),
+  show: async (session, targetId) => void (await askWindow({ op: "show", session, targetId })),
+  awake: (targets) => broadcast({ type: "browserAwake", targets }),
+});
+
+/** The windows on this machine (the desktop's) asked to do something with their browser tabs: the first that does
+ *  answers; it fails only when every one couldn't. */
+function askWindow(ask: { op: "open"; session: string; url: string } | { op: "close" | "show"; session: string; targetId: string }): Promise<string | undefined> {
+  const windows = [...clients].filter((c) => c.data.kind === "app" && !c.data.remote);
+  if (!windows.length) return Promise.reject(new Error("bismuth's window isn't open"));
+  const id = randomUUID();
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => settle(() => reject(new Error("bismuth's window didn't answer"))), 30_000);
+    const settle = (fn: () => void) => (clearTimeout(timer), browserAsks.delete(id), fn());
+    browserAsks.set(id, { resolve: (t) => settle(() => resolve(t)), reject: (e) => settle(() => reject(e)), left: windows.length });
+    for (const c of windows) send(c, { type: "browser", id, ...ask });
+  });
+}
 /** When each thread's run in flight began: its turn's start as the harness reports it, else when the run was first
  *  seen. Every run starts under this core (harness work doesn't outlive it), so it's never a guess. */
 const runStarts = new Map<string, number>();
 /** A summary (or full thread) as clients see it: with its settlement and how long it's been running. */
 const settled = <T extends ThreadSummary>(t: T): T => ({ ...t, settledAt: settlement.settledAt(t, projects.settleBefore(t.cwd)), runningSince: runStarts.get(t.id) ?? null });
 
-type SocketData = { kind: "app" | "live"; threadId: string | null; id: string; remote: boolean }; // id: the window, for queue edits; remote: through remote access
+type SocketData = { kind: "app" | "live" | "cdp"; threadId: string | null; id: string; remote: boolean }; // cdp: threadId is the session (core/browser.ts) // id: the window, for queue edits; remote: through remote access
 type Client = ServerWebSocket<SocketData>;
 const clients = new Set<Client>();
 const live = new Set<Client>();
@@ -83,7 +106,8 @@ const autoCompact = new AutoCompact(ui.STATE);
 codex.compactLimit = () => autoCompact.get("codex");
 claude.compactWindow = () => autoCompact.get("claude");
 const mcp = new McpOverrides(ui.STATE);
-for (const h of [claude, codex, cursor]) h.mcpPlan = (cwd) => mcpPlan(cwd, h.id);
+for (const h of [claude, codex, cursor]) (h.mcpPlan = (cwd) => mcpPlan(cwd, h.id)), (h.sessionMcp = (cwd, key) => sessionMcp(cwd, h.id, key));
+codex.onSessionKey = (key, id) => browser.alias(key, id);
 /** A thread as clients see it: settled or not, and where it auto-compacts (its context ring's full mark). */
 const decorated = <T extends Omit<Thread, "turns" | "requests">>(t: T): T => ({
   ...settled(t),
@@ -537,6 +561,16 @@ async function rpc<M extends keyof RpcMethods>(method: M, params: RpcMethods[M][
       }
       return { ...autoCompact.snapshot({ configLimit: codex.configLimit, ...codex.configDefault }), reopened };
     }
+    case "browser.owners":
+      browser.setOwners((Array.isArray(p.owners) ? p.owners : []).map(([t, s]: [unknown, unknown]) => [String(t), s == null ? null : String(s)]), !!p.all);
+      return null;
+    case "browser.done": {
+      const ask = browserAsks.get(String(p.id));
+      if (!ask) return null;
+      if (!p.error) ask.resolve(p.targetId ? String(p.targetId) : undefined);
+      else if (--ask.left <= 0) ask.reject(new Error(String(p.error)));
+      return null;
+    }
     case "remote.get":
       return remote.get();
     case "remote.set":
@@ -545,22 +579,27 @@ async function rpc<M extends keyof RpcMethods>(method: M, params: RpcMethods[M][
       return mcpSnapshot(mcpProject(p.projectId).path);
     case "mcp.set": {
       const project = mcpProject(p.projectId);
-      const h = p.harness as HarnessId;
       const name = String(p.name);
       const enabled = !!p.enabled;
       const scope = p.scope === "all" ? "all" : "project";
+      const hs: HarnessId[] = (Array.isArray(p.harnesses) ? p.harnesses : []).map(harness);
       const listings = await mcpListings(project.path, false);
-      const row = mcp.table(project.path, [h], listings, BUILTINS).find((s) => s.name === name);
-      const use = row?.uses[h];
-      if (!use) throw new Error(`No MCP server named ${name} here`);
-      if (use.locked) throw new Error(use.locked);
-      // A dormant definition (a project's .cursor/mcp.json) isn't one the harness runs on its own: its switch is bismuth's.
-      const native = listings[h]?.natives.find((n) => n.name === name && !n.dormant);
-      // Cursor's own servers switch in Cursor's per-project list: "all" is every project there is now.
-      if (native && h === "cursor") for (const cwd of scope === "all" ? projects.paths() : [project.path]) setCursorServer(cwd, name, enabled);
-      // A built-in server is on unless switched off.
-      else mcp.set(project.path, h, name, enabled, scope, row!.from === "bismuth" ? true : (native?.configured ?? false));
-      if (h === "codex") await codex.replanMcp();
+      const row = mcp.table(project.path, hs, listings, builtins()).find((s) => s.name === name);
+      if (!row) throw new Error(`No MCP server named ${name} here`);
+      for (const h of hs) {
+        const use = row.uses[h];
+        if (!use) throw new Error(`No MCP server named ${name} here`);
+        if (use.locked) throw new Error(use.locked);
+      }
+      for (const h of hs) {
+        // A dormant definition (a project's .cursor/mcp.json) isn't one the harness runs on its own: its switch is bismuth's.
+        const native = listings[h]?.natives.find((n) => n.name === name && !n.dormant);
+        // Cursor's own servers switch in Cursor's per-project list: "all" is every project there is now.
+        if (native && h === "cursor") for (const cwd of scope === "all" ? projects.paths() : [project.path]) setCursorServer(cwd, name, enabled);
+        // A built-in server is on unless switched off.
+        else mcp.set(project.path, h, name, enabled, scope, row.from === "bismuth" ? true : (native?.configured ?? false));
+      }
+      if (hs.includes("codex")) await codex.replanMcp();
       return mcpSnapshot(project.path);
     }
     case "queue.move":
@@ -634,17 +673,26 @@ async function mcpListings(cwd: string, live: boolean): Promise<Partial<Record<H
 
 async function mcpSnapshot(cwd: string): Promise<McpSnapshot> {
   const available = harnesses.filter((h) => status.get(h.id)!.available).map((h) => h.id);
-  return { harnesses: available, servers: mcp.table(cwd, available, await mcpListings(cwd, true), BUILTINS) };
+  return { harnesses: available, servers: mcp.table(cwd, available, await mcpListings(cwd, true), builtins()) };
 }
 
-/** bismuth's own servers, listed first in MCP servers and on unless switched off there. */
-const BUILTINS: McpBuiltin[] = [{ name: VIEW_SERVER, source: "Built into bismuth", target: "render: views made with the project's own frontend" }];
+/** bismuth's own servers, listed first in MCP servers and on unless switched off there: the browser's only where
+ *  there's one to drive (the desktop app). */
+const builtins = (): McpBuiltin[] => [
+  { name: VIEW_SERVER, title: "bismuth inline preview", source: "Built into bismuth", target: "render: views made with the project's own frontend, shown in the conversation" },
+  ...(browser.available ? [{ name: BROWSER_SERVER, title: "bismuth browser", source: "Built into bismuth · Chrome DevTools MCP", target: "The browser tabs beside the chat: read, click, type, screenshots, console, network" }] : []),
+];
 
 /** What a harness's runs in a project get (without a switch for it there, nothing to read), and bismuth's own server
  *  for views (core/views.ts) unless it's switched off. */
 async function mcpPlan(cwd: string, h: HarnessId): Promise<McpPlan> {
   const plan: McpPlan = Object.keys(mcp.get(cwd, h)).length ? mcp.plan(cwd, h, await mcpListings(cwd, false)) : { off: [], on: [], add: {} };
   return mcp.builtinOn(cwd, h, VIEW_SERVER) ? { ...plan, add: { ...plan.add, [VIEW_SERVER]: views.server(cwd) } } : plan;
+}
+
+/** The servers a session's runs get of their own: the browser's, its session's tabs (core/browser.ts). */
+function sessionMcp(cwd: string, h: HarnessId, key: string): Record<string, McpDef> {
+  return browser.available && mcp.builtinOn(cwd, h, BROWSER_SERVER) ? { [BROWSER_SERVER]: browser.server(cwd, key) } : {};
 }
 
 function usageReport(days: number): Promise<UsageReport> {
@@ -819,6 +867,9 @@ const server = Bun.serve<SocketData>({
     const origin = req.headers.get("origin");
     if ((path === "/ws" || path === "/_bismuth/live") && origin !== `http://${host}` && origin !== `https://${host}`) return new Response("forbidden", { status: 403 });
     if (path === "/ws" && srv.upgrade(req, { data: { kind: "app", threadId: null, id: randomUUID(), remote: away } })) return;
+    // The browser agents drive (core/browser.ts): Chrome DevTools MCP's socket, from this machine only.
+    const cdpSession = path.startsWith("/cdp/") && !away ? browser.admits(req, path) : null;
+    if (cdpSession && srv.upgrade(req, { data: { kind: "cdp", threadId: cdpSession, id: randomUUID(), remote: false } })) return;
     if (path === "/_bismuth/live" && srv.upgrade(req, { data: { kind: "live", threadId: null, id: randomUUID(), remote: away } })) return;
     // Candidate builds are served un-injected so `apply` can smoke-test them without them ever being told to reload.
     const preview = path.match(/^\/_bismuth\/preview\/([\w-]+)(\/.*)?$/);
@@ -867,6 +918,7 @@ const server = Bun.serve<SocketData>({
   },
   websocket: {
     async open(ws) {
+      if (ws.data.kind === "cdp") return browser.open(ws, ws.data.threadId!);
       if (ws.data.kind === "live") {
         // A page that missed a reload (its socket was down when the build switched) catches up on reconnect.
         live.add(ws);
@@ -891,9 +943,11 @@ const server = Bun.serve<SocketData>({
         error: startError(),
       });
       send(ws, { type: "terminals", terminals: terminals.list() });
+      send(ws, { type: "browserAwake", targets: browser.awake() });
       if (restartNeeded) send(ws, { type: "restartNeeded", files: restartNeeded });
     },
     async message(ws, raw) {
+      if (ws.data.kind === "cdp") return browser.message(ws, raw);
       if (ws.data.kind === "live") return;
       let msg: ClientMessage;
       try {
@@ -910,6 +964,7 @@ const server = Bun.serve<SocketData>({
       }
     },
     close(ws, code) {
+      if (ws.data.kind === "cdp") return browser.close(ws);
       if (process.env.DEBUG) console.log("[ws] close", ws.data.kind, code);
       clients.delete(ws);
       live.delete(ws);

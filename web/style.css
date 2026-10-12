@@ -301,7 +301,7 @@ html.phone .gutter-host > .gutter-rail { left: auto; right: 5px; top: 5px; botto
 .code-head .code-file .name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .code-head .code-file .range { flex: none; margin-left: -6px; color: var(--faint); }
 .md table { border-collapse: collapse; font-size: calc(14px * var(--fs)); display: block; overflow-x: auto; }
-.md th, .md td { padding: 6px 12px; border-bottom: 1px solid var(--border); text-align: left; }
+.md th, .md td { padding: 6px 12px; border-bottom: 1px solid var(--border); text-align: left; min-width: 14ch; max-width: 48ch; }
 .md th { font-weight: 700; }
 .code-block { border-radius: 10px; background: rgba(var(--ink-rgb), 0.035); border: 1px solid var(--border); overflow: hidden; position: relative; }
 .code-head { height: 28px; padding: 0 5px 0 12px; border-bottom: 1px solid var(--border); background: rgba(var(--ink-rgb), 0.02); display: flex; align-items: center; justify-content: space-between; }
@@ -1353,7 +1353,8 @@ html[data-appearance="light"] .cmd-palette { background: color-mix(in srgb, var(
    outer edge and uncovered by the moving inner one: the sidebar's reveal, mirrored. Expanding, the panel's content
    follows the glide instead (its takeover tween). */
 .rp-inner, .fp-inner { position: absolute; top: 0; right: 0; height: 100%; overflow: hidden; display: flex; flex-direction: column; outline: none; }
-/* The hairline rides the moving edge, as the sidebar's does. */
+/* The hairline rides the moving edge, as the sidebar's does. Above everything in its column: what's inside stays below
+   z-index 2 (the browser's layer at 1, files and reviews isolated in .fv-slot). */
 .rp::before, .fp::before { content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 1px; background: var(--border); z-index: 2; pointer-events: none; }
 .rp-inner { width: var(--rp-w, 0px); }
 .fp-inner { width: var(--fp-w, 0px); }
@@ -1382,7 +1383,7 @@ html[data-appearance="light"] .cmd-palette { background: color-mix(in srgb, var(
 /* The panels' 8px inset on both sides; with the explorer shut, it stops 4px short of the anchors (their 8px inset, two
    26px buttons and the 4px between them), so its own buttons read as one row with theirs. */
 .rp-bar { height: var(--titlebar-h); flex: none; display: flex; align-items: center; gap: 4px; padding: 4px calc(8px + max(0px, 60px - var(--fp))) 0 8px; }
-.rp-tabs { flex: 1; min-width: 0; height: 100%; display: flex; align-items: center; gap: 4px; overflow-x: auto; scrollbar-width: none; }
+.rp-tabs { flex: 0 1 auto; min-width: 0; height: 100%; display: flex; align-items: center; gap: 4px; overflow-x: auto; scrollbar-width: none; }
 .rp-tabs::-webkit-scrollbar { display: none; }
 .rp-tabs.fade-right { mask-image: linear-gradient(to right, #000 calc(100% - 36px), transparent); }
 .rp-tabs.fade-left { mask-image: linear-gradient(to right, transparent, #000 36px); }
@@ -1407,15 +1408,60 @@ html[data-appearance="light"] .cmd-palette { background: color-mix(in srgb, var(
 .rp-tab-dot { width: 6px; height: 6px; flex: none; margin-left: 3px; border-radius: 50%; background: currentColor; opacity: 0.85; }
 /* The shown file's controls and the expand button: the anchors' size, as they sit in their row. */
 .rp-ctl { flex: none; width: 26px; height: 26px; }
+/* Just past the last tab; the file's controls stay at the far end. */
+.rp-new { margin-right: auto; }
 .rp-ctl.on { background: rgba(var(--wash-rgb), 0.09); color: var(--text); }
-.rp-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.rp-body { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
 
-.rp-picker { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 16px; }
-.rp-picker-list { width: 100%; max-width: 280px; display: flex; flex-direction: column; gap: 8px; }
-.rp-picker-row { height: 44px; padding: 0 14px; display: flex; align-items: center; gap: 10px; border-radius: 10px; border: 1px solid var(--border); background: rgba(var(--ink-rgb), 0.02); color: var(--text); font-size: calc(13px * var(--fs)); font-weight: 500; transition: background-color 0.15s, border-color 0.15s; }
-.rp-picker-row:hover { background: rgba(var(--ink-rgb), 0.05); border-color: var(--border-strong); }
-.rp-picker-row .icon { width: 15px; height: 15px; color: var(--muted); }
-.rp-picker-hint { font-size: calc(11.5px * var(--fs)); color: var(--faint); text-align: center; }
+/* ---- browser tabs (browser.ts) ---- */
+/* Every open page lives in this layer over the host's body (one leaving the document would be gone), the shown one
+   visible while a browser tab is. `inherit`, not `visible`: the host shut hides it with everything else. */
+.bw { position: absolute; inset: 0; z-index: 1; display: flex; flex-direction: column; visibility: hidden; background: var(--main); }
+.bw.shown { visibility: inherit; }
+/* Zeron's browser toolbar, in the explorer's row metrics (.fp-sub, .fp-search): back, forward, reload, the address,
+   and out to the default browser. */
+.bw-bar { flex: none; display: flex; align-items: center; gap: 4px; padding: 0 8px 6px; }
+.bw-btn { flex: none; }
+.bw-btn .icon { width: 14px; height: 14px; }
+.bw-field { flex: 1; min-width: 0; height: 24px; padding: 0 8px; display: flex; align-items: center; gap: 6px; border-radius: 6px; background: rgba(var(--ink-rgb), 0.045); cursor: text; transition: background-color 0.15s; }
+.bw-field:hover, .bw-field:focus-within { background: rgba(var(--ink-rgb), 0.07); }
+.bw-field .icon { width: 12px; height: 12px; flex: none; color: var(--faint); }
+.bw-field input { flex: 1; min-width: 0; border: 0; outline: none; background: none; color: var(--text); font: inherit; font-size: calc(11.5px * var(--fs)); }
+.bw-field input::placeholder { color: var(--faint); }
+.bw-pages { position: relative; flex: 1; min-height: 0; border-top: 1px solid var(--border); }
+/* A page keeps the pointer's moves to itself: this sliver along its right edge (the window's, with the explorer put
+   away) hears them, so resting there still brings the explorer out (panels.ts's edge peek, EDGE_PX). */
+.bw-pages::after { content: ""; position: absolute; top: 0; right: 0; bottom: 0; width: 3px; z-index: 1; }
+/* Dragging a column's edge across a page: the page doesn't take the pointer from the drag. */
+#app.pane-resizing .bw-page webview { pointer-events: none; }
+.bw-page { position: absolute; inset: 0; visibility: hidden; display: flex; }
+.bw-page.shown { visibility: inherit; }
+/* A page an agent holds whose tab isn't shown (another session's, or the panel shows a file, or is closed): still laid
+   out at the panel's size and rendering, out of sight and out of the way, so the agent can drive it and see it. */
+.bw-page.awake:not(.shown) { position: fixed; top: 0; left: 0; width: var(--rp-w, 900px); height: 100vh; visibility: visible; opacity: 0; pointer-events: none; z-index: -1; }
+/* The <webview> keeps its own display (flex, so its frame fills it). */
+.bw-page webview { flex: 1; min-width: 0; height: 100%; }
+/* Over the page: where a blank tab can go, why a page failed, or where pages open without the desktop app. */
+.bw-state { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 24px; background: var(--main); text-align: center; }
+.bw-state-tile { width: 44px; height: 44px; margin-bottom: 14px; display: flex; align-items: center; justify-content: center; border-radius: 10px; border: 1px solid var(--border); background: rgba(var(--ink-rgb), 0.03); color: var(--muted); }
+.bw-state-tile .icon { width: 20px; height: 20px; }
+.bw-state-title { font-size: calc(13px * var(--fs)); font-weight: 600; color: var(--text); }
+.bw-state-text { max-width: 280px; margin-top: 6px; font-size: calc(12px * var(--fs)); line-height: 1.5; color: var(--muted); }
+.bw-state-btn { margin-top: 16px; height: 28px; padding: 0 12px; display: inline-flex; align-items: center; gap: 8px; border-radius: 7px; border: 1px solid var(--border); background: rgba(var(--wash-rgb), 0.04); color: var(--text); font-size: calc(12px * var(--fs)); transition: background-color 0.15s; }
+.bw-state-btn:hover { background: rgba(var(--wash-rgb), 0.09); }
+/* A tab's site icon, or the spinner while its page loads. */
+.rp-tab-lead .bw-favicon { width: 14px; height: 14px; border-radius: 2px; object-fit: contain; }
+.rp-tab-lead .bw-tab-spin { display: flex; align-items: center; justify-content: center; }
+
+/* What the host can open (Codex's new tab): its page with nothing open, and a new tab's under its address. */
+.rp-tools { flex: 1; min-height: 0; overflow-y: auto; padding: 20px 16px; text-align: left; }
+.rp-tools-head { margin: 0 2px 10px; font-size: calc(12px * var(--fs)); font-weight: 500; color: var(--muted); }
+.rp-tools-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 6px; }
+.rp-tool { height: 38px; padding: 0 10px 0 12px; display: flex; align-items: center; gap: 10px; border-radius: 9px; background: rgba(var(--wash-rgb), 0.04); color: var(--text); font-size: calc(12.5px * var(--fs)); transition: background-color 0.15s; }
+.rp-tool:hover { background: rgba(var(--wash-rgb), 0.09); }
+.rp-tool .icon { width: 15px; height: 15px; flex: none; color: var(--muted); }
+.rp-tool .grow { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; text-align: left; }
+.bw-state.bw-newtab { display: flex; padding: 0; align-items: stretch; justify-content: flex-start; }
 
 /* ---- the file viewer ---- */
 .fv { flex: 1; min-height: 0; display: flex; flex-direction: column; }
@@ -1430,7 +1476,7 @@ html[data-appearance="light"] .cmd-palette { background: color-mix(in srgb, var(
 .fv-slot:has(.fv-html-box)::before { display: none; }
 .fv-scroll { flex: 1; min-height: 0; overflow: auto; }
 .fv-note { padding: 32px 16px; text-align: center; font-size: calc(12px * var(--fs)); color: var(--faint); }
-.fv-slot { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.fv-slot { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; isolation: isolate; }
 .fv-open { margin-top: 12px; height: 28px; padding: 0 12px; display: inline-flex; align-items: center; gap: 6px; border-radius: 7px; border: 1px solid var(--border); background: rgba(var(--wash-rgb), 0.04); color: var(--text); font-size: calc(12px * var(--fs)); }
 .fv-open:hover { background: rgba(var(--wash-rgb), 0.09); }
 .fv-open .icon { width: 13px; height: 13px; color: var(--muted); }
@@ -1555,11 +1601,14 @@ html[data-appearance="light"] .cmd-palette { background: color-mix(in srgb, var(
 /* A commit's message past its subject, above its files. */
 .rv-body { padding: 4px 4px 2px; white-space: pre-wrap; font-size: calc(12px * var(--fs)); line-height: 1.55; color: var(--muted); }
 .rv-files { padding: 0 12px 32px; display: flex; flex-direction: column; gap: 10px; }
-.rv-file { border: 1px solid rgba(var(--wash-rgb), 0.09); border-radius: 8px; overflow: clip; }
+/* Off screen, a file's diff isn't laid out or painted (its size kept, or guessed from its lines: review.ts): with many,
+   opening the review and the panel gliding shut stay smooth. */
+.rv-file { border: 1px solid rgba(var(--wash-rgb), 0.09); border-radius: 8px; overflow: clip; content-visibility: auto; contain-intrinsic-size: auto var(--rv-h, 240px); }
 .rv-file-head { position: sticky; top: 36px; z-index: 2; height: 32px; display: flex; align-items: center; gap: 6px; padding: 0 8px; background: linear-gradient(rgba(var(--wash-rgb), 0.05), rgba(var(--wash-rgb), 0.05)) var(--main); font-size: calc(12px * var(--fs)); cursor: pointer; user-select: none; }
 .rv-file:not(.folded) .rv-file-head { border-bottom: 1px solid rgba(var(--wash-rgb), 0.07); }
 .rv-file:not(.folded) .rv-file-head .ft-chev .icon { transform: rotate(90deg); }
 .rv-file.folded .rv-diff { display: none; }
+.rv-file.folded { contain-intrinsic-size: auto 33px; }
 .rv-name { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; direction: rtl; text-align: left; }
 .rv-dir { color: var(--faint); }
 .rv-base { color: var(--text); }
@@ -1709,6 +1758,9 @@ html[data-appearance="light"] .cmd-palette { background: color-mix(in srgb, var(
 .mcp-cell.scope-project::after, .mcp-cell.scope-all::after { content: ""; position: absolute; left: calc(50% + 8px); bottom: 1px; width: 4px; height: 4px; border-radius: 50%; }
 .mcp-cell.scope-project::after { background: var(--accent); }
 .mcp-cell.scope-all::after { box-shadow: inset 0 0 0 1px var(--accent); }
+/* Every harness at once: set off from the per-harness switches by a hairline. */
+.mcp-cell.mcp-all { margin-right: 5px; }
+.mcp-cell.mcp-all::before { content: ""; position: absolute; right: -4px; top: 8px; bottom: 8px; width: 1px; background: var(--border); }
 
 /* ============================ phone ============================ */
 /* A narrow window (phone.ts): screens stacked over the whole screen instead of columns side by side. The session list

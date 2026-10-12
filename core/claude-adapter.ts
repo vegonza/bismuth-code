@@ -23,7 +23,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Subprocess } from "bun";
 import { finalizeItem, mergeItem, summary, titleFrom, UNTITLED, type Harness } from "./harness";
-import { claudeListing, claudeStatus, toClaude, type ClaudeSeen, type McpListing, type McpPlan } from "./mcp";
+import { claudeListing, claudeStatus, toClaude, type ClaudeSeen, type McpDef, type McpListing, type McpPlan } from "./mcp";
 import type {
   FileChange,
   Item,
@@ -130,6 +130,8 @@ export class ClaudeAdapter implements Harness {
   /** What runs in a project get of the MCP servers (Ctrl+K → MCP servers): Claude's own ones switched off are denied
    *  to the run, ones another harness defines are passed in. */
   mcpPlan: (cwd: string) => Promise<McpPlan> = async () => ({ off: [], on: [], add: {} });
+  /** Servers a session's runs get of their own (`key`: the session's id, or a new one's key): the browser's. */
+  sessionMcp: (cwd: string, key: string) => Record<string, McpDef> = () => ({});
   /** Each project's MCP servers as its last run reported them (names a config file doesn't hold: plugins,
    *  connectors). */
   private mcpSeen: Record<string, Record<string, ClaudeSeen>>;
@@ -316,7 +318,8 @@ export class ClaudeAdapter implements Harness {
   async send(threadId: string, text: string, settings: TurnSettings) {
     const thread = await this.openThread(threadId);
     // Asked before anything else, so nothing else can start a run for the thread in between.
-    const mcp = await this.mcpPlan(thread.cwd).catch(() => ({ off: [], on: [], add: {} }));
+    const plan = await this.mcpPlan(thread.cwd).catch((): McpPlan => ({ off: [], on: [], add: {} }));
+    const mcp: McpPlan = { ...plan, add: { ...plan.add, ...this.sessionMcp(thread.cwd, threadId) } };
     const live = this.runs.get(threadId);
     if (live && !live.finished && !live.closed) {
       // Steer: `now` cuts in at once, but would abort a running tool, so wait for it instead.
