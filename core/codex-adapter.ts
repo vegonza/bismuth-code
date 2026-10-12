@@ -11,6 +11,7 @@ import { JsonRpcPeer, RpcError, type Id } from "./jsonrpc";
 import { fromCodex, toCodex, type McpDef, type McpListing, type McpPlan } from "./mcp";
 import type {
   FileChange,
+  Invocable,
   Item,
   ItemStatus,
   McpStatus,
@@ -37,6 +38,12 @@ type PendingRequest = {
 
 type LoadedThread = Thread;
 
+/** The commands bismuth runs on Codex's own API, as the Codex TUI does. */
+const COMMANDS: Invocable[] = [
+  { name: "compact", kind: "command", text: "/compact", description: "Summarize the conversation to free up context", hint: null },
+  { name: "goal", kind: "command", text: "/goal", description: "Set a goal Codex keeps working on until it's done", hint: "[objective | pause | resume | clear]" },
+];
+
 export class CodexAdapter implements Harness {
   readonly id = "codex" as const;
   readonly name = "Codex";
@@ -47,6 +54,12 @@ export class CodexAdapter implements Harness {
   private loading = new Map<string, Promise<Thread>>();
   // commandExecution itemId -> {threadId, processId}; Codex keeps these alive past an interrupt.
   private runningCommands = new Map<string, { threadId: string; turnId: string; processId: string }>();
+  /** Sessions whose `/compact` turn is about to start: it opens with the prompt, which Codex doesn't record. */
+  private compacting = new Set<string>();
+  /** Each session's goal, as Codex last reported it. */
+  private goals = new Map<string, C.ThreadGoal | null>();
+  /** A goal's first turn starting, before the goal goes active: a Stop meanwhile keeps it paused. */
+  private activating = new Map<string, { stopped: boolean }>();
 
   /** Called for every normalized change; the server fans these out to clients. */
   onEvent: (threadId: string, event: ThreadEvent) => void = () => {};
@@ -391,11 +404,34 @@ export class CodexAdapter implements Harness {
     return thread;
   }
 
+  /** The commands bismuth runs, and the project's skills as a prompt names them (`$name`). */
+  async invocables(cwd: string): Promise<Invocable[]> {
+    const skills = (await this.skillList(cwd)).map((s): Invocable => ({ name: s.name, kind: "skill", text: `$${s.name}`, description: s.interface?.shortDescription ?? s.shortDescription ?? s.description, hint: null }));
+    return [...COMMANDS, ...skills];
+  }
+
+  /** The skills a session in `cwd` can use (the app-server keeps them cached, and rescans when they change on disk). */
+  private async skillList(cwd: string): Promise<C.SkillMetadata[]> {
+    const res: C.SkillsListResponse = await this.rpc().request("skills/list", { cwds: [cwd] } satisfies C.SkillsListParams, QUERY_TIMEOUT_MS);
+    return res.data.flatMap((e) => e.skills).filter((s) => s.enabled);
+  }
+
+  /** Each `$name` in the prompt that names a skill goes with it as that skill, as the Codex TUI sends one. */
+  private async skillInputs(cwd: string, text: string): Promise<C.UserInput[]> {
+    const named = new Set([...text.matchAll(/(?<=^|\s)\$([\w:.-]+)/g)].map((m) => m[1].replace(/[.:]+$/, "")));
+    if (!named.size) return [];
+    const skills = await this.skillList(cwd).catch(() => []);
+    return skills.filter((s) => named.has(s.name)).map((s): C.UserInput => ({ type: "skill", name: s.name, path: s.path }));
+  }
+
   /** Starts a turn, or steers the running one (Codex appends the input to the active turn). */
   async send(threadId: string, text: string, settings: TurnSettings) {
     await this.reopening.get(threadId);
     const thread = await this.openThread(threadId) as LoadedThread;
-    const input: C.UserInput[] = [{ type: "text", text, text_elements: [] }];
+    const command = /^\/(compact|goal)(?:\s+([\s\S]*))?$/.exec(text.trim());
+    if (command?.[1] === "compact" && !command[2]?.trim()) return this.compact(thread);
+    if (command?.[1] === "goal") return this.goal(thread, text.trim(), command[2]?.trim() ?? "", settings);
+    const input = await this.input(thread, text);
     const clientUserMessageId = crypto.randomUUID();
 
     if (thread.activeTurnId) {
@@ -413,7 +449,15 @@ export class CodexAdapter implements Harness {
         console.warn("[codex] steer rejected, starting a new turn:", err.message);
       }
     }
+    await this.startTurn(threadId, input, settings, clientUserMessageId);
+  }
 
+  /** A prompt as Codex takes it: its text, and each skill it names. */
+  private async input(thread: LoadedThread, text: string): Promise<C.UserInput[]> {
+    return [{ type: "text", text, text_elements: [] }, ...(await this.skillInputs(thread.cwd, text))];
+  }
+
+  private async startTurn(threadId: string, input: C.UserInput[], settings: TurnSettings, clientUserMessageId = crypto.randomUUID()) {
     const params: C.TurnStartParams = {
       threadId,
       input,
@@ -427,7 +471,88 @@ export class CodexAdapter implements Harness {
     this.upsertTurn(threadId, res.turn);
   }
 
+  /** `/compact`: a turn of its own that summarizes the conversation (it shows as the prompt, then the compaction). */
+  private async compact(thread: LoadedThread) {
+    if (thread.activeTurnId) throw new Error("Wait for the turn to end to compact");
+    this.compacting.add(thread.id);
+    try {
+      await this.rpc().request("thread/compact/start", { threadId: thread.id } satisfies C.ThreadCompactStartParams);
+    } catch (err) {
+      this.compacting.delete(thread.id);
+      throw err;
+    }
+  }
+
+  /**
+   * `/goal`, read as the Codex TUI does: bare (or `edit`) shows the goal, `clear`, `pause` and `resume` act on it, and
+   * anything else sets it. Setting or resuming starts the goal's first turn with this session's settings (a turn
+   * Codex starts itself reuses the last one's), then makes the goal active so Codex carries on with the next turns.
+   */
+  private async goal(thread: LoadedThread, prompt: string, arg: string, settings: TurnSettings) {
+    const threadId = thread.id;
+    const action = ["", "edit", "clear", "pause", "resume"].includes(arg.toLowerCase()) ? arg.toLowerCase() : "set";
+    if ((action === "set" || action === "resume") && thread.activeTurnId) throw new Error("Wait for the turn to end to start a goal");
+    const res: C.ThreadGoalGetResponse = await this.rpc().request("thread/goal/get", { threadId } satisfies C.ThreadGoalGetParams);
+    const current = res.goal?.objective.trim() ? res.goal : null;
+    this.goals.set(threadId, current);
+    if (action === "" || action === "edit") return this.reply(thread, prompt, current ? `Goal ${goalStatus(current)}: ${current.objective.trim()}` : "No goal is set.");
+    if (action === "clear") {
+      const { cleared }: C.ThreadGoalClearResponse = await this.rpc().request("thread/goal/clear", { threadId, origin: "user" } satisfies C.ThreadGoalClearParams);
+      this.goals.set(threadId, null);
+      return this.reply(thread, prompt, cleared ? "Goal cleared." : "No goal to clear.");
+    }
+    if (!current && action !== "set") return this.reply(thread, prompt, "No goal is set.");
+    if (action === "pause") {
+      await this.setGoal(threadId, { status: "paused" });
+      return this.reply(thread, prompt, "Goal paused. Send /goal resume to continue.");
+    }
+    if (action === "set") {
+      // A new objective replaces the goal and what it has used. Paused until its turn runs, so Codex doesn't start one.
+      if (current) await this.rpc().request("thread/goal/clear", { threadId, origin: "user" } satisfies C.ThreadGoalClearParams);
+      await this.setGoal(threadId, { objective: arg, status: "paused" });
+    }
+    const activation = { stopped: false };
+    this.activating.set(threadId, activation);
+    try {
+      // The first turn carries the objective; a resume carries on from the conversation.
+      await this.startTurn(threadId, action === "set" ? await this.input(thread, arg) : [], settings);
+      if (activation.stopped) return;
+      await this.setGoal(threadId, { status: "active" });
+      if (activation.stopped) await this.setGoal(threadId, { status: "paused" });
+    } finally {
+      if (this.activating.get(threadId) === activation) this.activating.delete(threadId);
+    }
+  }
+
+  private async setGoal(threadId: string, change: Pick<C.ThreadGoalSetParams, "objective" | "status">) {
+    const { goal }: C.ThreadGoalSetResponse = await this.rpc().request("thread/goal/set", { threadId, origin: "user", ...change } satisfies C.ThreadGoalSetParams);
+    this.goals.set(threadId, goal);
+  }
+
+  /** A command's answer, as a turn of its own. Codex never sees it, so it's gone once the session reloads. */
+  private reply(thread: LoadedThread, prompt: string, text: string) {
+    const now = Date.now();
+    const id = `bismuth-${randomUUID()}`;
+    const turn: Turn = { id, status: "completed", error: null, durationMs: 0, startedAt: now, completedAt: now, items: [] };
+    thread.turns.push(turn);
+    const { items: _items, ...meta } = turn;
+    this.onEvent(thread.id, { type: "turn.upsert", turn: meta });
+    this.upsertItem(thread.id, id, { id: `${id}:prompt`, kind: "user", text: prompt, images: 0 });
+    this.upsertItem(thread.id, id, { id: `${id}:reply`, kind: "assistant", text, phase: null, done: true });
+    thread.updatedAt = now;
+    this.emitThread(thread);
+  }
+
   async interrupt(threadId: string) {
+    // Stopping a goal's turn pauses the goal, or Codex would start the next one.
+    const activation = this.activating.get(threadId);
+    if (activation) activation.stopped = true;
+    if (!this.goals.has(threadId)) {
+      const res = await this.rpc().request<C.ThreadGoalGetResponse>("thread/goal/get", { threadId } satisfies C.ThreadGoalGetParams, QUERY_TIMEOUT_MS).catch(() => null);
+      if (res) this.goals.set(threadId, res.goal);
+    }
+    if (this.goals.get(threadId)?.status === "active")
+      await this.setGoal(threadId, { status: "paused" }).catch((err) => console.warn("[codex] pausing the goal failed:", err.message));
     const thread = this.threads.get(threadId);
     if (!thread?.activeTurnId) return;
     const turnId = thread.activeTurnId;
@@ -601,6 +726,17 @@ export class CodexAdapter implements Harness {
       case "turn/started": {
         const p = params as C.TurnStartedNotification;
         this.upsertTurn(p.threadId, p.turn);
+        if (this.compacting.delete(p.threadId)) this.upsertItem(p.threadId, p.turn.id, compactPrompt(p.turn.id));
+        return;
+      }
+      case "thread/goal/updated": {
+        const p = params as C.ThreadGoalUpdatedNotification;
+        this.goals.set(p.threadId, p.goal);
+        return;
+      }
+      case "thread/goal/cleared": {
+        const p = params as C.ThreadGoalClearedNotification;
+        this.goals.set(p.threadId, null);
         return;
       }
       case "turn/completed": {
@@ -907,6 +1043,9 @@ function threadStatus(s: C.ThreadStatus): ThreadStatus {
 }
 
 function toTurn(t: C.Turn): Turn {
+  const items = t.items.map((i) => toItem(i, true)).filter((i): i is Item => i !== null);
+  // A turn that only compacted is a `/compact` (one that compacts on its own does it within a turn that has more).
+  if (t.items.length && t.items.every((i) => i.type === "contextCompaction")) items.unshift(compactPrompt(t.id));
   return {
     id: t.id,
     status: t.status,
@@ -914,9 +1053,15 @@ function toTurn(t: C.Turn): Turn {
     durationMs: t.durationMs,
     startedAt: ms(t.startedAt),
     completedAt: ms(t.completedAt),
-    items: t.items.map((i) => toItem(i, true)).filter((i): i is Item => i !== null),
+    items,
   };
 }
+
+/** The prompt that ran a `/compact`, which Codex doesn't record. */
+const compactPrompt = (turnId: string): Item => ({ id: `${turnId}:compact`, kind: "user", text: "/compact", images: 0 });
+
+/** How a goal's status reads (`usageLimited`: "usage limited"). */
+const goalStatus = (goal: C.ThreadGoal) => goal.status.replace(/[A-Z]/g, (c) => ` ${c.toLowerCase()}`);
 
 function toItem(i: C.ThreadItem, done: boolean): Item | null {
   switch (i.type) {
@@ -924,7 +1069,8 @@ function toItem(i: C.ThreadItem, done: boolean): Item | null {
       return {
         id: i.id,
         kind: "user",
-        text: i.content.flatMap((c) => (c.type === "text" ? [c.text] : c.type === "mention" || c.type === "skill" ? [`@${c.name}`] : [])).join("\n"),
+        // A skill rides beside the text that names it (`$name`).
+        text: i.content.flatMap((c) => (c.type === "text" ? [c.text] : c.type === "mention" ? [`@${c.name}`] : [])).join("\n"),
         images: i.content.filter((c) => c.type === "image" || c.type === "localImage").length,
       };
     case "agentMessage":

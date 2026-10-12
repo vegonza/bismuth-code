@@ -44,8 +44,9 @@ export type Editor = {
   /** Insert chips where the caret is (at the end when the editor doesn't have it), each followed by a space;
    *  `replace`: characters just before the caret they take the place of (a typed `@`). */
   insertChips(chips: HTMLElement[], replace?: number): void;
-  /** Insert text where the caret is (as `set` takes it), replacing the selection. */
-  insert(text: string, chip: (label: string) => HTMLElement | null): void;
+  /** Insert text where the caret is (as `set` takes it), replacing the selection; `replace`: characters just before
+   *  the caret it takes the place of (a typed `$sim`, which "" just removes). */
+  insert(text: string, chip: (label: string) => HTMLElement | null, replace?: number): void;
   chips(): HTMLElement[];
   focus(): void;
 };
@@ -186,10 +187,11 @@ export function createEditor(placeholder: string): Editor {
     const frag = document.createDocumentFragment();
     fill(frag, range.startContainer.nodeType === Node.TEXT_NODE ? (range.startContainer.nodeValue ?? "").slice(0, range.startOffset) : value());
     const end = frag.lastChild;
-    if (!end) return;
-    range.insertNode(frag);
-    range.setStartAfter(end);
-    range.collapse(true);
+    if (end) {
+      range.insertNode(frag);
+      range.setStartAfter(end);
+      range.collapse(true);
+    }
     sel?.removeAllRanges();
     sel?.addRange(range);
     syncEmpty();
@@ -216,7 +218,7 @@ export function createEditor(placeholder: string): Editor {
     value,
     set,
     insertChips,
-    insert: (text, chip) => insertAtCaret((frag) => frag.append(...nodesOf(text, chip))),
+    insert: (text, chip, replace) => insertAtCaret((frag) => frag.append(...nodesOf(text, chip)), replace),
     chips: () => [...root.querySelectorAll<HTMLElement>(".mention")],
     caret: () => (document.activeElement === root ? (selectionOffset() ?? lastCaret) : lastCaret),
     focus() {

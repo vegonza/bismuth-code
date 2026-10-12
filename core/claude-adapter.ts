@@ -26,6 +26,7 @@ import { finalizeItem, finishedTurns, mergeItem, summary, titleFrom, UNTITLED, t
 import { claudeListing, claudeStatus, toClaude, type ClaudeSeen, type McpDef, type McpListing, type McpPlan } from "./mcp";
 import type {
   FileChange,
+  Invocable,
   Item,
   ItemStatus,
   McpStatus,
@@ -56,6 +57,12 @@ const WATCH_MS = 10_000;
 const WATCH_TAIL_BYTES = 1024 * 1024;
 const HEAD_BYTES = 128 * 1024;
 const TAIL_BYTES = 64 * 1024;
+/** How long a project's listed skills and commands are taken as current. */
+const INVOCABLES_TTL_MS = 30_000;
+/** The CLI's commands bismuth offers (where the CLI has them). */
+const COMMANDS = new Set(["compact", "goal"]);
+/** A prompt that's one of them: the CLI runs it without replaying it, so it joins the transcript as sent. */
+const isCommand = (text: string) => COMMANDS.has(/^\/([\w-]+)(?:\s|$)/.exec(text.trim())?.[1] ?? "");
 
 /** The installed CLI: CLAUDE_CODE_EXECUTABLE, PATH, then the installer's usual homes. */
 function findClaude(): string | null {
@@ -154,6 +161,8 @@ export class ClaudeAdapter implements Harness {
   private where = new Map<string, string>();
   /** Side chats not run yet (the CLI writes a fork's transcript on its first run). */
   private forks: Record<string, Fork>;
+  /** Each project's skills and commands, as last listed. */
+  private invocableLists = new Map<string, { at: number; list: Promise<Invocable[]> }>();
 
   constructor(private stateDir: string) {
     this.archived = new Set(readJson<string[]>(join(stateDir, "claude-archived.json")) ?? []);
@@ -184,35 +193,59 @@ export class ClaudeAdapter implements Harness {
     this.exe = findClaude();
     if (!this.exe) throw new Error("Claude Code is not installed (no `claude` on PATH; set CLAUDE_CODE_EXECUTABLE to point at it)");
     // One `initialize` handshake (no model turn) reports the account and the models this login can use.
-    const init = await this.initialize().catch((err) => {
+    const [init] = await this.control(homedir(), ["initialize"]).catch((err) => {
       console.warn("[claude] initialize failed:", err.message);
-      return null;
+      return [null];
     });
     this.models = toModels(init?.models ?? []);
   }
 
-  private async initialize(): Promise<any> {
+  /** Control requests answered by a CLI that runs no turn, started in `cwd` (it loads that project's skills): each
+   *  one's answer, or null where it refused. */
+  private async control(cwd: string, subtypes: string[]): Promise<any[]> {
     const proc = Bun.spawn([this.exe!, "--print", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"], {
-      cwd: homedir(),
+      cwd,
       stdin: "pipe",
       stdout: "pipe",
       stderr: "ignore",
     });
-    proc.stdin.write(JSON.stringify({ type: "control_request", request_id: "bismuth-init", request: { subtype: "initialize" } }) + "\n");
+    subtypes.forEach((subtype, i) => proc.stdin.write(JSON.stringify({ type: "control_request", request_id: `bismuth-${i}`, request: { subtype } }) + "\n"));
     proc.stdin.flush();
+    const answers: any[] = subtypes.map(() => undefined);
+    let left = subtypes.length;
     const timeout = setTimeout(() => proc.kill(), 15_000);
     try {
       for await (const line of lines(proc.stdout)) {
         const frame = parse(line);
-        if (frame?.type !== "control_response" || frame.response?.request_id !== "bismuth-init") continue;
-        if (frame.response.subtype === "error") throw new Error(frame.response.error ?? "initialize failed");
-        return frame.response.response;
+        if (frame?.type !== "control_response") continue;
+        const i = subtypes.findIndex((_, j) => frame.response?.request_id === `bismuth-${j}`);
+        if (i < 0 || answers[i] !== undefined) continue;
+        if (frame.response.subtype === "error") console.warn(`[claude] ${subtypes[i]} refused:`, frame.response.error);
+        answers[i] = frame.response.subtype === "error" ? null : (frame.response.response ?? null);
+        if (!--left) return answers;
       }
-      throw new Error("claude exited before answering initialize");
+      throw new Error(`claude exited before answering ${subtypes.join(", ")}`);
     } finally {
       clearTimeout(timeout);
       proc.kill();
     }
+  }
+
+  /** The project's skills, as a prompt names them (`/name`: the CLI expands it opening a prompt, and the model runs it
+   *  when it's anywhere else), and the commands bismuth offers. The CLI's `initialize` lists what `/` runs;
+   *  `reload_skills` names the skills the model can use. One CLI that runs no turn answers both, in about 0.2s. */
+  invocables(cwd: string): Promise<Invocable[]> {
+    let hit = this.invocableLists.get(cwd);
+    if (!hit || Date.now() - hit.at > INVOCABLES_TTL_MS) {
+      const list = this.control(cwd, ["initialize", "reload_skills"]).then(([init, skills]) => {
+        if (!init) throw new Error("Claude Code didn't list its skills");
+        return toInvocables(init, skills);
+      });
+      hit = { at: Date.now(), list };
+      this.invocableLists.set(cwd, hit);
+      list.catch(() => this.invocableLists.get(cwd)?.list === list && this.invocableLists.delete(cwd));
+    }
+    return hit.list;
   }
 
   // ---------------- queries ----------------
@@ -385,9 +418,11 @@ export class ClaudeAdapter implements Harness {
     const plan = await this.mcpPlan(thread.cwd).catch((): McpPlan => ({ off: [], on: [], add: {} }));
     const mcp: McpPlan = { ...plan, add: { ...plan.add, ...this.sessionMcp(thread.cwd, threadId) } };
     const live = this.runs.get(threadId);
+    const uuid = randomUUID();
+    const command = isCommand(text);
     if (live && !live.finished && !live.closed) {
+      if (command) throw new Error("Wait for the turn to end to run a command");
       // Steer: `now` cuts in at once, but would abort a running tool, so wait for it instead.
-      const uuid = randomUUID();
       live.pendingSteers.add(uuid);
       this.write(live, { type: "user", uuid, priority: live.openTools.size ? "next" : "now", message: { role: "user", content: text }, parent_tool_use_id: null });
       return;
@@ -407,7 +442,8 @@ export class ClaudeAdapter implements Harness {
     const turn: Turn = { id: randomUUID(), status: "inProgress", error: null, durationMs: null, startedAt: Date.now(), completedAt: null, items: [] };
     thread.turns.push(turn);
     this.activate(run, thread, turn);
-    this.write(run, { type: "user", message: { role: "user", content: text }, parent_tool_use_id: null });
+    if (command) this.upsertItem(threadId, turn.id, { id: uuid, kind: "user", text: text.trim(), images: 0 });
+    this.write(run, { type: "user", uuid, message: { role: "user", content: text }, parent_tool_use_id: null });
   }
 
   private spawn(thread: Thread, flags: Flags, mcp: McpPlan): Run {
@@ -1167,6 +1203,18 @@ function running(item: Item): Item {
   return item;
 }
 
+/** What `/` runs that bismuth offers: the skills (the model's, and the user's and the project's own, which may be
+ *  theirs alone to start) and the commands bismuth runs. */
+function toInvocables(init: any, skills: any): Invocable[] {
+  const modelSkills = new Set<string>((skills?.skills ?? []).map((s: any) => s?.name));
+  return (init.commands ?? []).flatMap((c: any): Invocable[] => {
+    const name = typeof c?.name === "string" ? c.name.trim() : "";
+    const kind = COMMANDS.has(name) ? "command" : modelSkills.has(name) || !c.builtin ? "skill" : null;
+    if (!name || !kind) return [];
+    return [{ name, kind, text: `/${name}`, description: String(c.description ?? "").trim(), hint: String(c.argumentHint ?? "").trim() || null }];
+  });
+}
+
 /** A prompt's visible text, or null for what the CLI injects into user frames (reminders, interrupt markers, background-task notices). */
 function promptText(content: unknown): string | null {
   const parts = blocksOf(content).filter((b) => b.type === "text").map((b) => String(b.text ?? ""));
@@ -1389,6 +1437,8 @@ async function readHistory(path: string, settled = true): Promise<History> {
   let model: string | null = null;
   let contextTokens: number | null = null;
   let ended = false;
+  /** A `/compact`'s compaction, recorded ahead of the prompt that ran it: it shows under it, as it did live. */
+  let compacted: Item | null = null;
 
   const open = (id: string, at: number | null) => {
     turn = { id, status: "completed", error: null, durationMs: null, startedAt: at, completedAt: at, items: [] };
@@ -1412,7 +1462,11 @@ async function readHistory(path: string, settled = true): Promise<History> {
         if (r.summary && !title) agentName ??= r.summary;
         continue;
       case "system":
-        if (r.subtype === "compact_boundary") (turn ?? open(r.uuid ?? randomUUID(), at)).items.push({ id: r.uuid ?? randomUUID(), kind: "notice", text: "Context compacted" });
+        if (r.subtype === "compact_boundary") {
+          const notice: Item = { id: r.uuid ?? randomUUID(), kind: "notice", text: "Context compacted" };
+          if (r.compactMetadata?.trigger === "manual") compacted = notice;
+          else (turn ?? open(r.uuid ?? randomUUID(), at)).items.push(notice);
+        }
         continue;
       case "user": {
         const content = r.message?.content;
@@ -1437,6 +1491,8 @@ async function readHistory(path: string, settled = true): Promise<History> {
         branch ??= r.gitBranch && r.gitBranch !== "HEAD" ? r.gitBranch : null;
         const t = open(r.uuid ?? randomUUID(), at);
         t.items.push({ id: r.uuid ?? randomUUID(), kind: "user", text, images: blocksOf(content).filter((b) => b.type === "image").length });
+        if (compacted) t.items.push(compacted);
+        compacted = null;
         continue;
       }
       case "assistant": {
@@ -1468,6 +1524,7 @@ async function readHistory(path: string, settled = true): Promise<History> {
       }
     }
   }
+  if (compacted) (turn ?? open(compacted.id, null)).items.push(compacted);
   for (const t of turns) {
     t.durationMs = t.startedAt && t.completedAt ? t.completedAt - t.startedAt : null;
     // Calls with no recorded result were cut off.

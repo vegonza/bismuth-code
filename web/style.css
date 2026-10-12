@@ -1246,12 +1246,13 @@ html[data-appearance="light"] .cmd-palette { background: color-mix(in srgb, var(
 .add-project:hover { background: var(--hover); color: var(--text); }
 .add-project .icon { width: 13px; height: 13px; }
 
-/* The palettes' project rows: art, name, then the path in the quiet tone. */
+/* The palettes' project rows: art, name, then the path in the quiet tone. The composer's skill rows read the same way,
+   with what one does in the path's place. */
 .palette-project .project-icon, .palette-project .monogram { width: 16px; height: 16px; }
 .palette-project .monogram { font-size: 10px; line-height: 16px; }
-.palette-project .label { display: flex; align-items: baseline; gap: 8px; overflow: hidden; }
-.palette-project .name { flex: none; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.palette-project .path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--faint); font-size: calc(12px * var(--fs)); }
+:is(.palette-project, .palette-skill) .label { display: flex; align-items: baseline; gap: 8px; overflow: hidden; }
+:is(.palette-project, .palette-skill) .name { flex: none; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+:is(.palette-project, .palette-skill) .path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--faint); font-size: calc(12px * var(--fs)); }
 .palette-note { flex: none; font-size: calc(11px * var(--fs)); color: var(--faint); }
 .palette-file .file-glyph { width: 16px; height: 16px; flex: none; display: flex; }
 .palette-file .label { display: flex; align-items: baseline; gap: 8px; overflow: hidden; }

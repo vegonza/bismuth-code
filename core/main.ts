@@ -601,6 +601,16 @@ async function rpc<M extends keyof RpcMethods>(method: M, params: RpcMethods[M][
       return remote.set(!!p.enabled);
     case "mcp.list":
       return mcpSnapshot(mcpProject(p.projectId).path);
+    case "invocables.list": {
+      if (p.threadId) {
+        const h = await harnessFor(String(p.threadId));
+        const cwd = cwds.get(String(p.threadId)) ?? (await h.openThread(String(p.threadId))).cwd;
+        return (await h.invocables?.(cwd)) ?? [];
+      }
+      const h = byId(harness(p.harness));
+      if (!status.get(h.id)!.available) return [];
+      return (await h.invocables?.(mcpProject(p.projectId).path)) ?? [];
+    }
     case "mcp.set": {
       const project = mcpProject(p.projectId);
       const name = String(p.name);

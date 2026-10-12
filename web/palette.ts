@@ -858,8 +858,8 @@ function renderFoot() {
   }
 }
 
-/** The text with every query word's occurrences marked. */
-function highlight(text: string, q: string[]): DocumentFragment {
+/** The text with every query word's occurrences marked (the composer's `/` and `$` rows' too). */
+export function highlight(text: string, q: string[]): DocumentFragment {
   const lower = text.toLowerCase();
   const hit = new Array<boolean>(text.length).fill(false);
   for (const w of q) for (let at = lower.indexOf(w); at >= 0; at = lower.indexOf(w, at + 1)) hit.fill(true, at, at + w.length);

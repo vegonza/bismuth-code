@@ -103,7 +103,8 @@ export function togglePicker() {
   else openPicker();
 }
 
-function openPicker() {
+export function openPicker() {
+  if (card) return void card.focus({ preventScroll: true });
   page = "panel";
   card = el("div", "card picker menu-in");
   card.tabIndex = -1;

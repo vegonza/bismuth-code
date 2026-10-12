@@ -161,6 +161,11 @@ export type RequestResponse = { answers: Record<string, string[]> };
 // fastTier: the service tier to request for "fast mode", when the model offers one.
 export type ModelOption = { id: string; harness: HarnessId; name: string; efforts: string[]; defaultEffort: string; isDefault: boolean; fastTier: string | null };
 
+/** A skill or command a prompt can use (the composer's `/` and `$` lists). `text`: how a prompt names it (`/simplify`
+ *  for Claude Code, `$imagegen` for a Codex skill, `/compact`); `hint`: the arguments it takes. A command is the whole
+ *  prompt: bismuth runs `/compact` and `/goal` where the harness has them. */
+export type Invocable = { name: string; kind: "skill" | "command"; text: string; description: string; hint: string | null };
+
 // A plan rate-limit window ("Session", "Week", "Month") and how much of it is spent.
 export type UsageWindow = { label: string; usedPercent: number; resetsAt: number | null /* ms */ };
 
@@ -303,6 +308,8 @@ export type RpcMethods = {
   "queue.edit.finish": { params: { threadId: string; id: string; text: string | null; settings: TurnSettings | null }; result: null };
   "autoCompact.set": { params: { harness: "claude" | "codex"; value: number | null }; result: AutoCompactSnapshot & { reopened: { now: number; afterTurn: number } | null } };
   "mcp.list": { params: { projectId: string }; result: McpSnapshot };
+  // The skills and commands a prompt can use: a session's, or a new one's (its harness in that project).
+  "invocables.list": { params: { threadId: string } | { harness: HarnessId; projectId: string }; result: Invocable[] };
   // Harnesses' switches for a server (one, or every one at once), in this project or all of them. Switching it back
   // to what it would be anyway drops the override. Loaded Codex sessions reopen to pick it up (idle ones now, ones
   // mid-turn when their turn ends); Claude's and Cursor's next runs get it.

@@ -2,6 +2,7 @@
 // Adapters own their processes and thread state and report every change through `onEvent`.
 import type {
   HarnessId,
+  Invocable,
   Item,
   ItemStatus,
   ModelOption,
@@ -41,6 +42,8 @@ export interface Harness {
   interrupt(threadId: string): Promise<void>;
   archive(threadId: string): Promise<void>;
   respond(requestId: string, response: RequestResponse): void;
+  /** The skills and commands a prompt can use in the project folder `cwd` (none for a harness without any). */
+  invocables?(cwd: string): Promise<Invocable[]>;
 }
 
 export const UNTITLED = "New thread";

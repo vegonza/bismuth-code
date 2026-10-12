@@ -28,6 +28,7 @@ import panelLeft from "lucide-static/icons/panel-left.svg" with { type: "text" }
 import panelRight from "lucide-static/icons/panel-right.svg" with { type: "text" };
 import folderTree from "lucide-static/icons/folder-tree.svg" with { type: "text" };
 import eye from "lucide-static/icons/eye.svg" with { type: "text" };
+import squareSlash from "lucide-static/icons/square-slash.svg" with { type: "text" };
 import eyeClosed from "lucide-static/icons/eye-closed.svg" with { type: "text" };
 import download from "lucide-static/icons/download.svg" with { type: "text" };
 import bookOpen from "lucide-static/icons/book-open.svg" with { type: "text" };
@@ -97,7 +98,7 @@ const ICONS = {
   filePlus, fileDiff, folder, folderPlus, house, gitBranch, globe, monitor, openai, panelLeft, pencil, plug, plus, search, settings,
   squarePen, squareTerminal, star, triangleAlert, wrench, zap, maximize2, minimize2, gripVertical, trash2, messageCircle, messageCirclePlus,
   panelRight, folderTree, eye, eyeClosed, bookOpen, download, code, minus, externalLink, folderOpen, copyPlus, clipboardCopy, save, arrowDown, listFilter,
-  gitCompare, cloudUpload, smartphone, qrCode, cloud, gitCommitHorizontal, tag, gitBranchPlus, wrapText,
+  gitCompare, cloudUpload, smartphone, qrCode, cloud, gitCommitHorizontal, tag, gitBranchPlus, wrapText, squareSlash,
 };
 
 export type IconName = keyof typeof ICONS;

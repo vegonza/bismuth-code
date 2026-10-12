@@ -7,11 +7,11 @@ import { createEditor, fileChip, labelFile, mentionChip, type Editor } from "./e
 import { questionPanel, type QuestionPanel } from "./questions";
 import { icon } from "./icons";
 import { animator, EASE_OUT, reducedMotion } from "./motion";
-import { closePicker, currentEffort, currentHarness, currentModel, fastOn, initPicker, refreshPicker } from "./picker";
+import { closePicker, currentEffort, currentHarness, currentModel, fastOn, initPicker, openPicker, refreshPicker } from "./picker";
 import { getDraft, getDraftCaret, leaveDraft, openNewDraft, setDraft, setDraftCaret, setNewDraftProject } from "./drafts";
 import { displayCombo } from "./keymap";
 import { openPalette } from "./palette";
-import { initMentions } from "./mentions";
+import { initMentions, isModelCommand } from "./mentions";
 import { openCitedPath } from "./refs";
 import { draftChanged, projectArt } from "./sidebar";
 import { prefs, workingCombo, type WorkingSend } from "./prefs";
@@ -460,11 +460,20 @@ function submit(key = false, mod = false) {
   }
   // Images still uploading hold the send (the button shows it); they take a moment at most.
   if (uploading()) return;
+  if (isModelCommand(typed) && !staged().length) {
+    loadDraft("");
+    setDraft(ownerKey(), "");
+    draftChanged(ownerKey());
+    renderSend();
+    return openPicker();
+  }
   // A new session needs somewhere to run: with no project yet, adding one comes first (the draft waits).
   const project = store.thread ? null : targetProject();
   if (!store.thread && !project) return openPalette("folders");
   const text = withAttachments(typed, takeStaged());
-  if (store.thread && workingSend(mod) === "queue") net.send({ type: "queue.add", threadId: store.thread.id, text, settings: turnSettings() });
+  // A command waits for the running turn to end rather than cut into it.
+  const how = workingSend(mod);
+  if (store.thread && (how === "queue" || (how && store.queueSupported && /^\/(compact|goal)(\s|$)/.test(typed)))) net.send({ type: "queue.add", threadId: store.thread.id, text, settings: turnSettings() });
   else net.send({ type: "send", threadId: store.thread?.id ?? null, projectId: project?.id ?? null, text, settings: turnSettings() });
   loadDraft("");
   setDraft(ownerKey(), "");
