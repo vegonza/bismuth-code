@@ -4,16 +4,18 @@
 // - `$` or `/` starting a word lists the harness's skills. A pick is written the way that harness takes it
 //   (`/simplify` for Claude Code, `$imagegen` for Codex), as text: it's what gets sent.
 // - `/` opening the prompt lists the commands too: `/compact` and `/goal` where the harness has them (the harness runs
-//   the prompt), and `/model`, which opens the model picker.
-import type { HarnessId, Invocable } from "../shared/model";
+//   the prompt), and bismuth's own (APP), which the app runs instead of sending.
+import type { HarnessId, Invocable, TurnSettings } from "../shared/model";
 import { el } from "./dom";
 import type { Editor } from "./editor";
 import { HARNESS_NAMES, icon } from "./icons";
 import { reducedMotion } from "./motion";
-import { fileRow, highlight } from "./palette";
-import { findFiles, loadSuggestions, suggestedFiles } from "./panels";
+import { fileRow, highlight, openMcp } from "./palette";
+import { findFiles, loadSuggestions, newSideChat, showCommit, suggestedFiles } from "./panels";
+import { renameSession } from "./sidebar";
+import { sideChat } from "./sidechat";
 import { currentHarness, openPicker } from "./picker";
-import { call, store, targetProject } from "./store";
+import { actions, call, net, projectOf, store, targetProject } from "./store";
 
 const MENU_OUT_MS = 100;
 const ROWS_MAX = 50;
@@ -28,16 +30,51 @@ const TOKENS: [Kind, string, RegExp][] = [
   ["skill", "/", /(?:^|[\s([{>])\/([\w:.-]*)$/],
 ];
 
-/** bismuth's own command, in every harness. */
-const MODEL: Invocable = { name: "model", kind: "command", text: "/model", description: "Choose the model and reasoning", hint: null };
+type AppCommand = { it: Invocable; shown: () => boolean; run: (arg: string, settings: TurnSettings) => void };
+const command = (name: string, description: string, hint: string | null): Invocable => ({ name, kind: "command", text: `/${name}`, description, hint });
 
-/** A prompt that's `/model`: it opens the picker rather than being sent. */
-export const isModelCommand = (text: string) => text.trim() === MODEL.text;
+/** bismuth's own commands, in every harness: the app runs them, nothing is sent. One without arguments runs as it's
+ *  picked. */
+const APP: AppCommand[] = [
+  { it: command("model", "Choose the model and reasoning", null), shown: () => true, run: () => openPicker() },
+  {
+    it: command("side", "Open a side chat on this session, asking it what follows", "[question]"),
+    shown: () => !!store.thread && !sideChat,
+    run: (arg, settings) => void newSideChat(arg ? { text: arg, settings } : undefined),
+  },
+  {
+    it: command("new", "Start a new session in this project, with what follows as its prompt", "[prompt]"),
+    shown: () => !sideChat,
+    run: (arg, settings) => {
+      const project = currentProject();
+      if (arg && project) net.send({ type: "send", threadId: null, projectId: project.id, text: arg, settings });
+      else actions.newThread(project?.id);
+    },
+  },
+  {
+    it: command("rename", "Rename this session (to what follows)", "[title]"),
+    shown: () => !!store.thread && !sideChat,
+    run: (arg) => store.thread && (arg ? actions.rename(store.thread.id, arg) : renameSession(store.thread.id)),
+  },
+  { it: command("changes", "Show the changes (source control)", null), shown: () => !sideChat, run: () => showCommit() },
+  { it: command("mcp", "This project's MCP servers", null), shown: () => !sideChat, run: () => openMcp(currentProject()) },
+];
+
+/** The project the session on screen is in, or the one a new session starts in. */
+const currentProject = () => (store.thread ? projectOf(store.thread.cwd) : null) ?? targetProject();
+
+/** The app command a prompt runs, if it's one (`/side why…`), to run with the composer's settings. */
+export function appCommand(text: string): ((settings: TurnSettings) => void) | null {
+  const m = /^\/(\S+)(?:\s+([\s\S]*))?$/.exec(text.trim());
+  const app = m && APP.find((a) => a.it.name === m[1] && a.shown());
+  return app ? (settings) => app.run(m![2]?.trim() ?? "", settings) : null;
+}
 
 /** What the open token lists, out of the harness's: skills, and the commands first when its `/` opens the prompt. */
 function listFor(all: Invocable[], commands: boolean): Invocable[] {
   if (!commands) return all.filter((i) => i.kind === "skill");
-  return [...all.filter((i) => i.kind === "command"), MODEL].sort((a, b) => a.name.localeCompare(b.name)).concat(all.filter((i) => i.kind === "skill"));
+  const app = APP.filter((a) => a.shown()).map((a) => a.it);
+  return [...all.filter((i) => i.kind === "command"), ...app].sort((a, b) => a.name.localeCompare(b.name)).concat(all.filter((i) => i.kind === "skill"));
 }
 
 /** Where the skills come from: the session on screen, or the harness and project a new one starts with. */
@@ -76,7 +113,7 @@ function invocableRow(it: Invocable, query: string): HTMLElement {
   return item;
 }
 
-export function initMentions(editor: Editor, host: HTMLElement, chip: (path: string) => HTMLElement) {
+export function initMentions(editor: Editor, host: HTMLElement, chip: (path: string) => HTMLElement, settings: () => TurnSettings) {
   let card: HTMLElement | null = null;
   let list: HTMLElement;
   /** The open token: what it completes, where its trigger is, its query, and whether it lists commands (a `/`
@@ -258,9 +295,10 @@ export function initMentions(editor: Editor, host: HTMLElement, chip: (path: str
     const it = found[i];
     if (!it) return;
     close();
-    if (it === MODEL) {
+    const app = APP.find((a) => a.it === it);
+    if (app && !it.hint) {
       editor.insert("", () => null, replace);
-      return openPicker();
+      return app.run("", settings());
     }
     editor.insert(`${it.text} `, () => null, replace);
   }

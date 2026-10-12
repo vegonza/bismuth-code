@@ -638,12 +638,12 @@ const MCP_STATUS: Record<NonNullable<McpUse["status"]>, string> = {
 };
 type McpUse = NonNullable<McpServer["uses"][HarnessId]>;
 
-/** MCP servers for a project (null: there's none yet). */
-function openMcp(project: Project | null) {
+/** MCP servers for a project (null: there's none yet), the palette opened on them (the composer's `/mcp`). */
+export function openMcp(project: Project | null) {
   mcpProject = project;
   // The keyboard starts on the all-harnesses switch.
   mcpColumn = 0;
-  showView("mcp");
+  openPalette("mcp");
 }
 
 function pickProjectForMcp() {

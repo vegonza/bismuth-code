@@ -7,11 +7,11 @@ import { createEditor, fileChip, labelFile, mentionChip, type Editor } from "./e
 import { questionPanel, type QuestionPanel } from "./questions";
 import { icon } from "./icons";
 import { animator, EASE_OUT, reducedMotion } from "./motion";
-import { closePicker, currentEffort, currentHarness, currentModel, fastOn, initPicker, openPicker, refreshPicker } from "./picker";
+import { closePicker, currentEffort, currentHarness, currentModel, fastOn, initPicker, refreshPicker } from "./picker";
 import { getDraft, getDraftCaret, leaveDraft, openNewDraft, setDraft, setDraftCaret, setNewDraftProject } from "./drafts";
 import { displayCombo } from "./keymap";
 import { openPalette } from "./palette";
-import { initMentions, isModelCommand } from "./mentions";
+import { appCommand, initMentions } from "./mentions";
 import { openCitedPath } from "./refs";
 import { draftChanged, projectArt } from "./sidebar";
 import { prefs, workingCombo, type WorkingSend } from "./prefs";
@@ -460,12 +460,13 @@ function submit(key = false, mod = false) {
   }
   // Images still uploading hold the send (the button shows it); they take a moment at most.
   if (uploading()) return;
-  if (isModelCommand(typed) && !staged().length) {
+  const app = staged().length ? null : appCommand(typed);
+  if (app) {
     loadDraft("");
     setDraft(ownerKey(), "");
     draftChanged(ownerKey());
     renderSend();
-    return openPicker();
+    return app(turnSettings());
   }
   // A new session needs somewhere to run: with no project yet, adding one comes first (the draft waits).
   const project = store.thread ? null : targetProject();
@@ -644,7 +645,7 @@ export function initComposer() {
   editor = createEditor("Do anything…");
   pickerSlot = el("div", "picker-slot");
   initPicker(pickerSlot, () => editor.focus());
-  initMentions(editor, composer, fileMention);
+  initMentions(editor, composer, fileMention, turnSettings);
   contextRing = initContext();
   send = el("button", "send");
   send.onclick = () => submit();

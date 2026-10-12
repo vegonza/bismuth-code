@@ -10,7 +10,7 @@
 // per-chat panels; the new-session screen keeps its own per project, which a session started there begins with.
 import { Transaction, type TransactionSpec } from "@codemirror/state";
 import { isPhone } from "./phone";
-import { BRANCH, UNPUSHED, type FileContent, type FileEntry, type FileLocation, type FileRef, type GitStatus, type ServerMessage, type WriteResult } from "../shared/model";
+import { BRANCH, UNPUSHED, type FileContent, type FileEntry, type FileLocation, type FileRef, type GitStatus, type ServerMessage, type TurnSettings, type WriteResult } from "../shared/model";
 import { codeState, codeView, EditorView, keyModeSpec, type CodeHooks, type EditorState } from "./code";
 import { changesStore, changesView, lineCounts, SCOPES, type ChangesStore } from "./changes";
 import { graphView } from "./graph";
@@ -1003,12 +1003,14 @@ const UNTITLED = "New thread";
 let forking = false;
 /** A side chat off the open session (sidechat.ts): its context through its last finished turn, in a tab beside the
  *  shown one. */
-export async function newSideChat() {
+export async function newSideChat(first?: { text: string; settings: TurnSettings }) {
   const t = store.thread;
   if (!t || forking) return void (!t && flash("Open a session to branch a side chat off it"));
   forking = true;
   try {
     const child = await call("threads.fork", { id: t.id });
+    // `/side question`: the side chat starts on it.
+    if (first) net.send({ type: "send", threadId: child.id, projectId: null, text: first.text, settings: first.settings });
     const tab = SIDE_TAB + child.id;
     // The panel opens on the conversation already there (a spare frame takes it at once), not on an empty frame.
     await prepareSideChat(tab, 500);
