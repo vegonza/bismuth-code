@@ -18,8 +18,13 @@ export const EFFECTS: { id: BackgroundEffect; label: string; description: string
   { id: "scanlines", label: "Scanlines", description: "Adds a pronounced horizontal display-line texture." },
 ];
 
-export const MIN_ZOOM = 1;
+/** Below 1× the artwork no longer covers the hero: it shrinks inside it and its bare edges fade out (fadeRamp). */
+export const MIN_ZOOM = 0.25;
 export const MAX_ZOOM = 4;
+/** The most of the artwork's width or height an edge fade may take. */
+const EDGE_FADE = 0.2;
+/** Dragged past the frame's edge, the share of the artwork (or of the frame, if smaller) that stays in view. */
+const MIN_VISIBLE = 0.25;
 const VIEWPORT_RATIO = 0.72;
 const MAX_HEIGHT = 760;
 const COMPOSER_RADIUS = 26;
@@ -219,23 +224,61 @@ async function artwork(): Promise<{ canvas: HTMLCanvasElement; source: Source } 
 // ---------------- framing ----------------
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
-export const normalized = (f: Framing): Framing => ({ focalX: clamp(f.focalX, 0, 1), focalY: clamp(f.focalY, 0, 1), zoom: clamp(f.zoom, MIN_ZOOM, MAX_ZOOM) });
+export const normalized = (f: Framing): Required<Framing> => ({
+  focalX: clamp(f.focalX, 0, 1),
+  focalY: clamp(f.focalY, 0, 1),
+  zoom: clamp(f.zoom, MIN_ZOOM, MAX_ZOOM),
+  shiftX: f.shiftX ?? 0,
+  shiftY: f.shiftY ?? 0,
+});
 
-/** Cover-fit `sw×sh` into `w×h`, magnified by the zoom, with the overflow split by the focal point. */
+/** How far one axis of the artwork (`size` long, in a frame `extent` long) may go: off either edge, but never
+ *  out of view. */
+const reach = (size: number, extent: number) => {
+  const keep = Math.min(size, extent) * MIN_VISIBLE;
+  return [keep - size, extent - keep] as const;
+};
+
+/** One axis of the placement: the artwork's point `focal` at the frame's point `focal` (so while it's within
+ *  the frame, or covers it, a resize keeps it so), then pushed `shift` of its own length past that. */
+function place(size: number, extent: number, focal: number, shift: number) {
+  const [lo, hi] = reach(size, extent);
+  return clamp((extent - size) * focal + shift * size, lo, hi);
+}
+
+/** The focal and shift that put one axis at `to`: the focal alone while the artwork stays within or covers the
+ *  frame, else the bound it passed plus the shift beyond. */
+function aim(size: number, extent: number, focal: number, to: number): [number, number] {
+  to = clamp(to, ...reach(size, extent));
+  // Focal 0 aligns the leading edges (at 0), focal 1 the trailing ones (at `span`).
+  const span = extent - size;
+  if (to >= Math.min(0, span) && to <= Math.max(0, span)) return [span ? to / span : focal, 0];
+  const bound = span === 0 ? focal : (to < 0) === (span < 0) ? 1 : 0;
+  return [bound, (to - span * bound) / size];
+}
+
+/** Cover-fit `sw×sh` into `w×h`, scaled by the zoom, and placed by the focal point and shift. */
 export function fitted(sw: number, sh: number, w: number, h: number, framing: Framing) {
   const f = normalized(framing);
   const cover = Math.max(w / sw, h / sh);
-  const fw = Math.max(w, sw * cover * f.zoom);
-  const fh = Math.max(h, sh * cover * f.zoom);
-  const ox = fw - w;
-  const oy = fh - h;
-  return { x: -ox * f.focalX, y: -oy * f.focalY, w: fw, h: fh, ox, oy };
+  const fw = sw * cover * f.zoom;
+  const fh = sh * cover * f.zoom;
+  return { x: place(fw, w, f.focalX, f.shiftX), y: place(fh, h, f.focalY, f.shiftY), w: fw, h: fh };
 }
 
-/** A drag of (dx, dy) px moves the image with the pointer. */
+/** The framing that puts the artwork's top-left corner at (x, y), at its current zoom. */
+function moveTo(sw: number, sh: number, w: number, h: number, framing: Framing, x: number, y: number): Framing {
+  const f = normalized(framing);
+  const g = fitted(sw, sh, w, h, f);
+  const [focalX, shiftX] = aim(g.w, w, f.focalX, x);
+  const [focalY, shiftY] = aim(g.h, h, f.focalY, y);
+  return { ...f, focalX, focalY, shiftX, shiftY };
+}
+
+/** A drag of (dx, dy) px moves the image with the pointer, past the frame's edges if need be. */
 export function pan(sw: number, sh: number, w: number, h: number, framing: Framing, dx: number, dy: number): Framing {
   const g = fitted(sw, sh, w, h, framing);
-  return normalized({ ...framing, focalX: g.ox > 0 ? framing.focalX - dx / g.ox : framing.focalX, focalY: g.oy > 0 ? framing.focalY - dy / g.oy : framing.focalY });
+  return moveTo(sw, sh, w, h, framing, g.x + dx, g.y + dy);
 }
 
 /** Change magnification keeping the image point under (ax, ay) in place. */
@@ -243,11 +286,48 @@ export function zoomAround(sw: number, sh: number, w: number, h: number, framing
   const prev = fitted(sw, sh, w, h, framing);
   const next = normalized({ ...framing, zoom });
   const g = fitted(sw, sh, w, h, next);
-  const sx = (ax - prev.x) / prev.w;
-  const sy = (ay - prev.y) / prev.h;
-  if (g.ox > 0) next.focalX = (sx * g.w - ax) / g.ox;
-  if (g.oy > 0) next.focalY = (sy * g.h - ay) / g.oy;
-  return normalized(next);
+  return moveTo(sw, sh, w, h, next, ax - ((ax - prev.x) / prev.w) * g.w, ay - ((ay - prev.y) / prev.h) * g.h);
+}
+
+const smooth = (t: number) => t * t * (3 - 2 * t);
+const RAMP_STEPS = [0, 0.2, 0.4, 0.6, 0.8, 1];
+
+/** The artwork's alpha along one axis, as (px from its leading edge, alpha) stops: where it stops short of the
+ *  hero's edge it eases out toward it, over the gap's width up to EDGE_FADE of the artwork, so the fade grows
+ *  in from nothing as you zoom out. Null when it reaches both edges. */
+function fadeRamp(from: number, size: number, extent: number): [number, number][] | null {
+  const lead = clamp(from, 0, size * EDGE_FADE);
+  const trail = clamp(extent - from - size, 0, size * EDGE_FADE);
+  if (!lead && !trail) return null;
+  return [
+    ...(lead ? RAMP_STEPS.map((t): [number, number] => [t * lead, smooth(t)]) : [[0, 1] as [number, number]]),
+    ...(trail ? RAMP_STEPS.map((t): [number, number] => [size - trail + t * trail, 1 - smooth(t)]) : [[size, 1] as [number, number]]),
+  ];
+}
+
+type Placement = { x: number; y: number; w: number; h: number };
+
+/** Fade the bare edges of the artwork drawn at `g` on a `w×h` canvas. */
+function fadeEdges(c: CanvasRenderingContext2D, g: Placement, w: number, h: number) {
+  c.globalCompositeOperation = "destination-in";
+  for (const horizontal of [true, false]) {
+    const [from, size, extent] = horizontal ? [g.x, g.w, w] : [g.y, g.h, h];
+    const ramp = fadeRamp(from, size, extent);
+    if (!ramp) continue;
+    const grad = horizontal ? c.createLinearGradient(0, 0, extent, 0) : c.createLinearGradient(0, 0, 0, extent);
+    for (const [px, a] of ramp) grad.addColorStop(clamp((from + px) / extent, 0, 1), `rgba(0, 0, 0, ${a})`);
+    c.fillStyle = grad;
+    c.fillRect(0, 0, w, h);
+  }
+}
+
+/** The same fade as a CSS mask, for an element sized and placed at `g`. */
+function edgeMask(g: Placement, w: number, h: number): string {
+  const layer = (dir: string, ramp: [number, number][] | null) =>
+    ramp ? `linear-gradient(${dir}, ${ramp.map(([px, a]) => `rgba(0, 0, 0, ${a}) ${px}px`).join(", ")})` : "linear-gradient(#000, #000)";
+  const x = fadeRamp(g.x, g.w, w);
+  const y = fadeRamp(g.y, g.h, h);
+  return x || y ? `${layer("to right", x)}, ${layer("to bottom", y)}` : "none";
 }
 
 // ---------------- the hero ----------------
@@ -295,7 +375,7 @@ async function paintHero() {
   const g = fitted(art.source.width, art.source.height, w, h, prefs.background!);
   lc.imageSmoothingQuality = "high";
   lc.drawImage(art.canvas, g.x, g.y, g.w, g.h);
-  lc.globalCompositeOperation = "destination-in";
+  fadeEdges(lc, g, w, h);
   const fade = lc.createLinearGradient(0, 0, 0, h);
   fade.addColorStop(0, "#000");
   fade.addColorStop(1, "transparent");
@@ -375,7 +455,7 @@ export async function openAdjust() {
   const s = await loadSource();
   const current = prefs.background;
   if (!current) return;
-  let draft: Framing = { focalX: current.focalX, focalY: current.focalY, zoom: current.zoom };
+  let draft: Framing = normalized(current);
 
   const scrim = el("div", "s-scrim");
   const dialog = el("div", "s-dialog adjust-dialog menu-in");
@@ -419,7 +499,7 @@ export async function openAdjust() {
     draft = normalized(draft);
     if (s) {
       const g = fitted(s.width, s.height, w, h, draft);
-      Object.assign(img.style, { width: `${g.w}px`, height: `${g.h}px`, transform: `translate(${g.x}px, ${g.y}px)` });
+      Object.assign(img.style, { width: `${g.w}px`, height: `${g.h}px`, transform: `translate(${g.x}px, ${g.y}px)`, maskImage: edgeMask(g, w, h) });
     }
     const f = (draft.zoom - MIN_ZOOM) / (MAX_ZOOM - MIN_ZOOM);
     fill.style.width = `${f * 100}%`;

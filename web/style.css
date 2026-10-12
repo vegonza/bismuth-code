@@ -1079,7 +1079,7 @@ html.reduce-motion .account-skeleton .account-row { animation: none; }
 .adjust-stage { margin-top: 16px; height: 260px; display: flex; align-items: center; justify-content: center; }
 .adjust-frame { position: relative; overflow: hidden; border-radius: 12px; border: 1px solid var(--hairline-12); background: var(--theme-bg); cursor: grab; touch-action: none; }
 .adjust-frame.dragging { cursor: grabbing; }
-.adjust-frame img { position: absolute; left: 0; top: 0; max-width: none; user-select: none; pointer-events: none; transform-origin: 0 0; }
+.adjust-frame img { position: absolute; left: 0; top: 0; max-width: none; user-select: none; pointer-events: none; transform-origin: 0 0; mask-composite: intersect; }
 .adjust-thirds i { position: absolute; background: rgba(255, 255, 255, 0.22); pointer-events: none; }
 .adjust-thirds i:nth-child(1), .adjust-thirds i:nth-child(2) { top: 0; bottom: 0; width: 1px; }
 .adjust-thirds i:nth-child(1) { left: 33.33%; }

@@ -7,8 +7,10 @@ export type AccentPreset = "zeron" | "orange" | "amber" | "green" | "cyan" | "bl
 export type Surface = "theme" | "frosted" | "opaque";
 export type ReduceMotion = "system" | "on" | "off";
 export type BackgroundEffect = "none" | "dither" | "ascii" | "halftone" | "scanlines";
-/** Pan/zoom of the new-thread background: the focal point (0–1 on each axis) and a 1–4× magnification. */
-export type Framing = { focalX: number; focalY: number; zoom: number };
+/** Pan/zoom of the new-thread background: the focal point (0–1 on each axis), a ¼–4× magnification of the
+ *  cover fit (below 1× the image fits inside with its edges fading out), and how far past the frame's edge it
+ *  was dragged, in lengths of the image (background.ts `place`). */
+export type Framing = { focalX: number; focalY: number; zoom: number; shiftX?: number; shiftY?: number };
 
 export const SHORTCUTS = ["toggleSidebar", "toggleRightPane", "expandRightPane", "toggleFiles", "showChanges", "showReview", "toggleTerminal", "newSession", "newSessionIn", "openModelPicker", "nextSession", "prevSession", "settleSession", "renameSession", "jump1", "jump2", "jump3", "jump4", "jump5", "jump6", "jump7", "jump8", "jump9", "newTerminal", "closeTerminal", "nextTerminal", "prevTerminal", "maximizeTerminal", "closeFile", "reopenFile", "saveFile", "togglePreview", "goBack", "goForward", "toggleHiddenFiles", "expandFolders", "collapseFolders", "revealFile", "quickOpen", "tab1", "tab2", "tab3", "tab4", "tab5", "tab6", "tab7", "tab8", "tab9", "removeImage", "stopTurn", "newBrowserTab", "focusAddress", "reloadPage", "sideChat"] as const;
 export type ShortcutId = (typeof SHORTCUTS)[number];
