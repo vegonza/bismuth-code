@@ -16,6 +16,10 @@ function storageHash(s) {
   return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
 }
 
+// The pointer's moves over the page, passed on to the window (its edge peek follows the pointer, which the page keeps
+// to itself), with the page's width to place them across its <webview> (drawn smaller as a device's viewport).
+addEventListener("pointermove", (e) => e.isTrusted && e.pointerType === "mouse" && ipcRenderer.sendToHost("bismuth-pointer", e.clientX, e.buttons, innerWidth), { capture: true, passive: true });
+
 // What Zen keeps in the site's localStorage (its settings, a signed-in app's state) put in first, as its cookies are:
 // what Zen changed since the last time, unless the site has changed it here since (`written`: what was put in then).
 try {

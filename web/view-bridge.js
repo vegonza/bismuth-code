@@ -6,7 +6,8 @@
 // A plain HTML view (<html data-bismuth-plain>: a project without a view build of its own) is styled as bismuth:
 // base styles here, and the window's theme variables and fonts, which it sends when the page says hello.
 // A local image the core inlined (its data: URL ends #bismuth-file=<path>) opens in the window's file panel when
-// clicked, kept open on a double click, as file links do there.
+// clicked, kept open on a double click, as file links do there. The pointer's moves are passed on too: the frame keeps
+// them to itself, and the window's edge peek follows them.
 (() => {
   const d = document.documentElement;
   const plain = d.hasAttribute("data-bismuth-plain");
@@ -52,6 +53,8 @@ hr { border: 0; border-top: 1px solid var(--border); }`;
     fonts(e.data.fonts);
   });
   parent.postMessage({ bismuthView: "hello", plain }, "*");
+  // The pointer's moves, which the frame keeps to itself: the window's edge peek follows them (web/panels.ts).
+  addEventListener("pointermove", (e) => e.pointerType === "mouse" && parent.postMessage({ bismuthPointer: [e.clientX, e.buttons] }, "*"), { capture: true, passive: true });
 
   const MARK = "#bismuth-file=";
   const fileOf = (url) => {

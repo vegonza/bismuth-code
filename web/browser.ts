@@ -262,6 +262,8 @@ type Hooks = {
   target: (target: string, tab: string | null) => void;
   /** What a new tab's page offers besides an address: the panel's other things to open (panels.ts). */
   tools: () => HTMLElement;
+  /** The pointer moved over a page, at `x` across it (`width` wide), `buttons` held: the window's edge peek follows it. */
+  pointer: (page: HTMLElement, x: number, buttons: number, width: number) => void;
 };
 let hooks: Hooks;
 let layer: HTMLElement;
@@ -645,6 +647,11 @@ function attach(p: Page) {
     changed(p);
   });
   v.addEventListener("context-menu", (e: any) => pageMenu(p, e.params));
+  // A page keeps the pointer's moves to itself: its preload passes them on (desktop/page-preload.cjs).
+  v.addEventListener("ipc-message", (e: any) => {
+    const [x, buttons, width] = e.args ?? [];
+    if (e.channel === "bismuth-pointer" && typeof x === "number" && typeof buttons === "number" && typeof width === "number") hooks.pointer(v, x, buttons, width);
+  });
   p.frame!.querySelector(".bw-screen")!.append(v);
 }
 

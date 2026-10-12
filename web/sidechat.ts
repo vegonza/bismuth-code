@@ -33,8 +33,8 @@ type KeyInit = { key: string; code: string; ctrlKey: boolean; shiftKey: boolean;
 export type Host = {
   openCited(ref: FileRef | null, cited: Cited, keep: boolean): void;
   openWebLink(url: string, background: boolean): void;
-  /** One of the app's shortcuts pressed in the frame, as if pressed in the window. */
-  key(k: KeyInit): void;
+  /** One of the app's shortcuts pressed in the frame (or a modifier let go there), as if in the window. */
+  key(type: "keydown" | "keyup", k: KeyInit): void;
   /** The frame has its session on screen. */
   shown(id: string): void;
   /** The spare has booted, ready for a session. */
@@ -160,6 +160,14 @@ export function forwardKey(e: KeyboardEvent): boolean {
   if (!h) return false;
   e.preventDefault();
   e.stopPropagation();
-  h.key({ key: e.key, code: e.code, ctrlKey: e.ctrlKey, shiftKey: e.shiftKey, altKey: e.altKey, metaKey: e.metaKey });
+  h.key("keydown", keyInit(e));
   return true;
 }
+
+/** A modifier let go in a side chat's frame: the window hears it too, so what it shows while one is held (the jump
+ *  hints, a Mod+Tab walk) ends there as well, the shortcut having gone to it. */
+export function forwardKeyUp(e: KeyboardEvent) {
+  if (["Control", "Alt", "Meta", "Shift"].includes(e.key)) host()?.key("keyup", keyInit(e));
+}
+
+const keyInit = (e: KeyboardEvent): KeyInit => ({ key: e.key, code: e.code, ctrlKey: e.ctrlKey, shiftKey: e.shiftKey, altKey: e.altKey, metaKey: e.metaKey });

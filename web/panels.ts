@@ -1751,7 +1751,7 @@ function previewDoc(r: string, path: string, text: string): string {
     );
   const dir = isAbs(path) ? "" : dirOf(path);
   const href = typeof base === "string" && base && !isAbs(path) ? base + (dir ? dir.split("/").map(encodeURIComponent).join("/") + "/" : "") : null;
-  const pointer = `<script>addEventListener("pointermove",(e)=>parent.postMessage({bismuthPointer:[e.clientX,e.buttons]},"*"),{capture:true,passive:true})</script>`;
+  const pointer = `<script>addEventListener("pointermove",(e)=>e.pointerType==="mouse"&&parent.postMessage({bismuthPointer:[e.clientX,e.buttons]},"*"),{capture:true,passive:true})</script>`;
   const head = `<meta http-equiv="Content-Security-Policy" content="connect-src 'none'; form-action 'none'">${href ? `<base href="${href}">` : ""}${pointer}`;
   // After a doctype, which must come first (or the page renders in quirks mode).
   const doctype = /^\s*<!doctype[^>]*>/i.exec(text)?.[0] ?? "";
@@ -3198,6 +3198,13 @@ let grace: { gap: number; timer: Timer } | null = null;
 const GRACE_MS = 1200;
 const GRACE_SLACK = 16;
 
+/** The pointer at `x` across a frame's page `width` wide (a view's frame is scaled to its row, a browser tab's page drawn
+ *  at its viewport's scale): at its place across the window. */
+export function framePointer(frame: HTMLElement, x: number, buttons: number, width: number) {
+  const box = frame.getBoundingClientRect();
+  onPointer(box.left + (width > 0 ? (x * box.width) / width : x), buttons);
+}
+
 /** The pointer moved to `x` across the window, `buttons` held. */
 function onPointer(x: number, buttons: number) {
   pointerX = x;
@@ -3300,12 +3307,13 @@ export function initPanels(refocus: () => void, findFile: () => void) {
     open: (url, from, background) => openBrowser(url, from, background),
     target: (target, tab) => void call("browser.owners", { owners: [[target, tab && ownerOf(tab)]] }).catch(() => {}),
     tools,
+    pointer: framePointer,
   });
   // A side chat's frame opens files and web links here, beside it.
   mountSideChats(paneBody, {
     openCited,
     openWebLink,
-    key: (k) => dispatchEvent(new KeyboardEvent("keydown", { ...k, bubbles: true, cancelable: true })),
+    key: (type, k) => dispatchEvent(new KeyboardEvent(type, { ...k, bubbles: true, cancelable: true })),
   });
   // Pages whose tabs closed in an earlier run (only open tabs can be reopened) are let go of.
   forgetPages(Object.values(saved.sessions).flatMap((s) => s.tabs));
@@ -3457,12 +3465,13 @@ export function initPanels(refocus: () => void, findFile: () => void) {
 
   // The window's right edge, while the explorer is put away: resting there brings it out.
   addEventListener("pointermove", (e: PointerEvent) => e.pointerType === "mouse" && onPointer(e.clientX, e.buttons), { passive: true });
-  // An HTML preview's frame keeps the pointer's moves to itself: its page passes them on (see previewDoc).
+  // Every frame keeps the pointer's moves to itself: its page passes them on (an HTML preview's: previewDoc; a side
+  // chat's: app.ts's initSide; a view's: view-bridge.js; a browser tab's: desktop/page-preload.cjs, by way of browser.ts).
   addEventListener("message", (e) => {
     const at = e.data?.bismuthPointer;
     if (!Array.isArray(at) || typeof at[0] !== "number" || typeof at[1] !== "number") return;
-    const frame = [...document.querySelectorAll<HTMLIFrameElement>("iframe.fv-html")].find((f) => f.contentWindow === e.source);
-    if (frame) onPointer(frame.getBoundingClientRect().left + at[0], at[1]);
+    const frame = [...document.querySelectorAll<HTMLIFrameElement>("iframe.fv-html, iframe.sc-frame, iframe.uiview")].find((f) => f.contentWindow === e.source);
+    if (frame) framePointer(frame, at[0], at[1], frame.offsetWidth);
   });
   // The pointer gone from the window: it goes.
   document.documentElement.addEventListener("pointerleave", () => peeking && scheduleClose());

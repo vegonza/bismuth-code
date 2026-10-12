@@ -24,7 +24,7 @@ import { closeTerminal, cycleTerminal, hideTerminal, initTerminal, newTerminal, 
 import { initTranscript } from "./transcript";
 import { focusAddress, reloadPage, setAwake, wireLinks } from "./browser";
 import { setOpener } from "./refs";
-import { adoptSession, forwardKey, host, sideChat, sideSession } from "./sidechat";
+import { adoptSession, forwardKey, forwardKeyUp, host, sideChat, sideSession } from "./sidechat";
 import { newSideChat, sideChatsToOpen, revealSideChat, sideChatChanged, sideChatGone, agentBrowser, reportOwners, browsing, openBrowser, closeActiveFile, reopenClosedFile, collapseFolders, showSidebarView, cycleTabs, expandFolders, filesChanged, goBack, goForward, openReview, initPanels, jumpTab, renameHovered, resyncWatch, showCommit, revealActiveFile, saveActiveFile, toggleExpand, toggleFiles, toggleHiddenFiles, togglePane, togglePreview, turnSnapshot } from "./panels";
 
 declare global {
@@ -591,6 +591,9 @@ function initSide() {
   // composer gliding down from the page's middle.
   $("main").classList.remove("new-thread");
   initPhoneFrame();
+  // The window's edge peek follows the pointer, which a frame keeps to itself: passed on, as an HTML preview's page does.
+  addEventListener("pointermove", (e: PointerEvent) => e.pointerType === "mouse" && parent.postMessage({ bismuthPointer: [e.clientX, e.buttons] }, location.origin), { capture: true, passive: true });
+  addEventListener("keyup", forwardKeyUp, true);
 }
 
 // ---------------- shortcuts ----------------
