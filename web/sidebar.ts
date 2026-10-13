@@ -356,8 +356,9 @@ export const sortedSummaries = () => {
  *  collapsed group reaches nothing, like Zeron's visible order. */
 export const sessionOrder = () => [...$("sidebar-lists").querySelectorAll<HTMLElement>(".row[data-id]")].map((r) => r.dataset.id!);
 
-/** The rows the jump shortcuts number, top to bottom: the shown ones still active (settled ones are history). */
-const jumpRows = () => [...$("sidebar-lists").querySelectorAll<HTMLElement>(".row[data-id]:not(.settled)")];
+/** The rows the jump shortcuts number, top to bottom: every shown one. Grouped by project, settled ones (history, under
+ *  each project's active ones) are left out so the numbers stay on active sessions; the Settled shelf is numbered. */
+const jumpRows = () => [...$("sidebar-lists").querySelectorAll<HTMLElement>(store.view.organize === "project" ? ".row[data-id]:not(.settled)" : ".row[data-id]")];
 export const jumpOrder = () => jumpRows().map((r) => r.dataset.id!);
 
 // ---------------- jump hints ----------------
