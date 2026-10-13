@@ -23,6 +23,9 @@ export function setDraft(key: string, text: string) {
     if (carets.delete(key)) writeEntries(CARETS, { [key]: undefined });
   }
   writeEntries(KEY, { [key]: text || undefined });
+  // A new-session draft emptied loses its row for good: typing into it again is a fresh start, not one left before.
+  const d = newDrafts.get(key);
+  if (d?.left && !draftHasContent(key)) (d.left = undefined), saveNew();
 }
 
 /** Where the caret was in a draft when its session was left (undefined: the end). */
@@ -66,13 +69,18 @@ if (drafts.has("")) {
   setDraft("", "");
 }
 renameStaged("", open.id);
+// Drafts emptied before emptying cleared `left` (setDraft) would show up as rows the moment they're typed in.
+for (const d of newDrafts.values()) if (d.left && !draftHasContent(d.id)) d.left = undefined;
+saveNew();
 
 /** The draft the new-session screen shows. */
 export const openNewDraft = () => open;
 export const newDraft = (id: string) => newDrafts.get(id);
 
 /** It holds something worth keeping: text, or images. */
-export const draftHasContent = (key: string) => !!drafts.get(key)?.trim() || stagedCount(key) > 0;
+export function draftHasContent(key: string) {
+  return !!drafts.get(key)?.trim() || stagedCount(key) > 0;
+}
 
 /** The sidebar's line for a new-session draft: its first line, else what's attached. */
 export function draftPreview(id: string) {
@@ -82,11 +90,13 @@ export function draftPreview(id: string) {
   return `${n} image${n === 1 ? "" : "s"}`;
 }
 
-/** The composer moved off a draft: a new-session one holding something is listed from now on. */
+/** The composer moved off a draft: a new-session one holding something is listed from now on, and one left empty
+ *  isn't any more (it's a blank new session again, not a draft to come back to). */
 export function leaveDraft(key: string) {
   const d = newDrafts.get(key);
-  if (!d || d.left || !draftHasContent(key)) return;
-  d.left = true;
+  const left = draftHasContent(key);
+  if (!d || !!d.left === left) return;
+  d.left = left || undefined;
   saveNew();
 }
 
