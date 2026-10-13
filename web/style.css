@@ -440,10 +440,12 @@ html.wrap-code .code-block pre { white-space: pre-wrap; overflow-wrap: anywhere;
 /* ============================ composer ============================ */
 .dock { position: absolute; left: 0; width: var(--main-w); bottom: var(--terminal-h, 0px); padding: 0 48px 16px; display: flex; flex-direction: column; align-items: center; pointer-events: none; z-index: 8; }
 .dock > * { pointer-events: auto; }
-/* The underlay the transcript scrolls under: a 24px fade band above the dock, solid below. It stops short of
-   the scroller's 10px gutter so the scrollbar stays whole. */
-.dock::before { content: ""; position: absolute; left: 0; right: 10px; top: -24px; bottom: 0; background: linear-gradient(transparent, var(--main) 24px); pointer-events: none; }
 .dock .stack { position: relative; width: 100%; max-width: var(--content-w); display: flex; flex-direction: column; }
+/* The underlay the transcript scrolls under: the stack's own width and down to the dock's bottom, fading in over
+   24px above and at the sides. Anything wider than the column (a view) carries on past it to the window's edge
+   instead of being cut straight across. */
+.dock .stack::before { content: ""; position: absolute; z-index: -1; top: -24px; left: calc(-1 * var(--under-x)); right: calc(-1 * var(--under-x)); bottom: calc(-1 * var(--dock-pb)); background: var(--main); mask-image: linear-gradient(transparent, #000 24px), linear-gradient(to right, transparent, #000 var(--under-x), #000 calc(100% - var(--under-x)), transparent); mask-composite: intersect; pointer-events: none; }
+.dock { --under-x: 24px; --dock-pb: 16px; }
 .ring-chip { position: relative; height: 24px; padding: 0 6px; border-radius: 6px; display: flex; align-items: center; gap: 5px; font-size: calc(11px * var(--fs)); color: var(--muted); font-variant-numeric: tabular-nums; transition: background-color 0.15s cubic-bezier(0.4, 0, 0.2, 1); --arc: var(--muted); }
 .ring-chip:hover { background: rgba(var(--ink-rgb), 0.05); }
 .ring-tip { position: absolute; right: -4px; bottom: calc(100% + 6px); z-index: 40; padding: 5px 10px; white-space: nowrap; font-size: calc(12px * var(--fs)); color: var(--text); font-variant-numeric: tabular-nums; pointer-events: none; opacity: 0; transform: translateY(2px); transition: opacity 0.12s, transform 0.12s; }
@@ -468,7 +470,7 @@ html.wrap-code .code-block pre { white-space: pre-wrap; overflow-wrap: anywhere;
 /* Zeron's new-session placement: the input box alone is centred in the window, 8px below the midpoint (the
    padding); the selectors float above and below it. */
 #main.new-thread .dock { top: 0; justify-content: center; padding-top: 16px; padding-bottom: 0; }
-#main.new-thread .dock::before { display: none; }
+#main.new-thread .dock .stack::before { display: none; }
 .selector-row { position: absolute; left: 0; right: 0; height: 20px; display: flex; align-items: center; gap: 12px; padding: 0 16px; }
 .selector-row.top { top: -28px; justify-content: flex-end; }
 .selector-row.bottom { bottom: -28px; }
@@ -523,7 +525,8 @@ html.wrap-code .code-block pre { white-space: pre-wrap; overflow-wrap: anywhere;
 .composer .attach { grid-area: attach; width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: var(--muted); transition: background-color 0.15s; }
 .composer .attach:hover { background: rgba(var(--ink-rgb), 0.10); }
 .composer .attach .icon { width: 18px; height: 18px; }
-.composer .editor { grid-area: input; width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; cursor: text; outline: none; font-size: calc(14px * var(--fs)); line-height: calc(22.75px * var(--fs)); padding: 14px 4px 4px; max-height: 260px; color: var(--text); caret-color: var(--accent); overflow-y: auto; position: relative; }
+/* Side padding 8px: the text starts where the + glyph does (12px box padding, 5px into the button, 3px into the icon), less the letter's own bearing. */
+.composer .editor { grid-area: input; width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; cursor: text; outline: none; font-size: calc(14px * var(--fs)); line-height: calc(22.75px * var(--fs)); padding: 14px 8px 4px; max-height: 260px; color: var(--text); caret-color: var(--accent); overflow-y: auto; position: relative; }
 .composer.roomy .editor { padding-top: 16px; min-height: 76px; }
 /* Out of the text flow (absolute, at its static spot), so the caret sits at the start rather than after it. */
 .composer .editor.empty::before { content: attr(data-placeholder); position: absolute; color: var(--faint); pointer-events: none; }
@@ -1925,7 +1928,7 @@ html.phone .chat-titlebar :is(.project-icon, .monogram) { width: 16px; height: 1
 html.phone .chat-titlebar .monogram { font-size: 10px; line-height: 16px; }
 html.phone #transcript { padding-top: calc(var(--titlebar-h) + 8px); }
 html.phone .trow { padding: 0 14px; }
-html.phone .dock { padding: 0 8px 8px; }
+html.phone .dock { padding: 0 8px 8px; --under-x: 8px; --dock-pb: 8px; }
 /* The new-session page: the composer at the bottom, under the thumb (the desktop centres it in the window). */
 html.phone #main.new-thread .dock { top: auto; justify-content: flex-end; padding-top: 0; }
 /* The row under the composer (the branch) hangs below it: the dock lifts the composer clear of the screen's edge. */
