@@ -855,6 +855,9 @@ const GLIDES = new Set(["--sb", "--rp", "--fp"]);
 let gliding = 0;
 let frozen: HTMLElement[] = [];
 function freeze() {
+  // The glide's event comes a frame in, its first step already laid out: rows above the view have rewrapped and moved
+  // it off what it holds. Put it back first, or the rows it's about to return to are the ones held off screen (blank).
+  keepHold();
   const s = scroller().getBoundingClientRect();
   const margin = s.height;
   // Every size read before any is written: one layout, not one per row.
