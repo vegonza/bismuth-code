@@ -350,14 +350,26 @@ html.wrap-code .code-block pre { white-space: pre-wrap; overflow-wrap: anywhere;
 
 /* tool groups (activity tree) */
 .tgroup { font-family: var(--sans); }
-.tgroup-head { height: 26px; display: flex; align-items: center; gap: 6px; padding-right: 4px; cursor: pointer; font-size: calc(12px * var(--fs)); line-height: calc(18px * var(--fs)); color: var(--muted); user-select: none; width: fit-content; max-width: 100%; }
+.tgroup-head, .agent-step { height: 26px; display: flex; align-items: center; gap: 6px; padding-right: 4px; cursor: pointer; font-size: calc(12px * var(--fs)); line-height: calc(18px * var(--fs)); color: var(--muted); user-select: none; width: fit-content; max-width: 100%; }
 .tgroup-head:hover { color: var(--text); }
-.tgroup-head .chev-slot { width: 22px; height: 18px; flex: none; position: relative; }
+.tgroup-head .chev-slot, .agent-step .chev-slot { width: 22px; height: 18px; flex: none; position: relative; }
 .tgroup-head .chev { position: absolute; left: 5.5px; top: 2px; width: 14px; height: 14px; color: var(--muted); transform: rotate(-90deg); transition: transform 0.14s ease-out; }
 .tgroup.open > .tgroup-head .chev { transform: none; }
-.tgroup-head .summary { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.tgroup.active > .tgroup-head .summary { background: linear-gradient(90deg, var(--muted) 0%, var(--muted) 32%, var(--text) 50%, var(--muted) 68%, var(--muted) 100%) 0 0 / 300% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: shimmer 3.4s linear infinite; }
+.tgroup-head .summary, .agent-step .summary { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.tgroup.active > .tgroup-head .summary, .agent-step.active .summary { background: linear-gradient(90deg, var(--muted) 0%, var(--muted) 32%, var(--text) 50%, var(--muted) 68%, var(--muted) 100%) 0 0 / 300% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: shimmer 3.4s linear infinite; }
 @keyframes shimmer { from { background-position: 100% 0; } to { background-position: -50% 0; } }
+/* A subagent (web/transcript.ts agentStep): a step like a group's head that never folds, its title in full color. */
+.agent-step { cursor: default; }
+.agent-step.link { cursor: pointer; }
+.agent-step .chev-slot { display: flex; align-items: center; justify-content: center; color: var(--muted); }
+.agent-step .chev-slot .icon { width: 14px; height: 14px; }
+.agent-step .summary { color: var(--text); }
+.agent-step .when { flex: none; font-size: calc(11px * var(--fs)); color: var(--faint); font-variant-numeric: tabular-nums; }
+.agent-step.failed .chev-slot, .agent-step.failed .summary { color: var(--danger); }
+.agent-step .trail { width: 18px; height: 18px; flex: none; display: flex; align-items: center; justify-content: center; opacity: 0; }
+.agent-step .trail .icon { width: 12px; height: 12px; }
+.agent-step.link:hover .trail { opacity: 1; color: var(--text); }
+.agent-step-body { padding-left: 28px; }
 .tgroup-body { display: grid; grid-template-rows: 0fr; transition: grid-template-rows 0.14s ease-out; }
 .tgroup.open > .tgroup-body { grid-template-rows: 1fr; }
 .tgroup-body > .tlist { overflow: hidden; min-height: 0; padding-top: 2px; }
@@ -369,7 +381,6 @@ html.wrap-code .code-block pre { white-space: pre-wrap; overflow-wrap: anywhere;
 .titem .rail .cont { position: absolute; left: 12px; top: 10px; bottom: 0; border-left: 1px solid var(--hairline-12); }
 .titem .rail .ticon { position: absolute; left: 32px; top: 8px; width: 16px; height: 16px; color: var(--muted); }
 .titem.failed .rail .ticon { color: var(--danger); }
-.titem .rail .tspin { display: flex; align-items: center; justify-content: center; }
 .titem .tcard { flex: 1; min-width: 0; margin-left: 8px; display: flex; flex-direction: column; }
 .thead { height: 32px; min-width: 0; display: flex; align-items: center; gap: 8px; font-size: calc(12px * var(--fs)); line-height: calc(18px * var(--fs)); color: var(--muted); }
 .titem.expandable > .tcard > .thead { cursor: pointer; }

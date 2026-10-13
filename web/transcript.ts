@@ -16,10 +16,12 @@ import { isViewTool, viewFrame, viewOf } from "./views";
 
 type ToolItem = Exclude<Item, { kind: "user" | "assistant" | "plan" | "notice" | "question" }>;
 type QuestionItem = Extract<Item, { kind: "question" }>;
+type SpawnItem = Extract<Item, { kind: "tool" }>;
 type Row =
   | { kind: "user"; key: string; item: Extract<Item, { kind: "user" }>; ts: number | null; gap: number }
   | { kind: "md"; key: string; text: string; done: boolean; ts: number | null; copy: string | null; gap: number }
   | { kind: "group"; key: string; items: ToolItem[]; live: boolean; gap: number }
+  | { kind: "agent"; key: string; item: SpawnItem; gap: number }
   | { kind: "notice"; key: string; text: string; gap: number }
   | { kind: "fork"; key: string; title: string; gap: number }
   | { kind: "question"; key: string; item: QuestionItem; waiting: boolean; gap: number }
@@ -62,12 +64,20 @@ function park(threadId: string, container: HTMLElement) {
 // ---------------- rows ----------------
 
 const isTool = (i: Item): i is ToolItem => i.kind !== "user" && i.kind !== "assistant" && i.kind !== "plan" && i.kind !== "notice" && i.kind !== "question";
+/** A call that started a subagent (the core names them so). */
+const isSpawn = (i: Item): i is SpawnItem => i.kind === "tool" && i.name.startsWith("subagent ·");
+/** Rows that read as steps of the work: a run of them sits close, like the tree under an open group. */
+const STEPS = new Set<Row["kind"] | undefined>(["group", "agent"]);
 
 function buildRows(thread: Thread): Row[] {
   const rows: Row[] = [];
   type Draft = Row extends infer R ? (R extends Row ? Omit<R, "gap"> : never) : never;
   const gapFor = (row: Draft, prev: Row | undefined, turnStart: boolean) =>
-    row.kind === "fork" || turnStart ? 16 : row.kind === "md" && prev?.kind === "md" ? 12 : [row.kind, prev?.kind].some((k) => k === "group" || k === "view") ? 12 : 8;
+    row.kind === "fork" || turnStart ? 16
+    : row.kind === "md" && prev?.kind === "md" ? 12
+    : STEPS.has(row.kind) && STEPS.has(prev?.kind) ? 0
+    : [row.kind, prev?.kind].some((k) => STEPS.has(k) || k === "view") ? 12
+    : 8;
   const push = (row: Draft, turnStart = false) => rows.push({ ...row, gap: gapFor(row, rows.at(-1), turnStart) } as Row);
   const pendingRow = (key: string, text: string, at: number) => {
     push({ kind: "user", key, item: { id: key, kind: "user", text, images: 0 }, ts: at }, true);
@@ -121,6 +131,11 @@ function buildRows(thread: Thread): Row[] {
         // A view the agent rendered: its own row, out of the activity around it, like a question.
         group = null;
         push({ kind: "view", key: item.id, ...viewOf(item)! }, replyStart);
+        replyStart = false;
+      } else if (isSpawn(item)) {
+        // A subagent: a step of its own, out of the activity around it and never folded away.
+        group = null;
+        push({ kind: "agent", key: item.id, item }, replyStart);
         replyStart = false;
       } else if (isTool(item)) {
         if (!group) {
@@ -196,12 +211,17 @@ function signature(row: Row): string {
               case "fileChange":
                 return `${i.id}${i.status}${i.changes.length}${fold}`;
               case "tool":
-                return `${i.id}${i.status}${i.output.length}${i.name}${i.agent ? (agentWorking(i) ? "W" : "A") : ""}${fold}`;
+                return `${i.id}${i.status}${i.output.length}${i.name}${fold}`;
               default:
                 return i.id;
             }
           })
           .join("|");
+    case "agent": {
+      const i = row.item;
+      const sub = i.agent ? store.summaries.get(i.agent) : undefined;
+      return `a${i.status}${i.output.length}${i.name}:${sub?.title}${sub?.status}${sub?.createdAt}${sub?.updatedAt}:${agentWorking(i)}:${itemFolds.get(i.id) ?? ""}${fullOutput.has(i.id) ? "F" : ""}:${row.gap}`;
+    }
     case "notice":
       return `n${row.text}${row.gap}`;
     case "fork":
@@ -331,6 +351,15 @@ function fileBadge(paths: string[]): HTMLElement {
   return badge;
 }
 
+/** A call's input and what it returned, when it has either. */
+function callBody(item: SpawnItem): (() => HTMLElement[]) | null {
+  if (!item.input && !item.output) return null;
+  return () => [
+    ...(item.input ? [Object.assign(el("div", "tdetail-body call"), { textContent: item.input })] : []),
+    ...(item.output ? outputBody(item.id, item.output) : []),
+  ];
+}
+
 function toolView(item: ToolItem): ToolView {
   switch (item.kind) {
     case "reasoning": {
@@ -372,10 +401,9 @@ function toolView(item: ToolItem): ToolView {
       };
     }
     case "tool": {
-      const agent = item.name.startsWith("subagent ·");
       const view = isViewTool(item.name);
-      const mcp = !agent && !view && item.name.includes(" · ");
-      let detail = agent ? item.name.replace(/^subagent · /, "") : item.name;
+      const mcp = !view && item.name.includes(" · ");
+      let detail = item.name;
       if (view) {
         try {
           detail = String(JSON.parse(item.input).title || "");
@@ -384,18 +412,11 @@ function toolView(item: ToolItem): ToolView {
         }
       }
       return {
-        label: view ? "View" : agent ? "Agent" : mcp ? "MCP" : "Tool",
+        label: view ? "View" : mcp ? "MCP" : "Tool",
         detail,
-        icon: view ? "blocks" : agent ? "bot" : mcp ? "plug" : "wrench",
+        icon: view ? "blocks" : mcp ? "plug" : "wrench",
         failed: itemFailed(item),
-        // A subagent with a transcript of its own opens it instead (toolRow).
-        body:
-          !item.agent && (item.input || item.output)
-            ? () => [
-                ...(item.input ? [Object.assign(el("div", "tdetail-body call"), { textContent: item.input })] : []),
-                ...(item.output ? outputBody(item.id, item.output) : []),
-              ]
-            : null,
+        body: callBody(item),
         defaultOpen: false,
       };
     }
@@ -406,17 +427,11 @@ function toolView(item: ToolItem): ToolView {
 
 function toolRow(item: ToolItem, continues: boolean): HTMLElement {
   const view = toolView(item);
-  const agent = item.kind === "tool" ? item.agent : undefined;
-  const row = el("div", `titem${view.failed ? " failed" : ""}${view.body || agent ? " expandable" : ""}`);
+  const row = el("div", `titem${view.failed ? " failed" : ""}${view.body ? " expandable" : ""}`);
   const rail = el("div", "rail");
   rail.append(el("span", "branch"));
   if (continues) rail.append(el("span", "cont"));
-  // A subagent at work shows the activity spinner where its glyph goes, as its tab does.
-  if (agent && item.kind === "tool" && agentWorking(item)) {
-    const spin = el("span", "ticon tspin");
-    spin.append(miniSpinner());
-    rail.append(spin);
-  } else rail.append(icon(view.icon, undefined, "ticon"));
+  rail.append(icon(view.icon, undefined, "ticon"));
 
   const card = el("div", "tcard");
   const head = el("div", "thead");
@@ -428,16 +443,7 @@ function toolRow(item: ToolItem, continues: boolean): HTMLElement {
     head.append(detail);
   }
   const open = view.body ? (itemFolds.get(item.id) ?? view.defaultOpen) : false;
-  if (agent) {
-    const trail = el("span", "trail");
-    trail.append(icon("arrowUpRight"));
-    head.append(trail);
-    head.title = "Open the subagent's transcript";
-    head.onclick = (e) => {
-      e.stopPropagation();
-      agentOpener(agent);
-    };
-  } else if (view.body) {
+  if (view.body) {
     const trail = el("span", "trail");
     trail.append(icon(open ? "chevronDown" : "chevronRight"));
     head.append(trail);
@@ -471,6 +477,59 @@ function groupRow(row: Extract<Row, { kind: "group" }>): HTMLElement {
   body.append(list);
   box.append(head, body);
   return box;
+}
+
+// ---------------- subagents ----------------
+
+/** A subagent as a step of its own, at the level of the groups around it and never folded: the spinner where the
+ *  group's chevron goes while it works, its title in full, how long it has been (or was) at it. One with a transcript
+ *  opens it; one without folds out its prompt and what it returned. */
+function agentStep(item: SpawnItem): HTMLElement {
+  const sub = item.agent ? store.summaries.get(item.agent) : undefined;
+  const working = agentWorking(item);
+  const failed = itemFailed(item) || sub?.status === "error";
+  const body = item.agent ? null : callBody(item);
+  const open = !!body && (itemFolds.get(item.id) ?? false);
+  const box = el("div", "agent-step-box");
+  const step = el("div", `agent-step${working ? " active" : ""}${failed ? " failed" : ""}`);
+  const slot = el("span", "chev-slot");
+  slot.append(working ? miniSpinner() : icon(failed ? "triangleAlert" : "bot"));
+  const title = sub?.title || item.name.replace(/^subagent · /, "") || "Agent";
+  step.append(slot, el("span", "summary", title));
+  step.title = title;
+  const when = el("span", "when");
+  if (working && sub) {
+    when.dataset.since = String(sub.createdAt);
+    when.textContent = elapsed((Date.now() - sub.createdAt) / 1000);
+  } else if (failed) when.textContent = "failed";
+  else if (sub && sub.updatedAt > sub.createdAt) when.textContent = `done · ${elapsed((sub.updatedAt - sub.createdAt) / 1000)}`;
+  if (when.textContent) step.append(when);
+  if (item.agent || body) {
+    const trail = el("span", "trail");
+    trail.append(icon(item.agent ? "arrowUpRight" : open ? "chevronDown" : "chevronRight"));
+    step.append(trail);
+    step.classList.add("link");
+    step.onclick = (e) => {
+      e.stopPropagation();
+      if (item.agent) return agentOpener(item.agent);
+      itemFolds.set(item.id, !open);
+      update();
+    };
+  }
+  if (item.agent) step.title = `${title}\nOpen the subagent's transcript`;
+  box.append(step);
+  if (open && body) {
+    const detail = el("div", "agent-step-body");
+    detail.append(...body());
+    box.append(detail);
+  }
+  return box;
+}
+
+/** The time on subagents at work, kept counting. */
+function tickAgents() {
+  for (const when of rowsEl().querySelectorAll<HTMLElement>(".agent-step .when[data-since]"))
+    when.textContent = elapsed((Date.now() - Number(when.dataset.since)) / 1000);
 }
 
 // ---------------- other rows ----------------
@@ -602,6 +661,9 @@ function buildRow(row: Row): HTMLElement {
     }
     case "group":
       inner.append(groupRow(row));
+      break;
+    case "agent":
+      inner.append(agentStep(row.item));
       break;
     case "notice":
       inner.append(el("div", "fork-marker", row.text));
@@ -850,5 +912,8 @@ export function initTranscript() {
     s.classList.toggle("opening", !!store.opening && store.opening !== store.thread?.id);
     update();
   });
-  setInterval(renderTrailer, 1000);
+  setInterval(() => {
+    renderTrailer();
+    tickAgents();
+  }, 1000);
 }
