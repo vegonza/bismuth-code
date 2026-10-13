@@ -17,7 +17,7 @@ import { injectLiveClient } from "./live";
 import { AutoCompact, claudeCompactAt, codexCompactAt } from "./compact";
 import { dropSnapshot, snapshot } from "./checkpoints";
 import { blob, changes, commit, commitChanges, discard, init, log, pull, push, sync } from "./scm";
-import { baseText, createEntry, duplicateEntry, gitState, rawFile, listDirectory, openExternal, previewFile, readFile, renameEntry, resolveRefs, revealEntry, searchFiles, trashEntries, writeFile } from "./files";
+import { baseText, createEntry, duplicateEntry, gitState, importEntries, rawFile, listDirectory, openExternal, previewFile, readFile, renameEntry, resolveRefs, revealEntry, searchFiles, trashEntries, writeFile } from "./files";
 import { definition, killLanguageServers } from "./lsp";
 import { FolderWatch, gitDirOf } from "./watch";
 import { cursorListing, McpOverrides, setCursorServer, type McpBuiltin, type McpDef, type McpListing, type McpPlan } from "./mcp";
@@ -1068,6 +1068,26 @@ const server = Bun.serve<SocketData>({
       const name = new URL(req.url).searchParams.get("name") || "image";
       try {
         return json({ path: uploads.save(name, new Uint8Array(await req.arrayBuffer())) });
+      } catch (err: any) {
+        return json({ error: err.message }, 400);
+      }
+    }
+    // Files and folders dropped on the files panel from outside, into one of the folder's folders. The same header as
+    // /upload's keeps other pages out. A form: `paths` (JSON, each dropped entry's path in the drop, a folder's ending in
+    // "/"), and a `file` for each file among them, in their order.
+    if (path === "/import" && req.method === "POST") {
+      if (req.headers.get("x-bismuth-upload") !== "1") return json({ error: "forbidden" }, 403);
+      const q = new URL(req.url).searchParams;
+      try {
+        const form = await req.formData();
+        const files = form.getAll("file") as unknown as Blob[];
+        const items = [];
+        for (const p of JSON.parse(String(form.get("paths") ?? "[]")) as string[]) {
+          const file = p.endsWith("/") ? null : files.shift();
+          if (file === undefined) throw new Error("A file is missing");
+          items.push({ path: p.replace(/\/$/, ""), data: file && new Uint8Array(await file.arrayBuffer()) });
+        }
+        return json({ paths: importEntries(q.get("root") ?? "", q.get("dir") ?? "", items) });
       } catch (err: any) {
         return json({ error: err.message }, 400);
       }

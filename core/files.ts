@@ -381,19 +381,45 @@ export function renameEntry(rootPath: string, from: string, to: string) {
   renameSync(src, dest);
 }
 
-/** A copy beside it, named like Finder's and VS Code's ("name copy.ts", "name copy 2.ts"). Answers its path. */
-export function duplicateEntry(rootPath: string, path: string): string {
-  const root = rootOf(rootPath);
-  const src = locate(root, path);
-  const dir = dirname(src);
-  const name = basename(src);
-  const dot = statSync(src).isDirectory() ? -1 : name.lastIndexOf(".");
+/** `name` in `dir` if it's free, else a copy's name like Finder's and VS Code's ("name copy.ts", "name copy 2.ts"). */
+function freeName(dir: string, name: string, isDir: boolean): string {
+  if (!existsSync(join(dir, name))) return join(dir, name);
+  const dot = isDir ? -1 : name.lastIndexOf(".");
   const [stem, ext] = dot > 0 ? [name.slice(0, dot), name.slice(dot)] : [name, ""];
   let n = 1;
   let dest = join(dir, `${stem} copy${ext}`);
   while (existsSync(dest)) dest = join(dir, `${stem} copy ${++n}${ext}`);
+  return dest;
+}
+
+/** A copy beside it, named like Finder's and VS Code's ("name copy.ts", "name copy 2.ts"). Answers its path. */
+export function duplicateEntry(rootPath: string, path: string): string {
+  const root = rootOf(rootPath);
+  const src = locate(root, path);
+  const dest = freeName(dirname(src), basename(src), statSync(src).isDirectory());
   cpSync(src, dest, { recursive: true, errorOnExist: true, force: false, preserveTimestamps: true });
   return named(root, dest);
+}
+
+/** Files and folders dropped in from outside (`items`' paths relative to the drop, a folder's with no bytes), into
+ *  folder `dir`: never over something that's there, a name taken getting a copy's name. Answers where each dropped
+ *  item (the drop's top level) went. */
+export function importEntries(rootPath: string, dir: string, items: { path: string; data: Uint8Array | null }[]): string[] {
+  const root = rootOf(rootPath);
+  const into = inside(root, dir);
+  if (!statSync(into).isDirectory()) throw new Error(`${dir} is not a folder`);
+  const tops = new Map<string, string>();
+  for (const { path, data } of items) {
+    const parts = path.split(/[\\/]/);
+    if (parts.some((p) => !p || p === "." || p === ".." || p.toLowerCase() === ".git")) throw new Error(`Can't add ${path} here`);
+    const [top, ...rest] = parts;
+    let at = tops.get(top);
+    if (!at) tops.set(top, (at = freeName(into, top, !!rest.length || !data)));
+    const abs = join(at, ...rest);
+    if (data) mkdirSync(dirname(abs), { recursive: true }), writeFileSync(abs, data, { flag: "wx" });
+    else mkdirSync(abs, { recursive: true });
+  }
+  return [...tops.values()].map((abs) => named(root, abs));
 }
 
 /** Whether a command succeeded, and what it said when it didn't. */

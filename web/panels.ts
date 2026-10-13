@@ -3115,8 +3115,10 @@ async function trash(r: string, paths: string[], permanent: boolean) {
   await relistAround(r, ...paths);
 }
 
-// Dragging entries onto folders (or the tree's empty space: the top folder) moves them.
+// Dragging entries onto folders (or the tree's empty space: the top folder) moves them; files and folders dragged in
+// from outside the app are copied in. Resting on a closed folder opens it.
 let dragging: string | null = null;
+const OPEN_ON_REST_MS = 600;
 function dropTarget(e: DragEvent): string | null {
   const row = (e.target as Element).closest<HTMLElement>(".ft-row");
   const kids = (e.target as Element).closest<HTMLElement>(".ft-kids");
@@ -3134,6 +3136,20 @@ function wireDrags() {
     e.dataTransfer!.effectAllowed = "move";
     e.dataTransfer!.setData("text/plain", dragging);
   });
+  let resting: { dir: string; timer: Timer } | null = null;
+  const restOn = (dir: string | null) => {
+    if (resting?.dir === dir) return;
+    if (resting) clearTimeout(resting.timer), (resting = null);
+    const r = root();
+    if (dir === null || !r || treeOf(r).expanded.has(dir)) return;
+    resting = {
+      dir,
+      timer: setTimeout(() => {
+        resting = null;
+        if (root() === r) void toggleDir(r, treeOf(r), dir, true);
+      }, OPEN_ON_REST_MS),
+    };
+  };
   const mark = (dir: string | null) => {
     treeEl.classList.remove("drop-into");
     for (const x of treeEl.querySelectorAll(".drop-into")) x.classList.remove("drop-into");
@@ -3142,23 +3158,33 @@ function wireDrags() {
     else treeEl.querySelector(`.ft-row[data-path="${CSS.escape(dir)}"]`)?.classList.add("drop-into");
   };
   treeEl.addEventListener("dragover", (e) => {
-    if (dragging === null) return;
+    const outside = dragIn > 0;
+    if (dragging === null && !outside) return;
     const dir = dropTarget(e);
-    if (dir === null || !canDrop(dragging, dir)) return mark(null);
+    restOn((e.target as Element).closest<HTMLElement>(".ft-row.dir")?.dataset.path ?? null);
+    if (dir === null || (dragging !== null && !canDrop(dragging, dir))) return mark(null);
     e.preventDefault();
-    e.dataTransfer!.dropEffect = "move";
+    e.dataTransfer!.dropEffect = outside ? "copy" : "move";
     mark(dir);
   });
   treeEl.addEventListener("dragleave", (e) => {
-    if (!treeEl.contains(e.relatedTarget as Node)) mark(null);
+    if (!treeEl.contains(e.relatedTarget as Node)) mark(null), restOn(null);
   });
   treeEl.addEventListener("drop", (e) => {
     const from = dragging;
     const dir = dropTarget(e);
     mark(null);
+    restOn(null);
     dragging = null;
     const r = root();
-    if (from === null || dir === null || !r || !canDrop(from, dir)) return;
+    if (dir === null || !r) return;
+    if (from === null && dragIn > 0) {
+      e.preventDefault();
+      // Read now: the drop's items are gone once the event is over.
+      const entries = [...e.dataTransfer!.items].map((item) => item.webkitGetAsEntry()).filter((x): x is FileSystemEntry => !!x);
+      return void importDropped(r, dir, entries);
+    }
+    if (from === null || !canDrop(from, dir)) return;
     e.preventDefault();
     const to = dir ? `${dir}/${baseName(from)}` : baseName(from);
     call("files.rename", { root: r, from, to })
@@ -3172,7 +3198,40 @@ function wireDrags() {
   treeEl.addEventListener("dragend", () => {
     dragging = null;
     mark(null);
+    restOn(null);
   });
+}
+
+/** Files and folders dropped from outside on folder `dir`: sent to the core whole (a folder's files with their paths in
+ *  it), never over what's there (a name taken gets a copy's name), and the last of them selected. */
+async function importDropped(r: string, dir: string, entries: FileSystemEntry[]) {
+  const form = new FormData();
+  const paths: string[] = [];
+  const walk = async (entry: FileSystemEntry, at: string): Promise<void> => {
+    if (entry.isFile) {
+      form.append("file", await new Promise<File>((ok, fail) => (entry as FileSystemFileEntry).file(ok, fail)));
+      paths.push(at);
+      return;
+    }
+    paths.push(`${at}/`);
+    const reader = (entry as FileSystemDirectoryEntry).createReader();
+    // A folder's entries come in batches, until an empty one.
+    for (let batch; (batch = await new Promise<FileSystemEntry[]>((ok, fail) => reader.readEntries(ok, fail))).length; ) {
+      for (const kid of batch) await walk(kid, `${at}/${kid.name}`);
+    }
+  };
+  try {
+    for (const entry of entries) await walk(entry, entry.name);
+    form.append("paths", JSON.stringify(paths));
+    const res = await fetch(`/import?root=${encodeURIComponent(r)}&dir=${encodeURIComponent(dir)}`, { method: "POST", headers: { "x-bismuth-upload": "1" }, body: form });
+    const body = (await res.json().catch(() => ({}))) as { paths?: string[]; error?: string };
+    if (!res.ok || !body.paths) throw new Error(body.error ?? `Couldn't add ${entries.length === 1 ? entries[0].name : `${entries.length} items`} (${res.status}).`);
+    const t = treeOf(r);
+    if (body.paths.length) t.selected = body.paths[body.paths.length - 1];
+    await relistAround(r, ...body.paths);
+  } catch (err: any) {
+    flash(String(err?.message ?? err));
+  }
 }
 
 // ---------------- the edge peek ----------------
@@ -3251,13 +3310,39 @@ function cancelClose() {
 }
 /** The peek stays while one of its menus (the scope's list too) is open or a name is being typed in it (its search doesn't hold it: the
  *  pointer leaving takes the search's focus with it). */
-const holding = () => !!menu || !!moreMenu || scopePick.classList.contains("open") || holdDraws > 0;
+const holding = () => !!menu || !!moreMenu || scopePick.classList.contains("open") || holdDraws > 0 || dragIn > 0;
 function scheduleClose() {
   if (closeTimer || holding()) return;
   closeTimer = setTimeout(() => {
     closeTimer = null;
     if (peeking && !holding()) endPeek();
   }, PEEK_LINGER);
+}
+
+/** Files dragged in from outside the window (a file manager): the panel comes out for as long as they're over it, to
+ *  drop them on a folder. Counted in and out (every element entered and left), like the composer's drop zone. A drag
+ *  begun in the app (`appDrag`: an image, a row) doesn't bring it. */
+let dragIn = 0;
+let appDrag = false;
+function wireDragPeek() {
+  addEventListener("dragstart", () => (appDrag = true), true);
+  addEventListener("dragend", () => (appDrag = false), true);
+  addEventListener("dragenter", (e: DragEvent) => {
+    if (appDrag || !e.dataTransfer?.types.includes("Files")) return;
+    pointerX = e.clientX;
+    if (dragIn++ === 0) startPeek();
+  }, true);
+  addEventListener("dragover", (e: DragEvent) => dragIn > 0 && (pointerX = e.clientX), true);
+  addEventListener("dragleave", () => dragIn > 0 && --dragIn === 0 && draggedOut(true), true);
+  // After the panel's own (which asks dragIn), not before.
+  addEventListener("drop", () => dragIn > 0 && ((dragIn = 0), draggedOut(false)));
+  // The pointer moves only once a drag is over: whatever end it had that wasn't told here (its source taken from the
+  // page) is over too.
+  addEventListener("pointermove", () => ((appDrag = false), (dragIn = 0)), { passive: true });
+}
+/** The drag left the window (`left`), or was dropped: dropped on the panel it stays, as a pointer resting there would. */
+function draggedOut(left: boolean) {
+  if (peeking && (left || innerWidth - explorer.offsetWidth - 8 - pointerX > 0)) scheduleClose();
 }
 
 function startPeek() {
@@ -3475,6 +3560,7 @@ export function initPanels(refocus: () => void, findFile: () => void) {
     const frame = [...document.querySelectorAll<HTMLIFrameElement>("iframe.fv-html, iframe.sc-frame, iframe.uiview")].find((f) => f.contentWindow === e.source);
     if (frame) framePointer(frame, at[0], at[1], frame.offsetWidth);
   });
+  wireDragPeek();
   // The pointer gone from the window: it goes.
   document.documentElement.addEventListener("pointerleave", () => peeking && scheduleClose());
 
