@@ -24,6 +24,9 @@ const SHOT_MS = 30_000;
 const MIN_H = 40;
 const MAX_H = 900;
 const ROW_W = 1200;
+/** A view taller than its frame scrolls there; the agent still sees all of it, in frame-high slices (one tall image
+ *  would be shrunk past reading), down to this far. */
+const SHOT_MAX_H = 4 * MAX_H;
 /** The viewport widths `width` may ask for. */
 const VIEWPORT = { min: 320, max: 2560 };
 // What a view's page may do: run its own inline code, show inline and data/https images and fonts. Nothing else:
@@ -194,7 +197,7 @@ export class Views {
       description:
         intro +
         how +
-        "\n\nThe result has a screenshot of the view as the user sees it (and any errors the page threw): look at it, and if it's wrong (broken layout, cut off, empty, unreadable), fix it and render again." +
+        "\n\nThe result has a screenshot of the view as the user sees it, all of it even when it's taller than its frame and scrolls (and any errors the page threw): look at it, and if it's wrong (broken layout, cut off, empty, unreadable), fix it and render again." +
         "\n\nThe user sees the view above your reply: don't announce it, say where it is, or restate what it shows.",
       inputSchema: {
         type: "object",
@@ -228,8 +231,14 @@ export class Views {
       const shot = await this.shoot(id, width);
       const said = [`Shown to the user: "${title}" (bismuth-view:${id}).`];
       if (shot.errors.length) said.push(`The page threw errors (fix them and render again):\n${shot.errors.join("\n")}`);
-      said.push(shot.png ? `How it looks (${shot.size} CSS px, ${this.look().appearance}):` : `No screenshot: ${shot.note}.`);
-      return { content: [{ type: "text", text: said.join("\n\n") }, ...(shot.png ? [{ type: "image", data: shot.png, mimeType: "image/png" }] : [])] };
+      if (!shot.pngs?.length) said.push(`No screenshot: ${shot.note}.`);
+      else {
+        said.push(`How it looks (${shot.size} CSS px, ${this.look().appearance}):`);
+        if (shot.pngs.length > 1)
+          said.push(`It's taller than the frame's ${MAX_H}px, so it scrolls for the user. The screenshot is the whole page in ${shot.pngs.length} slices, top to bottom.`);
+        if (shot.cut) said.push(`Only its top ${SHOT_MAX_H}px are shown here; below that is cut off from the screenshot.`);
+      }
+      return { content: [{ type: "text", text: said.join("\n\n") }, ...(shot.pngs ?? []).map((data) => ({ type: "image", data, mimeType: "image/png" }))] };
     };
 
     const id = randomBytes(10).toString("hex");
@@ -283,8 +292,9 @@ export class Views {
     return shown(id);
   }
 
-  /** A screenshot of a view as its frame shows it (its natural width, or the viewport it asked for), and what the page threw. */
-  private async shoot(id: string, width: number | null): Promise<{ png?: string; size?: string; errors: string[]; note?: string }> {
+  /** A screenshot of a view at the width its frame shows it (its natural width, or the viewport it asked for), all its
+   *  height in frame-high slices, and what the page threw. */
+  private async shoot(id: string, width: number | null): Promise<{ pngs?: string[]; size?: string; cut?: boolean; errors: string[]; note?: string }> {
     const chrome = await openChrome();
     if (!chrome) return { errors: [], note: "there's no Chromium to take one with" };
     const errors: string[] = [];
@@ -315,14 +325,20 @@ export class Views {
         await viewport(w);
         h = (await measure()).h;
       }
-      h = Math.min(MAX_H, Math.max(MIN_H, h));
-      const shot = await chrome.cdp("Page.captureScreenshot", { format: "png", clip: { x: 0, y: 0, width: w, height: h, scale: 1 }, captureBeyondViewport: true });
-      return { png: shot?.data as string | undefined, size: `${w}×${h}` };
+      h = Math.max(MIN_H, h);
+      const end = Math.min(h, SHOT_MAX_H);
+      const pngs: string[] = [];
+      for (let y = 0; y < end; y += MAX_H) {
+        const shot = await chrome.cdp("Page.captureScreenshot", { format: "png", clip: { x: 0, y, width: w, height: Math.min(MAX_H, end - y), scale: 1 }, captureBeyondViewport: true });
+        if (!shot?.data) return { size: `${w}×${h}` };
+        pngs.push(shot.data as string);
+      }
+      return { pngs, size: `${w}×${h}`, cut: h > end };
     };
     try {
       const done = await Promise.race([work(), Bun.sleep(SHOT_MS).then(() => null)]);
       if (!done) return { errors: errors.slice(0, 10), note: `it took over ${SHOT_MS / 1000}s` };
-      return { ...done, errors: errors.slice(0, 10).map((e) => e.slice(0, 1500)), note: done.png ? undefined : "Chromium didn't take it" };
+      return { ...done, errors: errors.slice(0, 10).map((e) => e.slice(0, 1500)), note: done.pngs ? undefined : "Chromium didn't take it" };
     } catch (err: any) {
       return { errors: errors.slice(0, 10), note: String(err?.message ?? err) };
     } finally {
