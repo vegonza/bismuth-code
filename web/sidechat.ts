@@ -33,6 +33,8 @@ type KeyInit = { key: string; code: string; ctrlKey: boolean; shiftKey: boolean;
 export type Host = {
   openCited(ref: FileRef | null, cited: Cited, keep: boolean): void;
   openWebLink(url: string, background: boolean): void;
+  /** A subagent's transcript (its Agent row clicked in the frame), in a tab beside this one. */
+  openAgent(id: string): void;
   /** One of the app's shortcuts pressed in the frame (or a modifier let go there), as if in the window. */
   key(type: "keydown" | "keyup", k: KeyInit): void;
   /** The frame has its session on screen. */

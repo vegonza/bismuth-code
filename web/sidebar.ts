@@ -121,6 +121,14 @@ function statusCorner(t: ThreadSummary): HTMLElement {
     status.classList.add("working");
     const time = workingFor(t);
     status.append(miniSpinner(), time ? `Working ${time}` : "Working");
+    // Its subagents at work, counted (Zeron's running pill).
+    const agents = runningAgents(t.id);
+    if (agents) {
+      const pill = el("span", "agents");
+      pill.title = `${agents} subagent${agents === 1 ? "" : "s"} running`;
+      pill.append(icon("bot"), String(agents));
+      status.append(pill);
+    }
   } else if (t.status === "waiting") {
     status.classList.add("input");
     status.append(el("span", "dot"), "Input");
@@ -133,6 +141,13 @@ function statusCorner(t: ThreadSummary): HTMLElement {
   } else return el("span", "time", timeAgo(timeOf(t)));
   return status;
 }
+
+/** How many of a session's subagents are at work. */
+const runningAgents = (id: string) => {
+  let n = 0;
+  for (const s of store.summaries.values()) if (s.subagent && s.parent === id && s.status === "running") n++;
+  return n;
+};
 
 /** Compact rows lead with a 13px status glyph: spinner, check, or a dot in the status colour. */
 function statusGlyph(t: ThreadSummary): HTMLElement {

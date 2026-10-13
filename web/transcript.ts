@@ -1,6 +1,7 @@
 // The conversation: rows derived from the thread's turns (user bubbles, markdown replies, collapsible
 // activity groups), the working trailer and hover timestamps. Rows are keyed and only rebuilt when their
 // content signature changes, so streaming and open folds survive updates.
+import { agentWorking } from "./agents";
 import { attachmentName, attachmentUrl, clipboardHtml, openLightbox, parseUserMessage, type SentImage } from "./attachments";
 import { fileChip, labelFile, mentionChip } from "./editor";
 import type { FileChange, Item, Thread, Turn } from "../shared/model";
@@ -37,6 +38,9 @@ const fullOutput = new Set<string>();
 const bubbleOpen = new Set<string>();
 
 const rowsEl = () => $("transcript-rows");
+/** Where a subagent's transcript opens (a tab of the session's panel: panels.ts, or through a side chat's window). */
+let agentOpener: (id: string) => void = () => {};
+export const setAgentOpener = (fn: (id: string) => void) => void (agentOpener = fn);
 const hoverGroup = new Map<string, string>(); // row key -> the message it belongs to
 let hot: string | null = null;
 const scroller = () => $("scroller");
@@ -192,7 +196,7 @@ function signature(row: Row): string {
               case "fileChange":
                 return `${i.id}${i.status}${i.changes.length}${fold}`;
               case "tool":
-                return `${i.id}${i.status}${i.output.length}${fold}`;
+                return `${i.id}${i.status}${i.output.length}${i.name}${i.agent ? (agentWorking(i) ? "W" : "A") : ""}${fold}`;
               default:
                 return i.id;
             }
@@ -384,8 +388,9 @@ function toolView(item: ToolItem): ToolView {
         detail,
         icon: view ? "blocks" : agent ? "bot" : mcp ? "plug" : "wrench",
         failed: itemFailed(item),
+        // A subagent with a transcript of its own opens it instead (toolRow).
         body:
-          item.input || item.output
+          !item.agent && (item.input || item.output)
             ? () => [
                 ...(item.input ? [Object.assign(el("div", "tdetail-body call"), { textContent: item.input })] : []),
                 ...(item.output ? outputBody(item.id, item.output) : []),
@@ -401,11 +406,17 @@ function toolView(item: ToolItem): ToolView {
 
 function toolRow(item: ToolItem, continues: boolean): HTMLElement {
   const view = toolView(item);
-  const row = el("div", `titem${view.failed ? " failed" : ""}${view.body ? " expandable" : ""}`);
+  const agent = item.kind === "tool" ? item.agent : undefined;
+  const row = el("div", `titem${view.failed ? " failed" : ""}${view.body || agent ? " expandable" : ""}`);
   const rail = el("div", "rail");
   rail.append(el("span", "branch"));
   if (continues) rail.append(el("span", "cont"));
-  rail.append(icon(view.icon, undefined, "ticon"));
+  // A subagent at work shows the activity spinner where its glyph goes, as its tab does.
+  if (agent && item.kind === "tool" && agentWorking(item)) {
+    const spin = el("span", "ticon tspin");
+    spin.append(miniSpinner());
+    rail.append(spin);
+  } else rail.append(icon(view.icon, undefined, "ticon"));
 
   const card = el("div", "tcard");
   const head = el("div", "thead");
@@ -417,7 +428,16 @@ function toolRow(item: ToolItem, continues: boolean): HTMLElement {
     head.append(detail);
   }
   const open = view.body ? (itemFolds.get(item.id) ?? view.defaultOpen) : false;
-  if (view.body) {
+  if (agent) {
+    const trail = el("span", "trail");
+    trail.append(icon("arrowUpRight"));
+    head.append(trail);
+    head.title = "Open the subagent's transcript";
+    head.onclick = (e) => {
+      e.stopPropagation();
+      agentOpener(agent);
+    };
+  } else if (view.body) {
     const trail = el("span", "trail");
     trail.append(icon(open ? "chevronDown" : "chevronRight"));
     head.append(trail);

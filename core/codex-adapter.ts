@@ -1,5 +1,7 @@
 // Codex adapter: owns one `codex app-server` process (JSON-RPC over stdio) and normalizes
 // its threads/turns/items/server-requests into the provider-agnostic model in shared/model.ts.
+// Subagents are threads of Codex's own (`parentThreadId` names who spawned them): each goes by its session's
+// subagentThread here, a read-only transcript its spawn row opens, and its notifications are re-keyed to that.
 import { randomUUID } from "node:crypto";
 import type * as C from "../codex-protocol/v2";
 import type { InitializeParams } from "../codex-protocol";
@@ -9,6 +11,7 @@ import { join } from "node:path";
 import { finalizeItem, finishedTurns, mergeItem, summary, titleFrom, UNTITLED, type Harness } from "./harness";
 import { JsonRpcPeer, RpcError, type Id } from "./jsonrpc";
 import { fromCodex, toCodex, type McpDef, type McpListing, type McpPlan } from "./mcp";
+import { subagentOf, subagentThread } from "../shared/model";
 import type {
   FileChange,
   Invocable,
@@ -50,6 +53,8 @@ export class CodexAdapter implements Harness {
   private peer: JsonRpcPeer | null = null;
   private threads = new Map<string, LoadedThread>();
   private childToParent = new Map<string, string>(); // subagent thread -> root thread
+  /** Subagents' own thread ids -> what they go by here (subagentThread of the session at their root). */
+  private subIds = new Map<string, string>();
   private pending = new Map<string, PendingRequest>(); // keyed by JSON-RPC request id
   private loading = new Map<string, Promise<Thread>>();
   // commandExecution itemId -> {threadId, processId}; Codex keeps these alive past an interrupt.
@@ -281,7 +286,7 @@ export class CodexAdapter implements Harness {
       return this.lastList.filter((t) => cwds.includes(t.cwd)).map((t) => (this.threads.has(t.id) ? summary(this.threads.get(t.id)!) : t));
     }
     const listed = pages.flatMap((res) =>
-      res.data.map((t): ThreadSummary => {
+      res.data.filter((t) => !t.parentThreadId).map((t): ThreadSummary => {
         const loaded = this.threads.get(t.id);
         return loaded
           ? summary(loaded)
@@ -290,8 +295,10 @@ export class CodexAdapter implements Harness {
     );
     // A fork isn't listed until it has a turn of its own: loaded ones with the turns they inherited are.
     const ids = new Set(listed.map((t) => t.id));
-    const forks = [...this.threads.values()].filter((t) => !ids.has(t.id) && t.turns.length && cwds.includes(t.cwd)).map(summary);
-    return (this.lastList = [...listed, ...forks]);
+    const forks = [...this.threads.values()].filter((t) => !t.subagent && !ids.has(t.id) && t.turns.length && cwds.includes(t.cwd)).map(summary);
+    // Subagents seen since the core started, so a reloaded window knows them (its sessions' running ones).
+    const subs = [...this.threads.values()].filter((t) => t.subagent && cwds.includes(t.cwd)).map((t) => ({ ...summary(t), parent: t.parent, subagent: true }));
+    return (this.lastList = [...listed, ...forks, ...subs]);
   }
 
   private windows(): UsageWindow[] {
@@ -306,7 +313,8 @@ export class CodexAdapter implements Harness {
     if (loaded) return Promise.resolve(loaded);
     let p = this.loading.get(threadId);
     if (!p) {
-      p = this.resumeThread(threadId).finally(() => this.loading.delete(threadId));
+      const sub = subagentOf(threadId);
+      p = (sub ? this.readSubagent(threadId, sub.session, sub.ref) : this.resumeThread(threadId)).finally(() => this.loading.delete(threadId));
       this.loading.set(threadId, p);
     }
     return p;
@@ -330,7 +338,7 @@ export class CodexAdapter implements Harness {
       sortDirection: "desc",
       itemsView: "full",
     } satisfies C.ThreadTurnsListParams, OPEN_TIMEOUT_MS);
-    const turns = page.data.map(toTurn).reverse();
+    const turns = page.data.map((t) => toTurn(t, threadId)).reverse();
     const active = turns.findLast((t) => t.status === "inProgress");
     const thread: LoadedThread = {
       ...baseThread(res.thread, res.model, res.reasoningEffort, res.serviceTier),
@@ -347,6 +355,22 @@ export class CodexAdapter implements Harness {
   }
 
   // ---------------- commands ----------------
+
+  /** A subagent not run under this app-server: its thread read as Codex keeps it, not resumed (it's its session's to
+   *  run). */
+  private async readSubagent(id: string, session: string, child: string): Promise<Thread> {
+    const read: C.ThreadReadResponse = await this.rpc().request("thread/read", { threadId: child, includeTurns: true } satisfies C.ThreadReadParams, OPEN_TIMEOUT_MS);
+    const existing = this.threads.get(id);
+    if (existing) return existing;
+    const thread: LoadedThread = {
+      ...baseThread(read.thread, null, null, null),
+      ...subagentFields(read.thread, id, session),
+      status: "idle",
+      turns: read.thread.turns.slice(-50).map((t) => toTurn(t, id)),
+    };
+    this.threads.set(id, thread);
+    return thread;
+  }
 
   async newThread(settings: TurnSettings, cwd: string): Promise<Thread> {
     await this.planMcp(cwd);
@@ -393,7 +417,7 @@ export class CodexAdapter implements Harness {
     const thread: LoadedThread = {
       ...baseThread(res.thread, parent.model ?? res.model, parent.effort, parent.serviceTier),
       title: UNTITLED,
-      turns: page.data.map(toTurn).reverse(),
+      turns: page.data.map((t) => toTurn(t, parentId)).reverse(),
       contextTokens: parent.contextTokens,
       contextWindow: parent.contextWindow,
     };
@@ -673,6 +697,8 @@ export class CodexAdapter implements Harness {
   // ---------------- notifications ----------------
 
   private handleNotification(method: string, params: any) {
+    const sub = typeof params?.threadId === "string" ? this.subIds.get(params.threadId) : undefined;
+    if (sub) params = { ...params, threadId: sub };
     switch (method) {
       case "account/rateLimits/updated": {
         // Sparse rolling update: merge what arrived into the last full read.
@@ -684,7 +710,18 @@ export class CodexAdapter implements Harness {
       }
       case "thread/started": {
         const { thread } = params as C.ThreadStartedNotification;
-        if (thread.parentThreadId) this.childToParent.set(thread.id, this.rootThreadId(thread.parentThreadId));
+        if (!thread.parentThreadId) return;
+        const session = this.rootThreadId(thread.parentThreadId);
+        this.childToParent.set(thread.id, session);
+        // A subagent the agent spawned (not one Codex runs for itself: a review, a compaction, an action's guardian):
+        // its transcript, under the id it goes by here, which its notifications from now on are for.
+        if (!spawned(thread)) return;
+        const id = subagentThread(session, thread.id);
+        this.subIds.set(thread.id, id);
+        if (this.threads.has(id)) return;
+        const t: LoadedThread = { ...baseThread(thread, null, null, null), ...subagentFields(thread, id, session), turns: [] };
+        this.threads.set(id, t);
+        this.emitThread(t);
         return;
       }
       case "thread/status/changed": {
@@ -762,7 +799,7 @@ export class CodexAdapter implements Harness {
             this.runningCommands.set(p.item.id, { threadId: p.threadId, turnId: p.turnId, processId: p.item.processId });
           else if (method === "item/completed") this.runningCommands.delete(p.item.id);
         }
-        const item = toItem(p.item, method === "item/completed");
+        const item = toItem(p.item, method === "item/completed", p.threadId);
         if (item) this.upsertItem(p.threadId, p.turnId, item);
         return;
       }
@@ -826,8 +863,8 @@ export class CodexAdapter implements Harness {
     turn.completedAt = ms(raw.completedAt) ?? (raw.status === "inProgress" ? null : Date.now());
     // turn/started & turn/completed carry no items for live turns; keep what we streamed.
     for (const rawItem of raw.items) {
-      const item = toItem(rawItem, true);
-      if (item) mergeItem(turn, item);
+      const item = toItem(rawItem, true, threadId);
+      if (item && !opensAgentAgain(turn.items, item)) mergeItem(turn, item);
     }
     if (raw.status === "inProgress") {
       t.activeTurnId = raw.id;
@@ -855,7 +892,7 @@ export class CodexAdapter implements Harness {
 
   private upsertItem(threadId: string, turnId: string, item: Item) {
     const t = this.threads.get(threadId);
-    if (!t) return; // subagent threads: not rendered in this prototype
+    if (!t) return;
     let turn = t.turns.find((x) => x.id === turnId);
     if (!turn) {
       turn = { id: turnId, status: "inProgress", error: null, durationMs: null, startedAt: Date.now(), completedAt: null, items: [] };
@@ -863,6 +900,7 @@ export class CodexAdapter implements Harness {
       const { items: _items, ...meta } = turn;
       this.onEvent(threadId, { type: "turn.upsert", turn: meta });
     }
+    if (opensAgentAgain(turn.items, item)) return;
     const merged = mergeItem(turn, item);
     this.onEvent(threadId, { type: "item.upsert", turnId, item: merged });
     if (merged.kind === "user" && t.title === UNTITLED && merged.text.trim()) {
@@ -959,6 +997,7 @@ export class CodexAdapter implements Harness {
     this.threads.clear();
     this.loading.clear();
     this.childToParent.clear();
+    this.subIds.clear();
     this.runningCommands.clear();
     this.limits = null;
     try {
@@ -989,7 +1028,21 @@ const OPEN_TIMEOUT_MS = 30_000;
 /** When the thread last saw activity (ms). Codex's updatedAt also moves when a thread is merely resumed. */
 const activityAt = (t: C.Thread) => (t.recencyAt ?? t.updatedAt) * 1000;
 
-function baseThread(t: C.Thread, model: string, effort: string | null, serviceTier: string | null): Omit<LoadedThread, "turns"> {
+/** A thread an agent spawned as its subagent. */
+const spawned = (t: C.Thread) => typeof t.source === "object" && "subAgent" in t.source && typeof t.source.subAgent === "object" && "thread_spawn" in t.source.subAgent;
+
+/** A second row opening a subagent the turn already has one for (a spawn reported both ways). */
+const opensAgentAgain = (items: Item[], item: Item) =>
+  item.kind === "tool" && !!item.agent && items.some((i) => i.id !== item.id && i.kind === "tool" && i.agent === item.agent);
+
+/** What a subagent's thread is besides a thread: its id here, its session, and the name Codex gave it. */
+function subagentFields(t: C.Thread, id: string, session: string): Pick<LoadedThread, "id" | "title" | "parent" | "subagent"> {
+  return { id, title: t.agentNickname?.trim() || titleOf(t), parent: session, subagent: true };
+}
+
+const firstLine = (text: string) => text.trim().split("\n")[0].slice(0, 80);
+
+function baseThread(t: C.Thread, model: string | null, effort: string | null, serviceTier: string | null): Omit<LoadedThread, "turns"> {
   return {
     id: t.id,
     harness: "codex",
@@ -1042,8 +1095,13 @@ function threadStatus(s: C.ThreadStatus): ThreadStatus {
   }
 }
 
-function toTurn(t: C.Turn): Turn {
-  const items = t.items.map((i) => toItem(i, true)).filter((i): i is Item => i !== null);
+/** `threadId`: the thread it's of, whose session the subagents it spawns are of. */
+function toTurn(t: C.Turn, threadId: string): Turn {
+  const items: Item[] = [];
+  for (const raw of t.items) {
+    const item = toItem(raw, true, threadId);
+    if (item && !opensAgentAgain(items, item)) items.push(item);
+  }
   // A turn that only compacted is a `/compact` (one that compacts on its own does it within a turn that has more).
   if (t.items.length && t.items.every((i) => i.type === "contextCompaction")) items.unshift(compactPrompt(t.id));
   return {
@@ -1063,7 +1121,9 @@ const compactPrompt = (turnId: string): Item => ({ id: `${turnId}:compact`, kind
 /** How a goal's status reads (`usageLimited`: "usage limited"). */
 const goalStatus = (goal: C.ThreadGoal) => goal.status.replace(/[A-Z]/g, (c) => ` ${c.toLowerCase()}`);
 
-function toItem(i: C.ThreadItem, done: boolean): Item | null {
+/** `threadId`: the thread it's of, whose session the subagents it spawns are of. */
+function toItem(i: C.ThreadItem, done: boolean, threadId: string): Item | null {
+  const session = subagentOf(threadId)?.session ?? threadId;
   switch (i.type) {
     case "userMessage":
       return {
@@ -1117,15 +1177,23 @@ function toItem(i: C.ThreadItem, done: boolean): Item | null {
         output: (i.contentItems ?? []).map((c) => ("text" in c ? String(c.text) : "")).join("\n"),
         status: i.status,
       };
-    case "collabAgentToolCall":
+    case "collabAgentToolCall": {
+      // A spawn opens the subagent's transcript (multi-agent v1); the calls that steer or wait on it are its own.
+      const spawned = i.tool === "spawnAgent" ? i.receiverThreadIds[0] : undefined;
       return {
         id: i.id,
         kind: "tool",
-        name: `subagent · ${i.tool}`,
+        name: `subagent · ${spawned ? firstLine(i.prompt ?? "") || i.tool : i.tool}`,
         input: i.prompt ?? "",
         output: i.receiverThreadIds.length ? `threads: ${i.receiverThreadIds.join(", ")}` : "",
         status: i.status === "interrupted" ? "failed" : (i.status as ItemStatus),
+        ...(spawned ? { agent: subagentThread(session, spawned) } : {}),
       };
+    }
+    case "subAgentActivity":
+      // Multi-agent v2 says a subagent started this way (and only once): it's what opens its transcript.
+      if (i.kind !== "started") return null;
+      return { id: i.id, kind: "tool", name: `subagent · ${i.agentPath}`, input: "", output: "", status: "completed", agent: subagentThread(session, i.agentThreadId) };
     case "webSearch":
       return { id: i.id, kind: "webSearch", query: i.query };
     case "contextCompaction":
@@ -1137,7 +1205,7 @@ function toItem(i: C.ThreadItem, done: boolean): Item | null {
     case "imageView":
       return { id: i.id, kind: "notice", text: `Viewed image ${i.path}` };
     default:
-      // hookPrompt, functionCallOutput, subAgentActivity, sleep, imageGeneration: not shown yet.
+      // hookPrompt, functionCallOutput, sleep, imageGeneration: not shown yet.
       return null;
   }
 }

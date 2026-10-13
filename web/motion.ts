@@ -29,6 +29,26 @@ export const RESIZE_MS = 200;
 /** Settings → Reduce motion (or the system's, when it follows it): theme.ts keeps the class on <html> current. */
 export const reducedMotion = () => document.documentElement.classList.contains("reduce-motion");
 
+/** How long a fold takes: Zeron's tree tween (a folder's rows, a list's group). */
+export const FOLD_MS = 160;
+
+/** A box's rows slid open or shut by its height (at once with reduced motion): settles when it's done. */
+export function slideFold(box: HTMLElement, open: boolean): Promise<void> {
+  if (reducedMotion()) return Promise.resolve();
+  const full = box.scrollHeight;
+  return new Promise((done) => {
+    const anim = box.animate(
+      { height: open ? ["0px", `${full}px`] : [`${full}px`, "0px"], opacity: open ? [0.4, 1] : [1, 0.4] },
+      { duration: FOLD_MS, easing: "cubic-bezier(0, 0, 0.58, 1)" },
+    );
+    box.style.overflow = "hidden";
+    anim.onfinish = anim.oncancel = () => {
+      box.style.overflow = "";
+      done();
+    };
+  });
+}
+
 /** A scalar that glides to its target; retargeting mid-flight starts from the current value, never jumps. */
 export class Tween {
   private from: number;

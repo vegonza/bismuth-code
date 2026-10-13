@@ -1,6 +1,6 @@
 // The phone layout (a narrow window, typically a phone over remote access): not the desktop squeezed, but screens that
 // stack, each over the whole screen: the session list (home), a session or the new-session page, then what a session
-// opens over itself (its files or changes, a file, its terminal), and Settings over everything. A round back button
+// opens over itself (its files, changes or agents, a file, its terminal), and Settings over everything. A round back button
 // (and the browser's own back, or a back swipe) takes the top one away. The composer sits at the bottom, under the
 // thumb, on the new-session page too. style.css lays the screens out under `html.phone`; the screens' content is the
 // desktop's own (the sidebar's list, the chat, the panels), at its own sizes.
@@ -28,6 +28,8 @@ export type PhoneActions = {
   /** The files panel as it was left (its tree or its changes). */
   explorer: () => void;
   changes: () => void;
+  /** The session's subagents and side chats (agents.ts). */
+  agents: () => void;
   terminal: () => void;
   /** The session's own actions (none on the new-session page). */
   session: () => { rename: () => void; settle: (() => void) | null; settled: boolean } | null;
@@ -217,7 +219,7 @@ function menuRow(glyph: IconName, label: string, run: () => void): HTMLElement {
 function sessionMenu(trigger: HTMLElement) {
   if (menu) return menu.close();
   const card = el("div", "card ctx-menu ph-menu");
-  card.append(menuRow("folderTree", "Files", actions.files), menuRow("gitCompare", "Changes", actions.changes), menuRow("squareTerminal", "Terminal", actions.terminal));
+  card.append(menuRow("folderTree", "Files", actions.files), menuRow("gitCompare", "Changes", actions.changes), menuRow("bot", "Agents", actions.agents), menuRow("squareTerminal", "Terminal", actions.terminal));
   const s = actions.session();
   if (s) {
     // Side chats open over the session too, in the panel a file opens in.

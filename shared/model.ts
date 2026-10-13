@@ -19,14 +19,26 @@ export type ThreadSummary = {
   // Set by the core: when the run in flight began (its turn's start), null while idle. The sidebar's "Working 4m".
   runningSince?: number | null;
   // Set by the core for a side chat: the session it branched from (a native fork of its context), whose right pane
-  // holds it as a tab. Null once moved to the sidebar, and for every other session.
+  // holds it as a tab. Null once moved to the sidebar, and for every other session. A subagent's: the session that
+  // spawned it.
   parent?: string | null;
+  // Set by the core for a subagent's transcript (Zeron's): a thread the harness runs on its own, opened read-only as a
+  // tab in its session's right pane, from its Agent row (the tool item's `agent`).
+  subagent?: boolean;
   // Set by the core for a session branched off another (a side chat, then too once moved to the sidebar): the one
   // its context was copied from, by id and by the title it had then, and how many of its first turns came with it.
   forked?: Forked | null;
 };
 
 export type Forked = { from: string; title: string; turns: number };
+
+/** A subagent's transcript as a thread: the session that spawned it and the harness's own name for it (the spawning
+ *  call, or its own thread). The session comes first so the core finds its harness, and its folder, from it. */
+export const subagentThread = (session: string, ref: string) => `${session}~${ref}`;
+export function subagentOf(id: string): { session: string; ref: string } | null {
+  const at = id.indexOf("~");
+  return at < 0 ? null : { session: id.slice(0, at), ref: id.slice(at + 1) };
+}
 
 /** A folder sessions run in (Zeron's Space, on this one device). */
 export type Project = {
@@ -151,7 +163,8 @@ export type Item =
   | { id: string; kind: "reasoning"; summary: string[]; done: boolean }
   | { id: string; kind: "command"; command: string; cwd: string; output: string; exitCode: number | null; durationMs: number | null; status: ItemStatus }
   | { id: string; kind: "fileChange"; changes: FileChange[]; status: ItemStatus }
-  | { id: string; kind: "tool"; name: string; input: string; output: string; status: ItemStatus }
+  // agent: a subagent's spawn, the thread its transcript is (subagentThread).
+  | { id: string; kind: "tool"; name: string; input: string; output: string; status: ItemStatus; agent?: string }
   | { id: string; kind: "webSearch"; query: string }
   | { id: string; kind: "plan"; text: string }
   | { id: string; kind: "notice"; text: string }

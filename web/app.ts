@@ -2,6 +2,7 @@
 // reload contract with `bun run apply` (window.__bismuthReady, draft/scroll carried across reloads).
 import { initUiSync, uiSyncHello, uiSyncRemote } from "./uisync"; // first: it sees every write to shared settings
 import type { ServerMessage, Thread, ThreadEvent, ThreadSummary, Turn } from "../shared/model";
+import { subagentOf } from "../shared/model";
 import { forgetStaged } from "./attachments";
 import { initBackground } from "./background";
 import { canRemoveImage, canStopTurn, canToggleWorktree, closePicker, draft, initComposer, removeLastImage, stopTurn, toggleWorktreeMode } from "./composer";
@@ -22,7 +23,7 @@ import { actions, branchOf, call, failCalls, nav, net, on, persist, projectName,
 import { initTheme } from "./theme";
 import { previewSession } from "./worktrees";
 import { closeTerminal, cycleTerminal, hideTerminal, initTerminal, newTerminal, terminalExit, terminalOutput, terminalsArrived, toggleMaximize, toggleTerminal } from "./terminal";
-import { initTranscript } from "./transcript";
+import { initTranscript, setAgentOpener } from "./transcript";
 import { focusAddress, reloadPage, setAwake, wireLinks } from "./browser";
 import { setOpener } from "./refs";
 import { adoptSession, forwardKey, forwardKeyUp, host, sideChat, sideSession } from "./sidechat";
@@ -95,7 +96,7 @@ function connect() {
 }
 
 function summarize(t: Omit<Thread, "turns" | "requests">): ThreadSummary {
-  return { id: t.id, harness: t.harness, title: t.title, updatedAt: t.updatedAt, createdAt: t.createdAt, status: t.status, branch: t.branch, cwd: t.cwd, settledAt: t.settledAt ?? null, runningSince: t.runningSince ?? null, parent: t.parent ?? null };
+  return { id: t.id, harness: t.harness, title: t.title, updatedAt: t.updatedAt, createdAt: t.createdAt, status: t.status, branch: t.branch, cwd: t.cwd, settledAt: t.settledAt ?? null, runningSince: t.runningSince ?? null, parent: t.parent ?? null, subagent: t.subagent };
 }
 
 /** What a side chat's frame leaves to the window around it: the panels, the terminal, restarts. */
@@ -346,7 +347,8 @@ function applyEvent(threadId: string, ev: ThreadEvent) {
     ev.thread = titled(ev.thread);
     const prev = store.summaries.get(threadId);
     store.summaries.set(threadId, summarize(ev.thread));
-    if (!sideChat) threadChanged(threadId, ev.thread.title, prev?.status, ev.thread.status);
+    // (A subagent's ending is its session's business: the session says when it's done.)
+    if (!sideChat && !ev.thread.subagent) threadChanged(threadId, ev.thread.title, prev?.status, ev.thread.status);
     // (A side chat isn't in the sidebar to say so: its tab shows it working.)
     if (!sideChat && !ev.thread.parent && prev?.status === "running" && ev.thread.status !== "running" && store.thread?.id !== threadId) {
       store.done.add(threadId);
@@ -354,6 +356,8 @@ function applyEvent(threadId: string, ev: ThreadEvent) {
     }
     render("sidebar");
     if (!sideChat && (ev.thread.parent || prev?.parent)) sideChatChanged(threadId);
+    // Its Agent row shows whether it's at work.
+    if (ev.thread.subagent && prev?.status !== ev.thread.status) render("transcript");
   }
   if (ev.type === "thread.archived") {
     store.summaries.delete(threadId);
@@ -554,14 +558,17 @@ function banner(text: string | null) {
 // ---------------- boot ----------------
 
 initTheme();
+/** The files panel shown on one of its views (the phone's ··· menu). */
+const explorerOn = (view: "files" | "changes" | "agents") => (document.getElementById("app")!.classList.contains("files-open") || toggleFiles(), showSidebarView(view));
 // A side chat's frame (sidechat.ts) is the chat column alone: the window around it has the rest.
 if (!sideChat) initPhone({
   search: () => openPalette("commands"),
   newSession: () => actions.newThread(),
   settings: () => toggleSettings(),
-  files: () => (document.getElementById("app")!.classList.contains("files-open") || toggleFiles(), showSidebarView("files")),
+  files: () => explorerOn("files"),
   explorer: () => document.getElementById("app")!.classList.contains("files-open") || toggleFiles(false),
-  changes: () => (document.getElementById("app")!.classList.contains("files-open") || toggleFiles(), showSidebarView("changes")),
+  changes: () => explorerOn("changes"),
+  agents: () => explorerOn("agents"),
   terminal: () => toggleTerminal(),
   session: () => {
     const t = store.thread && store.summaries.get(store.thread.id);
@@ -591,8 +598,12 @@ onPhoneChange(() => render("header"));
 /** A side chat's frame: files and web links open beside it, in the window around it. */
 function initSide() {
   setOpener((ref, cited, keep) => host()?.openCited(ref, cited, keep));
+  setAgentOpener((id) => host()?.openAgent(id));
   wireLinks((url, background) => host()?.openWebLink(url, background));
-  window.__bismuthSide = { focus: () => draft.focus(), show: (id) => (adoptSession(id), actions.open(id)) };
+  // A subagent's transcript is read-only: its harness runs it, so there's no composer to write to it with.
+  const readOnly = (id: string | null) => document.documentElement.classList.toggle("agent-view", !!id && !!subagentOf(id));
+  readOnly(sideSession());
+  window.__bismuthSide = { focus: () => draft.focus(), show: (id) => (readOnly(id), adoptSession(id), actions.open(id)) };
   // Never the new-session page: laid out as a session from the start, a spare takes its session without the
   // composer gliding down from the page's middle.
   $("main").classList.remove("new-thread");

@@ -35,6 +35,7 @@ import { VIEW_SERVER, Views } from "./views";
 import { Browser, BROWSER_SERVER } from "./browser";
 import * as ui from "./ui";
 import type { ClientMessage, HarnessId, HarnessInfo, McpSnapshot, ModelOption, RestartMode, RestartResult, RpcMethods, ServerMessage, Thread, ThreadSummary, TurnSettings, UsageReport, WorktreeStatus } from "../shared/model";
+import { subagentOf } from "../shared/model";
 
 const PORT = Number(process.env.PORT ?? 7421);
 mkdirSync(ui.STATE, { recursive: true }); // a fresh checkout has none yet
@@ -333,6 +334,9 @@ async function threadList(): Promise<ThreadSummary[]> {
 
 /** The harness that owns a thread; unknown ids are looked up by listing again. */
 async function harnessFor(threadId: string): Promise<Harness> {
+  // A subagent's transcript is its session's harness's.
+  const sub = subagentOf(threadId);
+  if (sub && !owner.has(threadId)) return harnessFor(sub.session);
   if (!owner.has(threadId)) await threadList();
   // A side chat with no turn of its own may not be listed.
   const lone = sideChats.harness(threadId);
@@ -361,6 +365,7 @@ async function handle(ws: Client, msg: ClientMessage) {
     }
     case "send": {
       let threadId = msg.threadId;
+      if (threadId && subagentOf(threadId)) throw new Error("A subagent runs on its own: its session is where to write");
       const h = threadId ? await harnessFor(threadId) : byId(msg.settings.harness);
       if (!threadId) {
         if (!status.get(h.id)!.available) throw new Error(`${h.name} is not available${status.get(h.id)!.error ? `: ${status.get(h.id)!.error}` : ""}`);
@@ -395,6 +400,7 @@ async function handle(ws: Client, msg: ClientMessage) {
       return;
     }
     case "queue.add":
+      if (subagentOf(msg.threadId)) throw new Error("A subagent runs on its own: its session is where to write");
       await harnessFor(msg.threadId);
       queue.add(msg.threadId, msg.text, msg.settings);
       // Queued just as the turn ended (or nothing was running): it doesn't wait for a turn that never comes.

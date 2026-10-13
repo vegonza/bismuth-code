@@ -10,8 +10,10 @@
 // per-chat panels; the new-session screen keeps its own per project, which a session started there begins with.
 import { Transaction, type TransactionSpec } from "@codemirror/state";
 import { isPhone } from "./phone";
-import { BRANCH, UNPUSHED, type FileContent, type FileEntry, type FileLocation, type FileRef, type GitStatus, type ServerMessage, type TurnSettings, type WriteResult } from "../shared/model";
+import { BRANCH, subagentOf, UNPUSHED, type FileContent, type FileEntry, type FileLocation, type FileRef, type GitStatus, type Item, type ServerMessage, type TurnSettings, type WriteResult } from "../shared/model";
+import { setAgentOpener } from "./transcript";
 import { codeState, codeView, EditorView, keyModeSpec, type CodeHooks, type EditorState } from "./code";
+import { agentsView } from "./agents";
 import { changesStore, changesView, lineCounts, SCOPES, type ChangesStore } from "./changes";
 import { graphView } from "./graph";
 import { changesSource, commitSource, reviewView } from "./review";
@@ -30,7 +32,7 @@ import { dropPdf, pdfBar, pdfView } from "./pdfview";
 import { canSavePdf, savePdf } from "./printpdf";
 import { onPrefs, prefs, setPrefs, type ChangesScope, type ShortcutId } from "./prefs";
 import { actions, call, net, on, store, tildePath, workFolder } from "./store";
-import { reducedMotion, RESIZE_MS } from "./motion";
+import { reducedMotion, RESIZE_MS, slideFold } from "./motion";
 import { contextMenu as openContextMenu, menuPoint, toggleSwitch, type MenuEntry, type Popover } from "./popover";
 import { dialog, select as selectMenu } from "./widgets";
 import { onTheme } from "./theme";
@@ -61,7 +63,7 @@ type SessionPanels = { files: boolean; surfaces: boolean; tabs: string[]; active
  *  changed (in the scope picked), for reviewing. */
 /** `owners`: pages held for a session other than the one whose panel shows them (a side chat's, in its parent's). */
 type Saved = { filesW: number; paneW: number; showAll: boolean; sessions: Record<string, SessionPanels>; expanded: Record<string, string[]>; recent: Record<string, string[]>; view?: SidebarView; changedOnly?: boolean; owners?: Record<string, string> };
-type SidebarView = "files" | "changes";
+type SidebarView = "files" | "changes" | "agents";
 const saved: Saved = { filesW: FILES_DEFAULT, paneW: PANE_DEFAULT, showAll: false, sessions: {}, expanded: {}, recent: {}, ...JSON.parse(localStorage.getItem("bismuth.panels") ?? "{}") };
 const nothingOpen = (s: SessionPanels | undefined) => !s || (!s.files && !s.surfaces && !s.tabs.length);
 function persist() {
@@ -819,7 +821,7 @@ function shut(paths: string[], forget = false) {
     const i = s.tabs.indexOf(p);
     if (i < 0) continue;
     // A side chat with nothing of its own yet is gone with its tab (it's archived): there's nothing to bring back.
-    const blank = isSideTab(p) && unsent(sideOf(p));
+    const blank = isSideTab(p) && !isAgentTab(p) && unsent(sideOf(p));
     if (!forget && !blank) closed.push({ path: p, at: i });
     s.tabs.splice(i, 1);
     if (s.preview === p) s.preview = null;
@@ -1061,21 +1063,39 @@ export function sideChatChanged(id: string) {
   if (session()?.tabs.includes(SIDE_TAB + id)) renderBar();
 }
 
+// ---------------- subagents ----------------
+// A subagent's transcript (its session's harness runs it: core/claude-adapter.ts, core/codex-adapter.ts) opens from
+// its Agent row as a tab like a side chat's, read-only: the same frame, which shows no composer for it (app.ts).
+
+/** A side tab that holds a subagent. */
+const isAgentTab = (tab: string) => isSideTab(tab) && !!subagentOf(sideOf(tab));
+
+/** The Agent row that spawned a subagent, in the session shown (what its tab goes by before the core has said). */
+const spawnOf = (id: string) =>
+  store.thread?.turns.flatMap((t) => t.items).find((i): i is Extract<Item, { kind: "tool" }> => i.kind === "tool" && i.agent === id);
+
+/** A subagent's transcript shown, in a tab of the session's panel (the one already there, if any). */
+function openAgent(id: string) {
+  openTab(SIDE_TAB + id);
+}
+
 /** The open session's side chats, the most recently active first. */
-const sessionSideChats = () => [...store.summaries.values()].filter((t) => t.parent && t.parent === store.thread?.id).sort((a, b) => b.updatedAt - a.updatedAt);
+const sessionSideChats = () => [...store.summaries.values()].filter((t) => t.parent && t.parent === store.thread?.id && !t.subagent).sort((a, b) => b.updatedAt - a.updatedAt);
 
 /** The open session's side chats to go back to (the phone's ··· menu). */
 export const sideChatsToOpen = () => sessionSideChats().map((t) => ({ label: sideLabel(SIDE_TAB + t.id), open: () => openTab(SIDE_TAB + t.id, true) }));
 
 const sideLabel = (tab: string) => {
-  const t = store.summaries.get(sideOf(tab));
+  const id = sideOf(tab);
+  const t = store.summaries.get(id);
+  if (isAgentTab(tab)) return t?.title ?? spawnOf(id)?.name.replace(/^subagent · /, "") ?? "Subagent";
   return !t || t.title === UNTITLED ? "Side chat" : t.title;
 };
 
-/** A side chat's glyph: the activity spinner while it works. */
+/** A side chat's glyph (a subagent's): the activity spinner while it works. */
 function sideGlyph(tab: string): HTMLElement {
   const t = store.summaries.get(sideOf(tab));
-  if (t?.status !== "running" && t?.status !== "waiting") return icon("messageCircle", undefined, "rp-tab-glyph");
+  if (t?.status !== "running" && t?.status !== "waiting") return icon(isAgentTab(tab) ? "bot" : "messageCircle", undefined, "rp-tab-glyph");
   const box = el("span", "rp-tab-glyph bw-tab-spin");
   box.append(miniSpinner());
   return box;
@@ -1252,7 +1272,13 @@ function layout(snap = false) {
   const normal = !showPane ? 0 : isPhone() ? avail : Math.max(Math.min(PANE_MIN, avail * 0.4), Math.min(saved.paneW, avail - fw - CHAT_MIN));
   const pw = showPane && expanded ? avail - fw : normal;
   // Content widths: kept while a column glides shut, so it slides away whole.
-  app.style.setProperty("--fp-w", `${Math.round(fwOpen)}px`);
+  const fpW = `${Math.round(fwOpen)}px`;
+  if (app.style.getPropertyValue("--fp-w") !== fpW) {
+    app.style.setProperty("--fp-w", fpW);
+    // The views' buttons narrow with the panel near its narrowest (style.css): the picker's highlight measures again.
+    pillSpots = null;
+    if (viewPill) placePill(VIEWS.indexOf(sidebarView()));
+  }
   if (showPane) app.style.setProperty("--rp-w", `${Math.round(pw)}px`);
   // The most of the panel's glide the conversation gives way to: its normal width, so expanding covers the chat.
   if (showPane) app.style.setProperty("--rp-n", `${Math.round(normal)}px`);
@@ -1439,7 +1465,17 @@ function renderBar() {
     const side = isSideTab(path);
     const subject = commit ? (reviewFor(r, path) as CommitView).subject() : null;
     const label = isReview ? "Changes" : commit ? (subject ?? commit.slice(0, 7)) : web ? pageLabel(path) : side ? sideLabel(path) : baseName(path);
-    tab.title = isReview ? "Changes" : commit ? `${subject ?? "Commit"} · ${commit.slice(0, 7)}` : web ? pageUrl(path) || "New tab" : side ? (unsent(sideOf(path)) ? "Side chat" : `Side chat · ${sideLabel(path)}`) : isAbs(path) ? tildePath(path) : path;
+    tab.title = isReview
+      ? "Changes"
+      : commit
+        ? `${subject ?? "Commit"} · ${commit.slice(0, 7)}`
+        : web
+          ? pageUrl(path) || "New tab"
+          : side
+            ? isAgentTab(path) ? `Subagent · ${sideLabel(path)}` : unsent(sideOf(path)) ? "Side chat" : `Side chat · ${sideLabel(path)}`
+            : isAbs(path)
+              ? tildePath(path)
+              : path;
     const lead = el("span", "rp-tab-lead");
     const glyph = isReview ? icon("gitCompare", undefined, "rp-tab-glyph") : commit ? icon("gitCommitHorizontal", undefined, "rp-tab-glyph") : web ? pageGlyph(path) : side ? sideGlyph(path) : fileGlyph(path);
     const close = el("button", "rp-tab-close");
@@ -1518,6 +1554,8 @@ function renderBar() {
     strip.querySelector(".rp-tab.active")?.scrollIntoView({ block: "nearest", inline: "nearest" });
     fades();
   });
+  // The Agents view marks the one whose tab shows.
+  if (explorerShown() && sidebarView() === "agents") agents.render();
 }
 
 /** The editor going off screen: its state back into its doc, where it was scrolled kept. */
@@ -1906,12 +1944,12 @@ let scopePick: HTMLButtonElement;
 let changedBtn: HTMLButtonElement;
 /** What the dropdown was last drawn for (it's made again when that moves). */
 let scopeDrawn = "";
-/** The sidebar's two views: the files, and the Changes view (changes.ts), picked in the head. */
+/** The sidebar's views: the files, the Changes view (changes.ts) and the Agents view (agents.ts), picked in the head. */
 let filesView: HTMLElement;
 let filesPage: HTMLElement;
 const viewBtns = new Map<SidebarView, HTMLButtonElement>();
 /** The views side by side, slid to the one shown (Zen's spaces): a swipe drags them, a pick slides them over. */
-const VIEWS: SidebarView[] = ["files", "changes"];
+const VIEWS: SidebarView[] = ["files", "changes", "agents"];
 let deck: HTMLElement;
 let strip: HTMLElement;
 /** The picker's highlight, slid along with them. */
@@ -1921,6 +1959,7 @@ let placedView: SidebarView | null = null;
 let swiping = false;
 let changesData: ChangesStore;
 let changes: ReturnType<typeof changesView>;
+let agents: ReturnType<typeof agentsView>;
 let review: ReturnType<typeof reviewView>;
 /** The review's changes read again for the scope picked now. */
 let rescopeReview = () => {};
@@ -1982,6 +2021,9 @@ function renderTabs() {
   // The one off to the side out of reach (keys, focus); slid over when the view changed.
   filesPage.inert = view !== "files";
   changes.el.inert = view !== "changes";
+  agents.el.inert = view !== "agents";
+  // The menu's rows are the files' or git's: the agents have none (it keeps its place, dimmed).
+  moreBtn.disabled = view === "agents";
   if (!swiping) moveStrip(VIEWS.indexOf(view), placedView !== null && placedView !== view);
   placedView = view;
   syncToggles();
@@ -1991,7 +2033,7 @@ function renderTabs() {
 const SLIDE_MS = 360;
 let slideEnd: Timer | null = null;
 
-/** The views' strip moved to `at` (0 the files, 1 the changes; between, partway), slid there or put at once, the
+/** The views' strip moved to `at` (0 the files, 1 the changes, 2 the agents; between, partway), slid there or put at once, the
  *  picker's highlight along with it. At rest on a view it's laid out plainly, the other out of sight: no transform
  *  left on it, so its text stays crisp. */
 function moveStrip(at: number, slide: boolean) {
@@ -2258,7 +2300,7 @@ export function showSidebarView(view: SidebarView) {
     // Slid over to what's already drawn (the tree when idle, the changes on every read); a tree left behind is
     // drawn once the slide is done, not before it starts.
     renderTabs();
-    setTimeout(() => sidebarView() === view && (view === "changes" || treeStale) && renderExplorer(), SLIDE_MS + 60);
+    setTimeout(() => sidebarView() === view && (view !== "files" || treeStale) && renderExplorer(), SLIDE_MS + 60);
   } else renderExplorer();
   syncToggles();
   if (view === "changes") void changesData.refresh();
@@ -2305,8 +2347,6 @@ function closeSearch() {
   renderExplorer();
 }
 
-/** Folder opening and closing, Zeron's tree tween: its rows slide out from under it, or back up into it. */
-const FOLD_MS = 160;
 
 type Row = { e: FileEntry; depth: number };
 
@@ -2346,6 +2386,7 @@ function renderExplorer() {
   renderScope(r, t);
   renderTabs();
   if (sidebarView() === "changes") return changes.render(), drawTreeIdle(r, t);
+  if (sidebarView() === "agents") return agents.render(), drawTreeIdle(r, t);
   drawTree(r, t);
 }
 
@@ -2481,23 +2522,12 @@ async function toggleDir(r: string, t: Tree, path: string, open = !t.expanded.ha
 }
 
 /** Slide a folder's rows open or shut by their box's height (at once with reduced motion). */
-function fold(kids: HTMLElement | null, open: boolean): Promise<void> {
-  if (!kids || reducedMotion()) return Promise.resolve();
-  const full = kids.scrollHeight;
+async function fold(kids: HTMLElement | null, open: boolean): Promise<void> {
+  if (!kids || reducedMotion()) return;
   folding++;
-  return new Promise((done) => {
-    const anim = kids.animate(
-      { height: open ? ["0px", `${full}px`] : [`${full}px`, "0px"], opacity: open ? [0.4, 1] : [1, 0.4] },
-      { duration: FOLD_MS, easing: "cubic-bezier(0, 0, 0.58, 1)" },
-    );
-    kids.style.overflow = "hidden";
-    anim.onfinish = anim.oncancel = () => {
-      kids.style.overflow = "";
-      folding--;
-      done();
-      if (!folding && !holdDraws && drawAfterFold) (drawAfterFold = false), renderExplorer();
-    };
-  });
+  await slideFold(kids, open);
+  folding--;
+  if (!folding && !holdDraws && drawAfterFold) (drawAfterFold = false), renderExplorer();
 }
 
 /** Mod+Alt+C: every folder shut, at once: no slide or chevron turn (hundreds of them at a time stutter). */
@@ -2581,6 +2611,7 @@ function treeKey(e: KeyboardEvent) {
 function onSearch() {
   // The same field searches the changes while they show.
   if (sidebarView() === "changes") return changes.filter(search.value);
+  if (sidebarView() === "agents") return agents.filter(search.value);
   const r = root();
   const q = search.value.trim();
   if (!r || !q) {
@@ -2624,6 +2655,7 @@ function clearSearch() {
   findRow.hidden = true;
   searchBtn.classList.remove("on");
   changes.filter("");
+  agents.filter("");
 }
 
 function openResult(path: string) {
@@ -2641,6 +2673,7 @@ function searchKey(e: KeyboardEvent) {
     treeEl.focus({ preventScroll: true });
     return;
   }
+  if (sidebarView() === "agents") return;
   if (sidebarView() === "changes") {
     const path = e.key === "Enter" ? changes.firstMatch() : null;
     if (path) e.preventDefault(), openReview(path);
@@ -2931,7 +2964,7 @@ function tabMenu(e: MouseEvent, path: string) {
     return contextMenu({ x: e.clientX, y: e.clientY }, items);
   }
   if (isSideTab(path)) {
-    items.push("-", { icon: "panelLeft", label: "Move to sessions", run: () => promoteSideChat(path) });
+    if (!isAgentTab(path)) items.push("-", { icon: "panelLeft", label: "Move to sessions", run: () => promoteSideChat(path) });
     return contextMenu({ x: e.clientX, y: e.clientY }, items);
   }
   items.push("-", { icon: "clipboardCopy", label: "Copy path", run: () => copy(absolute(r, path)) });
@@ -3397,9 +3430,11 @@ export function initPanels(refocus: () => void, findFile: () => void) {
     pointer: framePointer,
   });
   // A side chat's frame opens files and web links here, beside it.
+  setAgentOpener(openAgent);
   mountSideChats(paneBody, {
     openCited,
     openWebLink,
+    openAgent,
     key: (type, k) => dispatchEvent(new KeyboardEvent(type, { ...k, bubbles: true, cancelable: true })),
   });
   // Pages whose tabs closed in an earlier run (only open tabs can be reopened) are let go of.
@@ -3466,7 +3501,7 @@ export function initPanels(refocus: () => void, findFile: () => void) {
   const viewSeg = seg("Sidebar view");
   viewSeg.classList.add("fp-seg-slide");
   viewSeg.append((viewPill = el("span", "fp-seg-pill")));
-  for (const [v, label, tip] of [["files", "Files", "Files"], ["changes", "Changes", hint("Changes", "showChanges")]] as const) {
+  for (const [v, label, tip] of [["files", "Files", "Files"], ["changes", "Changes", hint("Changes", "showChanges")], ["agents", "Agents", "The session's subagents and side chats"]] as const) {
     const b = el("button", "fp-seg-btn", label) as HTMLButtonElement;
     b.title = tip;
     b.setAttribute("role", "radio");
@@ -3535,7 +3570,15 @@ export function initPanels(refocus: () => void, findFile: () => void) {
   filesPage.append(scopeRow, filesView);
   deck = el("div", "fp-deck");
   strip = el("div", "fp-strip rest");
-  strip.append(filesPage, changes.el);
+  agents = agentsView({
+    open: (id) => (subagentOf(id) ? openAgent(id) : openTab(SIDE_TAB + id, true)),
+    shown: () => {
+      const s = session();
+      return s?.surfaces && s.active && isSideTab(s.active) ? sideOf(s.active) : null;
+    },
+    sideChats: () => sessionSideChats().map((t) => ({ id: t.id, title: sideLabel(SIDE_TAB + t.id) })),
+  });
+  strip.append(filesPage, changes.el, agents.el);
   deck.append(strip);
   // The search under the head, for the files or the changes, whichever show.
   filesInner.append(band, head, findRow, deck);
@@ -3627,6 +3670,10 @@ export function initPanels(refocus: () => void, findFile: () => void) {
     if (prefs.changesScope === "turn") rescope();
     refresh();
   });
+  // The agents shown follow the session's (its Agent rows, and its subagents' threads: the sidebar's news).
+  const redrawAgents = () => explorerShown() && sidebarView() === "agents" && agents.render();
+  on("transcript", redrawAgents);
+  on("sidebar", redrawAgents);
   // The agent at work changes files: look again once things it ran or edited finish, and when the turn ends.
   let mark = "";
   on("transcript", () => {

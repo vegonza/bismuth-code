@@ -17,6 +17,10 @@
 //   and SIGKILL.
 // - Sessions are listed and replayed from the CLI's own transcripts (~/.claude/projects/<cwd>/<id>.jsonl),
 //   so sessions started in a terminal show up here too.
+// - Subagents (Zeron's): their frames come on the same stdout, tagged with the spawning call's id
+//   (`parent_tool_use_id`), and make a transcript of their own, a read-only thread (subagentThread) its Agent row
+//   opens. It's built from those frames while it runs, and read from the CLI's own transcript of it
+//   (<id>/subagents/agent-*.jsonl, its .meta.json naming the spawning call) otherwise. It ends with its call.
 import { randomUUID } from "node:crypto";
 import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -24,6 +28,7 @@ import { join } from "node:path";
 import type { Subprocess } from "bun";
 import { finalizeItem, finishedTurns, mergeItem, summary, titleFrom, UNTITLED, type Harness } from "./harness";
 import { claudeListing, claudeStatus, toClaude, type ClaudeSeen, type McpDef, type McpListing, type McpPlan } from "./mcp";
+import { subagentOf, subagentThread } from "../shared/model";
 import type {
   FileChange,
   Invocable,
@@ -100,6 +105,10 @@ type Run = {
   shells: number;
   /** Backgrounded calls -> their turn: the call returns at once, its item runs until the task ends. */
   background: Map<string, string>;
+  /** A subagent's tasks and the later calls that address it (a SendMessage resuming it) -> the call that spawned it. */
+  spawns: Map<string, string>;
+  /** Blocks seen of each of the subagents' messages (one frame each), which number their items. */
+  subBlocks: Map<string, number>;
   interrupted: boolean;
   /** The turn is over; the process may live on for background shells. */
   finished: boolean;
@@ -281,8 +290,10 @@ export class ClaudeAdapter implements Harness {
         }
       }
       // Loaded threads are fresher than their transcripts (and new ones may have none yet).
-      for (const t of this.threads.values()) if (t.cwd === cwd && !this.archived.has(t.id) && (t.turns.length || out.has(t.id))) out.set(t.id, summary(t));
+      for (const t of this.threads.values()) if (t.cwd === cwd && !t.subagent && !this.archived.has(t.id) && (t.turns.length || out.has(t.id))) out.set(t.id, summary(t));
       all.push(...[...out.values()].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 50));
+      // Subagents seen since the core started, so a reloaded window knows them (its sessions' running ones).
+      for (const t of this.threads.values()) if (t.cwd === cwd && t.subagent) all.push({ ...summary(t), parent: t.parent, subagent: true });
     }
     return all;
   }
@@ -295,10 +306,12 @@ export class ClaudeAdapter implements Harness {
 
   private async loadThread(threadId: string): Promise<Thread> {
     if (this.forks[threadId]) return this.loadFork(threadId, this.forks[threadId]);
+    const sub = subagentOf(threadId);
+    if (sub) return this.loadSubagent(threadId, sub.session, sub.ref);
     const cwd = this.where.get(threadId);
     const path = cwd ? join(projectDir(cwd), `${threadId}.jsonl`) : null;
     if (!cwd || !path || !existsSync(path)) throw new Error(`no Claude Code session ${threadId} in a project`);
-    const history = await readHistory(path);
+    const history = await readHistory(path, threadId);
     const st = statSync(path);
     const existing = this.threads.get(threadId);
     if (existing) return existing;
@@ -331,7 +344,7 @@ export class ClaudeAdapter implements Harness {
   private async loadFork(threadId: string, fork: Fork): Promise<Thread> {
     const path = join(projectDir(fork.cwd), `${fork.parent}.jsonl`);
     if (!existsSync(path)) throw new Error(`no Claude Code session ${fork.parent} to branch from`);
-    const history = await readHistory(path);
+    const history = await readHistory(path, fork.parent);
     const end = history.turns.findIndex((t) => t.items.some((i) => i.id === fork.through));
     const existing = this.threads.get(threadId);
     if (existing) return existing;
@@ -357,6 +370,44 @@ export class ClaudeAdapter implements Harness {
     };
     this.threads.set(threadId, thread);
     this.where.set(threadId, fork.cwd);
+    return thread;
+  }
+
+  /** A subagent not run under this core: its transcript as the CLI kept it, found by the call that spawned it. */
+  private async loadSubagent(id: string, session: string, spawn: string): Promise<Thread> {
+    const cwd = this.threads.get(session)?.cwd ?? this.where.get(session);
+    const dir = cwd ? join(projectDir(cwd), session, "subagents") : null;
+    const name = dir && existsSync(dir) ? readdirSync(dir).find((f) => f.endsWith(".meta.json") && readJson<any>(join(dir, f))?.toolUseId === spawn) : undefined;
+    if (!cwd || !dir || !name) throw new Error("Claude Code kept no transcript of this subagent");
+    const meta = readJson<any>(join(dir, name));
+    const path = join(dir, name.replace(/\.meta\.json$/, ".jsonl"));
+    const history = await readHistory(path, session, true, true);
+    const existing = this.threads.get(id);
+    if (existing) return existing;
+    const st = statSync(path);
+    const thread: Thread = {
+      id,
+      harness: "claude",
+      title: String(meta?.description || "") || history.title || "Agent",
+      updatedAt: st.mtimeMs,
+      createdAt: history.createdAt ?? st.mtimeMs,
+      status: "idle",
+      branch: history.branch,
+      cwd,
+      parent: session,
+      subagent: true,
+      model: history.model,
+      effort: null,
+      serviceTier: null,
+      activeTurnId: null,
+      turns: history.turns.slice(-HISTORY_TURNS),
+      requests: [],
+      plan: null,
+      contextTokens: history.contextTokens,
+      contextWindow: null,
+      notice: null,
+    };
+    this.threads.set(id, thread);
     return thread;
   }
 
@@ -487,6 +538,8 @@ export class ClaudeAdapter implements Harness {
       agents: 0,
       shells: 0,
       background: new Map(),
+      spawns: new Map(),
+      subBlocks: new Map(),
       interrupted: false,
       finished: false,
       closed: false,
@@ -658,18 +711,33 @@ export class ClaudeAdapter implements Harness {
           this.sawMcp(run, f.mcp_servers);
         } else if (f.subtype === "compact_boundary") this.upsertItem(run.threadId, run.turnId, { id: f.uuid ?? randomUUID(), kind: "notice", text: "Context compacted" });
         else if (f.subtype === "background_tasks_changed") this.backgroundChanged(run, f.tasks ?? []);
-        else if (f.subtype === "task_started" && f.is_backgrounded && f.tool_use_id) run.background.set(f.tool_use_id, run.turnId);
-        else if (f.subtype === "task_notification" && f.tool_use_id) this.backgroundDone(run, f.tool_use_id, f.status, f.summary ?? "");
+        else if (f.subtype === "task_started") {
+          if (f.is_backgrounded && f.tool_use_id) run.background.set(f.tool_use_id, run.turnId);
+          // A subagent's task (a shell's has no type): its later calls (a SendMessage resuming it) go by the spawn.
+          if (f.subagent_type && f.task_id && f.tool_use_id) {
+            const spawn = run.spawns.get(f.task_id) ?? run.spawns.get(f.tool_use_id) ?? f.tool_use_id;
+            run.spawns.set(f.task_id, spawn);
+            run.spawns.set(f.tool_use_id, spawn);
+          }
+        } else if (f.subtype === "task_notification") {
+          if (f.tool_use_id) this.backgroundDone(run, f.tool_use_id, f.status, f.summary ?? "");
+          // A background subagent's only word that it's done (no tagged frame follows): by its task, or its call.
+          const spawn = run.spawns.get(f.task_id) ?? run.spawns.get(f.tool_use_id) ?? f.tool_use_id;
+          if (spawn) this.subagentEnded(subagentThread(run.threadId, spawn), taskStatus(f.status));
+        }
         return;
       case "stream_event":
-        // Subagent traffic carries its spawning tool's id; it isn't part of this transcript.
+        // Subagent traffic carries its spawning tool's id; it isn't part of this transcript (its whole blocks come in
+        // its assistant frames).
         if (!f.parent_tool_use_id) this.streamEvent(run, f.event);
         return;
       case "assistant":
-        if (!f.parent_tool_use_id) this.assistantFrame(run, f);
+        if (f.parent_tool_use_id) this.subagentFrame(run, f);
+        else this.assistantFrame(run, f);
         return;
       case "user":
-        if (!f.parent_tool_use_id) this.userFrame(run, f);
+        if (f.parent_tool_use_id) this.subagentFrame(run, f);
+        else this.userFrame(run, f);
         return;
       case "rate_limit_event":
         this.rateLimit(run, f.rate_limit_info);
@@ -711,7 +779,7 @@ export class ClaudeAdapter implements Harness {
         else if (block.type === "tool_use") {
           run.openTools.add(block.id);
           run.toolStarts.set(block.id, Date.now());
-          item = toolItem(block.id, block.name, block.input ?? {});
+          item = toolItem(block.id, block.name, block.input ?? {}, run.threadId);
         }
         if (!item) return;
         run.blocks.set(e.index, item.id);
@@ -755,8 +823,9 @@ export class ClaudeAdapter implements Harness {
           thread.plan = todos(block.input);
           this.emitThread(thread);
         }
-        const item = toolItem(block.id, block.name, block.input ?? {});
+        const item = toolItem(block.id, block.name, block.input ?? {}, run.threadId);
         if (item) this.upsertItem(run.threadId, run.turnId, item);
+        if (item?.kind === "tool" && item.agent) this.subagentSpawned(run, item.agent, block.input ?? {});
       }
     }
     if (thread && message.usage) {
@@ -898,6 +967,111 @@ export class ClaudeAdapter implements Harness {
     if (!run.agents && !run.shells) this.close(run);
   }
 
+  // ---------------- subagents ----------------
+
+  /** A subagent's call: its transcript starts, its prompt the first thing in it (its frames never repeat that). */
+  private subagentSpawned(run: Run, id: string, input: any) {
+    const session = this.threads.get(run.threadId);
+    if (!session || this.threads.has(id)) return;
+    const now = Date.now();
+    const turn: Turn = { id: randomUUID(), status: "inProgress", error: null, durationMs: null, startedAt: now, completedAt: null, items: [] };
+    const prompt = String(input.prompt ?? "");
+    if (prompt.trim()) turn.items.push({ id: `${id}:prompt`, kind: "user", text: prompt, images: 0 });
+    const thread: Thread = {
+      id,
+      harness: "claude",
+      title: String(input.description || "") || "Agent",
+      updatedAt: now,
+      createdAt: now,
+      status: "running",
+      branch: session.branch,
+      cwd: session.cwd,
+      parent: subagentOf(id)!.session,
+      subagent: true,
+      model: null,
+      effort: null,
+      serviceTier: null,
+      activeTurnId: turn.id,
+      turns: [turn],
+      requests: [],
+      plan: null,
+      contextTokens: null,
+      contextWindow: null,
+      notice: null,
+    };
+    this.threads.set(id, thread);
+    this.emitThread(thread);
+  }
+
+  /** A frame of a subagent's own (tagged with the call that spawned it, or one that resumed it): into its transcript. */
+  private subagentFrame(run: Run, f: any) {
+    const spawn = run.spawns.get(f.parent_tool_use_id) ?? f.parent_tool_use_id;
+    const sub = this.threads.get(subagentThread(run.threadId, spawn));
+    if (!sub?.subagent) return;
+    const turn = sub.turns.at(-1)!;
+    const content = f.message?.content;
+    if (f.type === "assistant") {
+      const message = f.message ?? {};
+      for (const block of blocksOf(content)) {
+        const n = run.subBlocks.get(message.id) ?? 0;
+        run.subBlocks.set(message.id, n + 1);
+        const id = `${message.id ?? randomUUID()}:${n}`;
+        if (block.type === "text" && block.text) this.upsertItem(sub.id, turn.id, { id, kind: "assistant", text: block.text, phase: null, done: true });
+        else if (block.type === "thinking" && block.thinking) this.upsertItem(sub.id, turn.id, { id, kind: "reasoning", summary: [block.thinking], done: true });
+        else if (block.type === "tool_use") {
+          const item = toolItem(block.id, block.name, block.input ?? {}, run.threadId);
+          if (item) this.upsertItem(sub.id, turn.id, item);
+          // A subagent's own subagent: a transcript of its own too.
+          if (item?.kind === "tool" && item.agent) this.subagentSpawned(run, item.agent, block.input ?? {});
+        }
+      }
+      if (f.error) this.upsertItem(sub.id, turn.id, { id: randomUUID(), kind: "notice", text: assistantErrorText(f.error) });
+      return;
+    }
+    const result = f.tool_use_result ?? f.toolUseResult;
+    for (const block of blocksOf(content)) {
+      if (block.type !== "tool_result") continue;
+      const item = this.findItem(sub.id, turn.id, block.tool_use_id);
+      if (item) this.upsertItem(sub.id, turn.id, completeTool(item, block, result));
+    }
+    // Words of its own in a user frame: the session writing to it (a SendMessage), which resumes one that had ended.
+    const text = blocksOf(content).some((b) => b.type === "tool_result") ? null : promptText(content);
+    if (!text?.trim() || turn.items.some((i) => i.kind === "user" && i.text === text)) return;
+    if (sub.status !== "running") this.subagentResumed(sub);
+    this.upsertItem(sub.id, turn.id, { id: f.uuid ?? randomUUID(), kind: "user", text, images: 0 });
+  }
+
+  private subagentResumed(sub: Thread) {
+    const turn = sub.turns.at(-1)!;
+    turn.status = "inProgress";
+    turn.completedAt = null;
+    turn.durationMs = null;
+    sub.activeTurnId = turn.id;
+    sub.status = "running";
+    sub.updatedAt = Date.now();
+    this.emitTurn(sub.id, turn);
+    this.emitThread(sub);
+  }
+
+  /** A subagent's call ended (or its background task did): so does its transcript's turn. */
+  private subagentEnded(id: string, status: TurnStatus) {
+    const sub = this.threads.get(id);
+    const turn = sub?.turns.at(-1);
+    if (!sub?.subagent || sub.status !== "running" || !turn) return;
+    turn.status = status;
+    turn.completedAt = Date.now();
+    turn.durationMs = turn.startedAt ? turn.completedAt - turn.startedAt : null;
+    for (const item of turn.items) {
+      const done = finalizeItem(item, status);
+      if (done !== item) this.upsertItem(id, turn.id, done);
+    }
+    sub.activeTurnId = null;
+    sub.status = "idle";
+    sub.updatedAt = Date.now();
+    this.emitTurn(id, turn);
+    this.emitThread(sub);
+  }
+
   // ---------------- lost output ----------------
   // A turn once showed as running for over an hour, its last two minutes of work missing, though the CLI had
   // finished: its stdout stopped reaching us mid-turn. Whatever the cause, the transcript on disk still has it all,
@@ -928,7 +1102,7 @@ export class ClaudeAdapter implements Harness {
     const turn = thread.turns.find((t) => t.id === run.turnId);
     if (!turn || run.finished) return;
     const mtime = statSync(path).mtimeMs;
-    const history = await readHistory(path, false);
+    const history = await readHistory(path, thread.id, false);
     // The transcript's turns from the one this turn's prompt opened (steers open more).
     const prompt = turn.items.find((i) => i.kind === "user");
     let from = prompt ? history.turns.findIndex((t) => t.items.some((i) => i.id === prompt.id)) : -1;
@@ -1069,6 +1243,8 @@ export class ClaudeAdapter implements Harness {
     if (!thread || !turn) return;
     const merged = mergeItem(turn, item);
     this.onEvent(threadId, { type: "item.upsert", turnId, item: merged });
+    // A subagent's call ended (finished, failed, or cut off with its turn): its transcript's turn ends with it.
+    if (merged.kind === "tool" && merged.agent && merged.status !== "inProgress") this.subagentEnded(merged.agent, merged.status === "completed" ? "completed" : merged.status === "failed" ? "failed" : "interrupted");
     if (merged.kind === "user" && thread.title === UNTITLED && merged.text.trim()) {
       thread.title = titleFrom(merged.text);
       this.emitThread(thread);
@@ -1196,6 +1372,9 @@ function resultError(f: any): string | null {
 /** A frame that only comes with a turn under way (subagents' carry their spawning call's id). */
 const startsTurn = (f: any) => (f.type === "system" && f.subtype === "init") || ((f.type === "stream_event" || f.type === "assistant") && !f.parent_tool_use_id);
 
+/** How a background task's notification says it ended. */
+const taskStatus = (status: unknown): TurnStatus => (status === "completed" ? "completed" : status === "failed" ? "failed" : "interrupted");
+
 /** A backgrounded call's item, still running after the call returned. */
 function running(item: Item): Item {
   if (item.kind === "command") return { ...item, status: "inProgress", exitCode: null };
@@ -1240,8 +1419,9 @@ function todos(input: any): PlanStep[] {
 
 const json = (v: unknown) => (v === null || v === undefined || (typeof v === "object" && !Object.keys(v as object).length) ? "" : JSON.stringify(v, null, 2));
 
-/** A tool call as one of the transcript's item kinds; null for the ones shown elsewhere (todos). */
-function toolItem(id: string, name: string, input: any): Item | null {
+/** A tool call as one of the transcript's item kinds; null for the ones shown elsewhere (todos). `session`: the one
+ *  whose transcripts it's in, where a subagent it spawns keeps its own. */
+function toolItem(id: string, name: string, input: any, session: string): Item | null {
   switch (name) {
     case "TodoWrite":
       return null;
@@ -1262,7 +1442,7 @@ function toolItem(id: string, name: string, input: any): Item | null {
       return { id, kind: "webSearch", query: String(input.query ?? "") };
     case "Agent":
     case "Task":
-      return { id, kind: "tool", name: `subagent · ${input.description || "Agent"}`, input: String(input.prompt ?? ""), output: "", status: "inProgress" };
+      return { id, kind: "tool", name: `subagent · ${input.description || "Agent"}`, input: String(input.prompt ?? ""), output: "", status: "inProgress", agent: subagentThread(session, id) };
   }
   const mcp = name.match(/^mcp__(.+?)__(.+)$/);
   return { id, kind: "tool", name: mcp ? `${mcp[1]} · ${mcp[2]}` : name, input: json(input), output: "", status: "inProgress" };
@@ -1423,9 +1603,10 @@ function peekSession(id: string, path: string, size: number, mtime: number, cwd:
 type History = { turns: Turn[]; title: string | null; createdAt: number | null; branch: string | null; model: string | null; contextTokens: number | null; ended: boolean };
 
 /** Rebuild a session's turns from its transcript: each human prompt opens a turn, assistant blocks and tool
- *  results fill it. Subagent (sidechain) records belong to their own transcripts and are skipped. */
+ *  results fill it. Subagent (sidechain) records belong to their own transcripts and are skipped, unless it's one of
+ *  those (`sidechain`). `session`: the one it's of. */
 /** `settled`: the transcript is done with (calls with no result were cut off); a running one's are still going. */
-async function readHistory(path: string, settled = true): Promise<History> {
+async function readHistory(path: string, session: string, settled = true, sidechain = false): Promise<History> {
   const turns: Turn[] = [];
   const tools = new Map<string, { turn: Turn; index: number }>();
   const counters = new Map<string, number>();
@@ -1448,7 +1629,7 @@ async function readHistory(path: string, settled = true): Promise<History> {
 
   for await (const line of lines(Bun.file(path).stream())) {
     const r = parse(line);
-    if (!r || r.isSidechain) continue;
+    if (!r || !!r.isSidechain !== sidechain) continue;
     const at = r.timestamp ? Date.parse(r.timestamp) : null;
     if (at !== null) createdAt ??= at;
     switch (r.type) {
@@ -1508,7 +1689,7 @@ async function readHistory(path: string, settled = true): Promise<History> {
           if (block.type === "text" && block.text) t.items.push({ id, kind: "assistant", text: block.text, phase: null, done: true });
           else if (block.type === "thinking" && block.thinking) t.items.push({ id, kind: "reasoning", summary: [block.thinking], done: true });
           else if (block.type === "tool_use") {
-            const item = toolItem(block.id, block.name, block.input ?? {});
+            const item = toolItem(block.id, block.name, block.input ?? {}, session);
             if (item) {
               tools.set(block.id, { turn: t, index: t.items.length });
               t.items.push(item);
