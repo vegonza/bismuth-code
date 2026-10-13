@@ -5,6 +5,7 @@ import { $, el } from "./dom";
 import { icon, type IconName } from "./icons";
 import { renderNotifications } from "./notifications";
 import { renderGeneral } from "./general";
+import { renderWorktrees } from "./worktrees";
 import { renderProviders, syncProviders } from "./providers";
 import { renderRemote } from "./remote";
 import { renderShortcuts, shortcutsEscape } from "./shortcuts";
@@ -15,10 +16,11 @@ import { on } from "./store";
 import { closeSelect } from "./widgets";
 import { displayCombo } from "./keymap";
 
-export type Section = "general" | "appearance" | "notifications" | "shortcuts" | "providers" | "remote" | "usage";
+export type Section = "general" | "worktrees" | "appearance" | "notifications" | "shortcuts" | "providers" | "remote" | "usage";
 // `live` pages hold data, not settings: search lists them by name only.
 const SECTIONS: { id: Section; label: string; icon: IconName; render: () => HTMLElement; live?: true }[] = [
   { id: "general", label: "General", icon: "settings", render: renderGeneral },
+  { id: "worktrees", label: "Worktrees", icon: "folderGit2", render: renderWorktrees },
   { id: "appearance", label: "Appearance", icon: "slidersHorizontal", render: renderAppearance },
   { id: "notifications", label: "Notifications", icon: "bell", render: renderNotifications },
   { id: "shortcuts", label: "Shortcuts", icon: "keyboard", render: renderShortcuts },
@@ -38,6 +40,8 @@ let search: HTMLInputElement;
 let query = "";
 
 export const settingsOpen = () => !!root;
+/** The page Settings shows, null when it's closed. */
+export const settingsSection = (): Section | null => (root ? section : null);
 
 export function openSettings(to?: Section) {
   if (to) section = to;

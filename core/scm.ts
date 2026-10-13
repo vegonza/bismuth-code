@@ -10,14 +10,19 @@ import { EMPTY_TREE, repoOf, sinceCommit, worktreeTree } from "./checkpoints";
 /** How long a pull or push may take before it's given up on (a network that hangs). */
 const REMOTE_TIMEOUT_MS = 120_000;
 
-async function git(cwd: string, args: string[], timeout = 30_000): Promise<{ ok: boolean; out: string; err: string }> {
+/** git in `cwd`, never asking anything of a terminal. `input`: what it reads on stdin; `env`: more of its environment. */
+export async function git(cwd: string, args: string[], timeout = 30_000, opts: { input?: string; env?: Record<string, string> } = {}): Promise<{ ok: boolean; out: string; err: string }> {
   try {
     const p = Bun.spawn(["git", "-C", cwd, ...args], {
-      stdin: "ignore",
+      stdin: opts.input === undefined ? "ignore" : "pipe",
       stdout: "pipe",
       stderr: "pipe",
-      env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_EDITOR: "true", GIT_MERGE_AUTOEDIT: "no", LC_ALL: "C" },
+      env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_EDITOR: "true", GIT_MERGE_AUTOEDIT: "no", LC_ALL: "C", ...opts.env },
     });
+    if (opts.input !== undefined) {
+      p.stdin!.write(opts.input);
+      void p.stdin!.end();
+    }
     const timer = setTimeout(() => p.kill(), timeout);
     const [out, err] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text()]);
     const code = await p.exited;
@@ -29,7 +34,7 @@ async function git(cwd: string, args: string[], timeout = 30_000): Promise<{ ok:
 }
 
 /** git's complaint, as a sentence to show: its last meaningful lines, without the "error:"/"fatal:" labels. */
-function failure(what: string, r: { out: string; err: string }): Error {
+export function failure(what: string, r: { out: string; err: string }): Error {
   const lines = `${r.err}\n${r.out}`.split("\n").map((l) => l.replace(/^(error|fatal|hint|remote): ?/i, "").trim()).filter(Boolean);
   return new Error(lines.length ? `${what}: ${lines.slice(0, 3).join(" ")}` : what);
 }

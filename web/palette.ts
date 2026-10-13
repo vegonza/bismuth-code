@@ -19,6 +19,8 @@ import { projectArt, renameSession, sessionRow, sortedSummaries, toggleSidebar }
 import { newTerminal, toggleMaximize, toggleTerminal } from "./terminal";
 import { newSideChat, openBrowser, closeActiveFile, reopenClosedFile, collapseFolders, copyActivePath, downloadPdf, expandFolders, findFiles, loadSuggestions, openFile, openReview, showChangesSince, showCommit, suggestedFiles, toggleChanges, toggleExpand, toggleFiles, revealActiveFile, toggleHiddenFiles, togglePane, togglePreview } from "./panels";
 import { actions, call, on, projectName, store, targetProject, tildePath, workFolder } from "./store";
+import { showToast } from "./toast";
+import { previewSession, switchPreview } from "./worktrees";
 
 const HISTORY_RESULT_LIMIT = 30;
 /** Folder crumbs shown before the middle folds into `…`, and how many of the deepest stay once it does. */
@@ -76,6 +78,18 @@ const COMMANDS: Command[] = [
     combo: () => bound("renameSession"),
     run: () => store.thread && (closeSettings(), renameSession(store.thread.id)),
   },
+  { label: "Preview session in its project folder", icon: "monitorPlay", combo: () => bound("previewSession"), run: () => (closeSettings(), void previewSession()) },
+  {
+    label: "Stop preview: the project folder's own files",
+    icon: "house",
+    combo: () => null,
+    run: () => {
+      const p = targetProject();
+      if (p?.preview) void switchPreview(p, null);
+      else showToast("Nothing previewed", { pill: true, icon: "house", ms: 1500 });
+    },
+  },
+  { label: "Worktrees", icon: "folderGit2", combo: () => null, run: () => openSettings("worktrees") },
   { label: "MCP servers", icon: "plug", combo: () => null, run: () => openMcp(targetProject()), keepOpen: true },
   { label: "MCP servers in…", icon: "plug", combo: () => null, run: () => pickProjectForMcp(), keepOpen: true },
   { label: "Switch to light mode", icon: "sun", combo: () => null, run: () => setScheme("light") },

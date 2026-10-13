@@ -20,6 +20,8 @@ import folderPlus from "lucide-static/icons/folder-plus.svg" with { type: "text"
 import house from "lucide-static/icons/house.svg" with { type: "text" };
 import gitBranch from "lucide-static/icons/git-branch.svg" with { type: "text" };
 import gitBranchPlus from "lucide-static/icons/git-branch-plus.svg" with { type: "text" };
+import folderGit2 from "lucide-static/icons/folder-git-2.svg" with { type: "text" };
+import monitorPlay from "lucide-static/icons/monitor-play.svg" with { type: "text" };
 import globe from "lucide-static/icons/globe.svg" with { type: "text" };
 import monitor from "lucide-static/icons/monitor.svg" with { type: "text" };
 import smartphone from "lucide-static/icons/smartphone.svg" with { type: "text" };
@@ -98,7 +100,7 @@ const ICONS = {
   filePlus, fileDiff, folder, folderPlus, house, gitBranch, globe, monitor, openai, panelLeft, pencil, plug, plus, search, settings,
   squarePen, squareTerminal, star, triangleAlert, wrench, zap, maximize2, minimize2, gripVertical, trash2, messageCircle, messageCirclePlus,
   panelRight, folderTree, eye, eyeClosed, bookOpen, download, code, minus, externalLink, folderOpen, copyPlus, clipboardCopy, save, arrowDown, listFilter,
-  gitCompare, cloudUpload, smartphone, qrCode, cloud, gitCommitHorizontal, tag, gitBranchPlus, wrapText, squareSlash,
+  gitCompare, cloudUpload, smartphone, qrCode, cloud, gitCommitHorizontal, tag, gitBranchPlus, folderGit2, monitorPlay, wrapText, squareSlash,
 };
 
 export type IconName = keyof typeof ICONS;

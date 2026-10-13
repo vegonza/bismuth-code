@@ -176,8 +176,12 @@ button { cursor: pointer; }
 .row .line3 { margin-top: 2px; height: 16px; display: flex; align-items: center; gap: 6px; color: rgba(var(--muted-rgb), 0.75); font-weight: 500; font-size: calc(12px * var(--fs)); }
 .row .line3 .icon { width: 12px; height: 12px; flex: none; }
 .row .line3 .branch { flex: 1; min-width: 0; }
+/* The branch a worktree came off, before its name: it gives way first when the row is narrow. */
+.row .line3 .from { flex: 0 1 auto; min-width: 0; max-width: 45%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .row .line3 .grow { flex: 1; }
 .row .line3 .harness { width: 14px; height: 14px; opacity: 0.6; color: var(--muted); }
+/* The worktree the project folder previews (core/preview.ts). */
+.row .line3 .previewing { color: var(--accent); }
 .fade { overflow: hidden; white-space: nowrap; }
 .fade.clip { mask-image: linear-gradient(to right, #000 calc(100% - 20px), transparent); }
 
@@ -1294,10 +1298,17 @@ html[data-appearance="light"] .cmd-palette { background: color-mix(in srgb, var(
 .row.settled:not(.selected):not(:hover) :is(.project-icon, .monogram, .harness) { opacity: 0.4; }
 .row.settled:not(.selected):not(:hover) :is(.meta, .line3) { color: rgba(var(--muted-rgb), 0.5); }
 
-/* Restart bismuth: a status pill at the top while it checks, waits or restarts, and its dialogs. */
-.restart-toast { position: fixed; top: calc(var(--titlebar-h, 0px) + 12px); left: 50%; transform: translateX(-50%); z-index: 75; display: flex; align-items: center; gap: 10px; min-height: 36px; padding: 6px 8px 6px 14px; border-radius: 10px; border: 1px solid var(--hairline-12); background: var(--card-bg); -webkit-backdrop-filter: var(--frost); backdrop-filter: var(--frost); box-shadow: 0 12px 32px -8px rgba(0, 0, 0, 0.45); font-size: calc(13px * var(--fs)); color: var(--text); }
-.restart-toast .text { padding-right: 6px; }
-.restart-toast .s-action { height: 26px; padding: 0 10px; }
+/* The toast (toast.ts): a status pill at the top (Restart bismuth checking, waiting or restarting; a preview
+   switched); then Restart bismuth's dialogs. */
+.toast { position: fixed; top: calc(var(--titlebar-h, 0px) + 12px); left: 50%; transform: translateX(-50%); z-index: 75; display: flex; align-items: center; gap: 10px; min-height: 36px; padding: 6px 8px 6px 14px; border-radius: 10px; border: 1px solid var(--hairline-12); background: var(--card-bg); -webkit-backdrop-filter: var(--frost); backdrop-filter: var(--frost); box-shadow: 0 12px 32px -8px rgba(0, 0, 0, 0.45); font-size: calc(13px * var(--fs)); color: var(--text); }
+.toast .text { padding-right: 6px; }
+.toast .s-action { height: 26px; padding: 0 10px; }
+.toast.error .text { color: var(--danger); }
+/* A switched state (a preview): a small pill, icon and a name. */
+.toast.pill { min-height: 0; height: 28px; gap: 6px; padding: 0 12px 0 10px; border-radius: 14px; font-size: calc(12px * var(--fs)); }
+.toast.pill .text { padding-right: 0; }
+.toast.pill > .icon { color: var(--accent); }
+.toast .note { color: var(--muted); }
 .small-dialog { width: min(480px, calc(100vw - 48px)); }
 .restart-error { margin-top: 10px; max-height: 240px; overflow: auto; padding: 8px 10px; border-radius: 8px; background: rgba(var(--wash-rgb), 0.06); font: calc(11.5px * var(--fs)) / 1.5 var(--mono); color: var(--text); white-space: pre-wrap; }
 

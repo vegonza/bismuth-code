@@ -17,7 +17,8 @@ import { draftChanged, projectArt } from "./sidebar";
 import { prefs, workingCombo, type WorkingSend } from "./prefs";
 import { offScreen } from "./phone";
 import { failed as queueFailed, initQueue, queueOf, renderQueue, steerLatest } from "./queue";
-import { call, net, on, store, targetProject, tildePath } from "./store";
+import { call, net, on, persist, render, store, targetProject, tildePath } from "./store";
+import { warnIfPreviewing } from "./worktrees";
 import { sideChat } from "./sidechat";
 import { initContext, renderContext } from "./usage";
 import { keepHold } from "./transcript";
@@ -475,7 +476,12 @@ function submit(key = false, mod = false) {
   // A command waits for the running turn to end rather than cut into it.
   const how = workingSend(mod);
   if (store.thread && (how === "queue" || (how && store.queueSupported && /^\/(compact|goal)(\s|$)/.test(typed)))) net.send({ type: "queue.add", threadId: store.thread.id, text, settings: turnSettings() });
-  else net.send({ type: "send", threadId: store.thread?.id ?? null, projectId: project?.id ?? null, text, settings: turnSettings() });
+  else {
+    // A new session in a repository goes to a worktree of its own when that's picked.
+    const worktree = !store.thread && !!project && store.newWorktree && !!project.branch;
+    net.send({ type: "send", threadId: store.thread?.id ?? null, projectId: project?.id ?? null, text, settings: turnSettings(), ...(worktree ? { worktree } : {}) });
+  }
+  if (store.thread) warnIfPreviewing(store.thread.cwd);
   loadDraft("");
   setDraft(ownerKey(), "");
   draftChanged(ownerKey());
@@ -605,6 +611,26 @@ function chip(name: "folder" | "monitor" | "gitBranch", text: string): HTMLEleme
   const c = el("span", "chip");
   c.append(icon(name), el("span", "", text));
   return c;
+}
+
+/** Where a new session works: the project folder, or a worktree of its own made as it starts (core/worktrees.ts).
+ *  A click switches; the choice carries over to the next new session. */
+function worktreeChip(): HTMLElement {
+  const c = el("button", "chip pick");
+  const on = store.newWorktree;
+  const combo = prefs.keymap.toggleWorktree;
+  c.title = `${on ? "A new worktree of the project's repository, on a branch of its own" : "The project folder itself"} · switch with a click${combo ? ` or ${displayCombo(combo)}` : ""}`;
+  c.append(icon(on ? "folderGit2" : "folder"), el("span", "", on ? "New worktree" : "Project folder"));
+  c.onclick = toggleWorktreeMode;
+  return c;
+}
+
+/** On the new-session screen of a repository's project: New worktree ⇄ Project folder (the chip's switch). */
+export const canToggleWorktree = () => !store.thread && !store.opening && !!targetProject()?.branch;
+export function toggleWorktreeMode() {
+  store.newWorktree = !store.newWorktree;
+  persist();
+  render("composer");
 }
 
 /** The project a new session starts in; picking another opens the New session palette (Ctrl+O). */
@@ -775,7 +801,8 @@ export function initComposer() {
       setNewDraftProject(openNewDraft().id, targetProject()?.id ?? null);
       const branch = targetProject()?.branch;
       top.replaceChildren(projectChip(), chip("monitor", store.device || "This device"));
-      bottom.replaceChildren(...(branch ? [chip("gitBranch", branch)] : []));
+      // A repository's sessions can each have a worktree of their own (off the branch shown).
+      bottom.replaceChildren(...(branch ? [chip("gitBranch", branch), worktreeChip()] : []));
     }
     const chips = [top, bottom];
     if (routeChange && !reducedMotion()) {

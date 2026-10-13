@@ -11,7 +11,8 @@ import { pickerOpen } from "./picker";
 import { prefs } from "./prefs";
 import { setSettingsJumpHints, settingsOpen, toggleSettings } from "./settings";
 import { contextMenu, menuPoint, type Popover } from "./popover";
-import { actions, call, nav, on, persist, projectName, projectOf, render, store, tildePath } from "./store";
+import { actions, call, nav, on, persist, projectName, projectOf, render, store, tildePath, worktreeOf } from "./store";
+import { switchPreview } from "./worktrees";
 import { toggleViewMenu } from "./viewmenu";
 import { dialog } from "./widgets";
 
@@ -224,8 +225,21 @@ function row(t: ThreadSummary, grouped: boolean): HTMLElement {
   // With Branch and Harness both off, the card is two lines.
   if (v.branch || v.harness) {
     const line3 = el("div", "line3");
-    if (v.branch && t.branch) line3.append(icon("gitBranch"), faded("branch", t.branch));
+    // A worktree's session shows the branch it came off, then the worktree by its name (its own branch in the
+    // tooltip); the one the project folder previews says so.
+    const tree = worktreeOf(t.cwd);
+    if (v.branch && tree) {
+      const mark = icon("folderGit2");
+      mark.title = `Worktree ${tree.name}${tree.branch ? ` · ${tree.branch}` : ""}${tree.from ? `, off ${tree.from}` : ""}`;
+      if (tree.from) line3.append(icon("gitBranch"), el("span", "from", tree.from));
+      line3.append(mark, faded("branch", tree.name));
+    } else if (v.branch && t.branch) line3.append(icon("gitBranch"), faded("branch", t.branch));
     else line3.append(el("span", "grow"));
+    if (tree && projectOf(t.cwd)?.preview === tree.path) {
+      const shown = icon("monitorPlay", undefined, "previewing");
+      shown.title = "The project folder is showing this worktree";
+      line3.append(shown);
+    }
     if (v.harness) {
       const h = harnessIcon(t.harness, undefined, "harness");
       h.title = HARNESS_NAMES[t.harness];
@@ -396,7 +410,7 @@ function renderLists() {
     // A group per project, the one with the newest session first; projects without sessions still show. Settled
     // sessions stay in their project's group (under its active ones) instead of on the Settled shelf.
     const key = store.view.sort === "created" ? "createdAt" : "updatedAt";
-    const groups = store.projects.map((p) => ({ p, rows: all.filter((t) => t.cwd === p.path), drafts: drafts.filter((d) => d.projectId === p.id) }));
+    const groups = store.projects.map((p) => ({ p, rows: all.filter((t) => projectOf(t.cwd) === p), drafts: drafts.filter((d) => d.projectId === p.id) }));
     const at = (g: (typeof groups)[number]) => g.rows[0]?.[key] ?? 0;
     groups.sort((a, b) => at(b) - at(a) || a.p.createdAt - b.p.createdAt);
     sections = groups.map((g) => projectSection(g.p, g.rows, g.drafts));
@@ -604,9 +618,19 @@ function sessionMenu(t: ThreadSummary, r: HTMLElement, at: { x: number; y: numbe
     [
       { icon: "pencil", label: "Rename…", run: () => renameSession(t.id) },
       { icon: settled ? "rotateCcw" : "circleCheck", label: settled ? "Bring back" : "Settle", run: () => actions.settle(t.id, !settled) },
+      ...previewItems(t),
     ],
     { beside: r, onClose: () => (menu = null) },
   );
+}
+
+/** A worktree session's: its files in the project folder, or the folder's own back when it's the one shown. */
+function previewItems(t: ThreadSummary) {
+  const tree = worktreeOf(t.cwd);
+  const p = projectOf(t.cwd);
+  if (!tree || !p) return [];
+  const shown = p.preview === tree.path;
+  return [{ icon: shown ? "house" : "monitorPlay", label: shown ? "Stop preview" : "Preview in project folder", run: () => void switchPreview(p, shown ? null : tree.path) } as const];
 }
 
 let editing = false;

@@ -4,7 +4,7 @@ import { initUiSync, uiSyncHello, uiSyncRemote } from "./uisync"; // first: it s
 import type { ServerMessage, Thread, ThreadEvent, ThreadSummary, Turn } from "../shared/model";
 import { forgetStaged } from "./attachments";
 import { initBackground } from "./background";
-import { canRemoveImage, canStopTurn, closePicker, draft, initComposer, removeLastImage, stopTurn } from "./composer";
+import { canRemoveImage, canStopTurn, canToggleWorktree, closePicker, draft, initComposer, removeLastImage, stopTurn, toggleWorktreeMode } from "./composer";
 import { discardNewDraft, draftHasContent, isNewDraft, newDraft, openNewDraft, setDraft, setNewDraftProject, switchNewDraft } from "./drafts";
 import { $, el, firstLine } from "./dom";
 import { harnessIcon, icon } from "./icons";
@@ -18,8 +18,9 @@ import { usageArrived } from "./usagepage";
 import { isRestarting, restartMessage, restartNeeded } from "./restart";
 import { initPhone, initPhoneFrame, isPhone, onPhoneChange, sessionReady, showSession } from "./phone";
 import { initSidebar, jumpOrder, projectArt, renameSession, renaming, sessionOrder, toggleSidebar } from "./sidebar";
-import { actions, call, failCalls, nav, net, on, persist, projectName, projectOf, promptCount, promptsLike, render, setCurrentProject, settleCall, store, targetProject } from "./store";
+import { actions, branchOf, call, failCalls, nav, net, on, persist, projectName, projectOf, promptCount, promptsLike, render, setCurrentProject, settleCall, store, targetProject, worktreeOf } from "./store";
 import { initTheme } from "./theme";
+import { previewSession } from "./worktrees";
 import { closeTerminal, cycleTerminal, hideTerminal, initTerminal, newTerminal, terminalExit, terminalOutput, terminalsArrived, toggleMaximize, toggleTerminal } from "./terminal";
 import { initTranscript } from "./transcript";
 import { focusAddress, reloadPage, setAwake, wireLinks } from "./browser";
@@ -525,8 +526,13 @@ function renderHeader() {
   // The project, and the branch its folder is on unless that's the default one (the folder's current branch: where
   // the agent works now; the one the session started on if the project was removed).
   const target = el("span", "target", projectName(t.cwd));
-  const branch = projectOf(t.cwd)?.branch ?? t.branch;
-  if (branch && branch !== "main" && branch !== "master") target.append(icon("gitBranch"), el("span", "branch", branch));
+  // A worktree's session names the branch it came off and the worktree (its two-word name).
+  const tree = worktreeOf(t.cwd);
+  const branch = branchOf(t);
+  if (tree) {
+    if (tree.from) target.append(icon("gitBranch"), el("span", "branch", tree.from));
+    target.append(icon("folderGit2"), el("span", "branch", tree.name));
+  } else if (branch && branch !== "main" && branch !== "master") target.append(icon("gitBranch"), el("span", "branch", branch));
   // A phone's header is narrow: the project's icon leads it (as on the session list), not the harness's.
   bar.replaceChildren(isPhone() ? projectArt(projectOf(t.cwd) ?? null, t.cwd) : harnessIcon(t.harness), title, target);
   bar.title = t.title;
@@ -633,6 +639,8 @@ bindShortcut("removeImage", removeLastImage, () => !settingsOpen() && canRemoveI
 bindShortcut("stopTurn", stopTurn, () => !settingsOpen() && canStopTurn());
 bindShortcut("newBrowserTab", () => !settingsOpen() && openBrowser());
 bindShortcut("sideChat", () => !settingsOpen() && void newSideChat());
+bindShortcut("previewSession", () => !settingsOpen() && void previewSession());
+bindShortcut("toggleWorktree", toggleWorktreeMode, () => !settingsOpen() && canToggleWorktree());
 bindShortcut("focusAddress", focusAddress, () => !settingsOpen() && browsing());
 bindShortcut("reloadPage", reloadPage, () => !settingsOpen() && browsing());
 bindShortcut("newSession", () => actions.newThread());

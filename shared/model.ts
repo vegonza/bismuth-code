@@ -38,7 +38,25 @@ export type Project = {
   icon: boolean; // /project-icon?id= serves artwork from the folder
   createdAt: number; // ms
   lastUsedAt: number; // ms: a session last started in it
+  /** The worktrees bismuth made of the repository, whose sessions are the project's too. */
+  worktrees: Worktree[];
+  /** The worktree whose files the project folder shows now (Preview, core/preview.ts); null: its own. */
+  preview: string | null;
 };
+
+/** A git worktree bismuth made of a project's repository (core/worktrees.ts). `from`: the branch the project folder
+ *  was on when it was made (what it branched off), null when unknown. */
+export type Worktree = { path: string; name: string; branch: string | null; from: string | null };
+
+/** Settings → Worktrees: where new ones go (null: the default, `~/.bismuth/worktrees`), and what's cleaned up on its
+ *  own: worktrees whose sessions have all been idle `idleDays` (null: never), and ones whose branch is merged. */
+export type WorktreeSettings = { root: string | null; defaultRoot: string; idleDays: number | null; whenMerged: boolean };
+/** A worktree as Settings → Worktrees lists it: how many files it has changed (uncommitted), whether its branch is in the
+ *  default one, when anything last happened in it, and what stops it being cleaned up now (null: nothing). */
+export type WorktreeStatus = Worktree & { projectId: string; changed: number; merged: boolean; lastUsedAt: number | null; busy: string | null };
+/** A preview switch: the files written and deleted in the project folder, and the ones left as the folder had them
+ *  because they were changed there since (by a session in it, or by hand). */
+export type PreviewResult = { written: number; deleted: number; kept: string[] };
 
 /** One folder's subfolders, for the New project browser. */
 export type FolderListing = { path: string; home: string; parent: string | null; entries: { name: string; path: string; isRepo: boolean }[] };
@@ -290,7 +308,18 @@ export type RpcMethods = {
   "threads.promote": { params: { id: string }; result: null };
   "app.restart": { params: { mode: RestartMode }; result: RestartResult };
   "autoCompact.get": { params: {}; result: AutoCompactSnapshot };
-  "terminals.open": { params: { projectId: string; cols: number; rows: number }; result: TerminalInfo };
+  // cwd: where the shell starts, the project folder or one of its worktrees (the project folder when left out).
+  "terminals.open": { params: { projectId: string; cwd?: string; cols: number; rows: number }; result: TerminalInfo };
+  // Settings → Worktrees.
+  "worktrees.settings": { params: {}; result: WorktreeSettings };
+  "worktrees.setSettings": { params: Partial<Omit<WorktreeSettings, "defaultRoot">>; result: WorktreeSettings };
+  "worktrees.status": { params: {}; result: WorktreeStatus[] };
+  // Remove a worktree (its folder; its branch too when bismuth made it and it's merged).
+  "worktrees.remove": { params: { path: string }; result: null };
+  // Run the cleanup rules now: what was removed, and what was kept and why.
+  "worktrees.cleanup": { params: {}; result: { removed: string[]; kept: { path: string; reason: string }[] } };
+  // The project folder shows a worktree's files (path), or its own again (null).
+  "preview.set": { params: { projectId: string; path: string | null }; result: PreviewResult };
   "terminals.close": { params: { id: string }; result: null };
   // Reorder within its project's tabs.
   "terminals.move": { params: { id: string; index: number }; result: null };
@@ -444,7 +473,8 @@ export type ServerMessage =
 export type ClientMessage =
   | { type: "open"; threadId: string }
   // projectId: where a new session (threadId null) starts.
-  | { type: "send"; threadId: string | null; projectId: string | null; text: string; settings: TurnSettings }
+  // worktree: the new session gets a worktree of its own (core/worktrees.ts) off the project's branch.
+  | { type: "send"; threadId: string | null; projectId: string | null; text: string; settings: TurnSettings; worktree?: boolean }
   // Hold a prompt until the thread's turn ends (sent at once if none is running).
   | { type: "queue.add"; threadId: string; text: string; settings: TurnSettings }
   | { type: "interrupt"; threadId: string }

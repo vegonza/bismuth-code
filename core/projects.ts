@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import type { FolderListing, Project } from "../shared/model";
+import type { FolderListing, Project, Worktree } from "../shared/model";
 
 // settleBefore: sessions whose last activity is older than this start settled (set when the project is added, so
 // a folder with a long history doesn't flood the active list; Settle all moves it to now).
@@ -28,6 +28,8 @@ export class Projects {
   private stored: Stored[];
   /** Added, renamed or removed: the core re-sends projects and threads. */
   onChanged: () => void = () => {};
+  /** A project's worktrees and the one its folder shows (core/worktrees.ts, core/preview.ts). */
+  extras: (id: string, path: string) => { worktrees: Worktree[]; preview: string | null } = () => ({ worktrees: [], preview: null });
 
   constructor(stateDir: string, seed: string | null) {
     this.file = join(stateDir, "projects.json");
@@ -47,6 +49,7 @@ export class Projects {
       icon: !!this.iconPath(s.id),
       createdAt: s.createdAt,
       lastUsedAt: s.lastUsedAt,
+      ...this.extras(s.id, s.path),
     }));
   }
 

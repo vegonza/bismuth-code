@@ -1,5 +1,5 @@
 // UI state shared across modules. The core owns the truth; this mirrors what it sent plus local view state.
-import type { ClientMessage, HarnessInfo, ModelOption, Project, RpcMethods, Thread, ThreadQueue, ThreadSummary, TurnSettings } from "../shared/model";
+import type { ClientMessage, HarnessInfo, ModelOption, Project, RpcMethods, Thread, ThreadQueue, ThreadSummary, TurnSettings, Worktree } from "../shared/model";
 
 /** Sidebar view options (Zeron's "…" menu): grouping, sort, which row details show, compact rows. */
 export type ViewOptions = {
@@ -56,6 +56,8 @@ export const store = {
   /** Project groups folded shut in the sidebar (organized by project). */
   closedProjects: new Set<string>(JSON.parse(localStorage.getItem("bismuth.closedProjects") ?? "[]") as string[]),
   sidebarCollapsed: localStorage.getItem("bismuth.sidebarCollapsed") === "1",
+  /** New sessions get a worktree of their own (the new-session screen's Project folder / New worktree). */
+  newWorktree: localStorage.getItem("bismuth.newWorktree") === "1",
   error: null as string | null,
 };
 
@@ -66,8 +68,17 @@ export const promptCount = (t: Thread | null) => t?.turns.reduce((n, turn) => n 
 export const promptsLike = (t: Thread, text: string) =>
   t.turns.reduce((n, turn) => n + turn.items.filter((i) => i.kind === "user" && i.text.trim() === text.trim()).length, 0);
 
-/** The registered project a session's folder belongs to. */
-export const projectOf = (cwd: string | null | undefined) => (cwd ? (store.projects.find((p) => p.path === cwd) ?? null) : null);
+/** The registered project a session's folder belongs to: the project folder, or one of its worktrees. */
+export const projectOf = (cwd: string | null | undefined) =>
+  cwd ? (store.projects.find((p) => p.path === cwd) ?? store.projects.find((p) => p.worktrees.some((w) => w.path === cwd)) ?? null) : null;
+
+/** The worktree a session's folder is, if it's one of a project's (core/worktrees.ts). */
+export const worktreeOf = (cwd: string | null | undefined): Worktree | null =>
+  (cwd && store.projects.flatMap((p) => p.worktrees).find((w) => w.path === cwd)) || null;
+
+/** The branch a session works on now: its worktree's, else its project folder's (the one it started on when its
+ *  project is gone). */
+export const branchOf = (t: { cwd: string; branch: string | null }) => (worktreeOf(t.cwd) ?? projectOf(t.cwd))?.branch ?? t.branch;
 
 /** A session's project name, or its folder's when the project was removed. */
 export const projectName = (cwd: string | null | undefined) => projectOf(cwd)?.name ?? (cwd ? cwd.replace(/[\\/]+$/, "").split(/[\\/]/).pop()! : "");
@@ -100,6 +111,7 @@ export function persist() {
   localStorage.setItem("bismuth.settledOpen", store.settledOpen ? "1" : "0");
   localStorage.setItem("bismuth.closedProjects", JSON.stringify([...store.closedProjects]));
   localStorage.setItem("bismuth.sidebarCollapsed", store.sidebarCollapsed ? "1" : "0");
+  localStorage.setItem("bismuth.newWorktree", store.newWorktree ? "1" : "0");
   localStorage.setItem("bismuth.view", JSON.stringify(store.view));
 }
 

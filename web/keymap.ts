@@ -60,6 +60,8 @@ export const LABELS: Record<ShortcutId, string> = {
   jump8: "Jump to session 8",
   jump9: "Jump to session 9",
   newTerminal: "New terminal",
+  previewSession: "Preview session in its project folder",
+  toggleWorktree: "New session: project folder or new worktree",
   closeTerminal: "Close terminal",
   nextTerminal: "Next terminal",
   prevTerminal: "Previous terminal",

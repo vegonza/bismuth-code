@@ -27,12 +27,14 @@ import { RemoteAccessControl } from "./remote";
 import { Settlement } from "./settled";
 import { SideChats } from "./sidechats";
 import { Terminals } from "./terminals";
+import { Previews } from "./preview";
+import { Worktrees } from "./worktrees";
 import { SharedUiState } from "./uistate";
 import { MAX_UPLOAD_BYTES, Uploads } from "./uploads";
 import { VIEW_SERVER, Views } from "./views";
 import { Browser, BROWSER_SERVER } from "./browser";
 import * as ui from "./ui";
-import type { ClientMessage, HarnessId, HarnessInfo, McpSnapshot, ModelOption, RestartMode, RestartResult, RpcMethods, ServerMessage, Thread, ThreadSummary, TurnSettings, UsageReport } from "../shared/model";
+import type { ClientMessage, HarnessId, HarnessInfo, McpSnapshot, ModelOption, RestartMode, RestartResult, RpcMethods, ServerMessage, Thread, ThreadSummary, TurnSettings, UsageReport, WorktreeStatus } from "../shared/model";
 
 const PORT = Number(process.env.PORT ?? 7421);
 mkdirSync(ui.STATE, { recursive: true }); // a fresh checkout has none yet
@@ -78,7 +80,7 @@ function askWindow(ask: { op: "open"; session: string; url: string } | { op: "cl
 const runStarts = new Map<string, number>();
 /** A summary (or full thread) as clients see it: with its settlement, how long it's been running, and for a side chat
  *  its parent and its own title. */
-const settled = <T extends ThreadSummary>(t: T): T => ({ ...t, ...lineage(t.id), settledAt: settlement.settledAt(t, projects.settleBefore(t.cwd)), runningSince: runStarts.get(t.id) ?? null });
+const settled = <T extends ThreadSummary>(t: T): T => ({ ...t, ...lineage(t.id), settledAt: settlement.settledAt(t, projects.settleBefore(homeOf(t.cwd))), runningSince: runStarts.get(t.id) ?? null });
 function lineage(id: string): Partial<ThreadSummary> {
   const title = sideChats.title(id);
   return title === undefined ? {} : { parent: sideChats.parent(id), title: title ?? UNTITLED, forked: sideChats.forked(id) };
@@ -88,8 +90,97 @@ type SocketData = { kind: "app" | "live" | "cdp"; threadId: string | null; id: s
 type Client = ServerWebSocket<SocketData>;
 const clients = new Set<Client>();
 const live = new Set<Client>();
-/** The folders each window shows, watched for changes. */
+/** The folders each window shows, watched for changes (and the worktrees project folders preview). */
 const folders = new FolderWatch();
+
+// ---------------- worktrees ----------------
+// A project's worktrees (core/worktrees.ts) are part of it: their sessions are listed, settled and given MCP servers
+// as its own, and its terminals can start in them. Its folder can show one's files (core/preview.ts).
+const worktrees = new Worktrees(ui.STATE);
+const previews = new Previews(ui.STATE, folders);
+/** Each worktree's project folder, as last listed. */
+const homes = new Map<string, string>();
+/** The project folder a session folder belongs to: itself, or the project whose worktree it is. */
+const homeOf = (cwd: string) => homes.get(cwd) ?? cwd;
+/** A project's worktrees, other than folders registered as projects of their own. */
+function worktreesOf(path: string) {
+  const own = new Set(projects.paths());
+  return worktrees.list(path).filter((w) => !own.has(w.path));
+}
+projects.extras = (id, path) => ({ worktrees: worktreesOf(path), preview: previews.of(id) });
+/** Every folder sessions are listed from: the projects' and their worktrees'. */
+function sessionFolders(): string[] {
+  const out = projects.paths();
+  for (const path of projects.paths())
+    for (const w of worktreesOf(path)) {
+      homes.set(w.path, path);
+      out.push(w.path);
+    }
+  return out;
+}
+const broadcastProjects = () => broadcast({ type: "projects", projects: projects.list() });
+previews.onChanged = broadcastProjects;
+/** The project a worktree belongs to (it must be one of a registered project's). */
+function projectOfWorktree(path: string) {
+  sessionFolders();
+  const home = homes.get(path);
+  const project = home ? projects.list().find((p) => p.path === home) : null;
+  if (!project) throw new Error("That worktree isn't one of a project's");
+  return project;
+}
+
+/** Why a worktree can't go now (null: nothing keeps it): a session running in it, a shell open in it, or the project
+ *  folder showing it. */
+function worktreeBusy(projectId: string, path: string): string | null {
+  if ([...running.keys()].some((id) => cwds.get(id) === path)) return "A session is running in it";
+  if (terminals.list().some((t) => t.cwd === path && t.exitCode === null)) return "A terminal is open in it";
+  if (previews.of(projectId) === path) return "The project folder is showing it";
+  return null;
+}
+
+async function worktreeStatus(): Promise<WorktreeStatus[]> {
+  const threads = await threadList().catch(() => [] as ThreadSummary[]);
+  const out: WorktreeStatus[] = [];
+  for (const p of projects.list())
+    for (const w of p.worktrees) {
+      const used = threads.filter((t) => t.cwd === w.path).map((t) => t.updatedAt);
+      out.push({ ...w, projectId: p.id, ...(await worktrees.state(p.path, w)), lastUsedAt: used.length ? Math.max(...used) : worktrees.touchedAt(w.path), busy: worktreeBusy(p.id, w.path) });
+    }
+  return out;
+}
+
+async function removeWorktree(path: string) {
+  const project = projectOfWorktree(path);
+  if ([...running.keys()].some((id) => cwds.get(id) === path)) throw new Error("A session is running in it: stop it first");
+  await previews.release(path);
+  for (const t of terminals.list()) if (t.cwd === path) terminals.close(t.id);
+  await worktrees.remove(project.path, path);
+  homes.delete(path);
+  projects.onChanged();
+}
+
+/** The cleanup rules (Settings → Worktrees), run hourly while any is on, and on request. */
+async function cleanupWorktrees() {
+  const removed: string[] = [];
+  const kept: { path: string; reason: string }[] = [];
+  for (const s of await worktreeStatus()) {
+    const project = projects.get(s.projectId)!;
+    const v = await worktrees.verdict(project.path, s, s.busy, s.lastUsedAt);
+    if (!v.remove) {
+      kept.push({ path: s.path, reason: v.reason });
+      continue;
+    }
+    try {
+      await removeWorktree(s.path);
+      removed.push(s.path);
+    } catch (err: any) {
+      kept.push({ path: s.path, reason: String(err?.message ?? err) });
+    }
+  }
+  return { removed, kept };
+}
+const CLEANUP_EVERY_MS = 60 * 60_000;
+setInterval(() => worktrees.cleaning() && void cleanupWorktrees().catch((err) => console.error("[worktrees] cleanup failed:", err?.message ?? err)), CLEANUP_EVERY_MS);
 const send = (ws: Client, msg: ServerMessage) => ws.send(JSON.stringify(msg));
 const broadcast = (msg: ServerMessage) => {
   for (const c of clients) send(c, msg);
@@ -229,7 +320,7 @@ const ready = Promise.all(harnesses.map(startHarness)).then(() => updates.start(
 async function threadList(): Promise<ThreadSummary[]> {
   const lists = await Promise.all(
     harnesses.filter((h) => status.get(h.id)!.available).map((h) =>
-      h.listThreads(projects.paths()).catch((err) => {
+      h.listThreads(sessionFolders()).catch((err) => {
         console.error(`[${h.id}] listing threads failed:`, err?.message ?? err);
         return [] as ThreadSummary[];
       }),
@@ -276,7 +367,18 @@ async function handle(ws: Client, msg: ClientMessage) {
         const project = msg.projectId ? projects.get(msg.projectId) : null;
         if (!project) throw new Error("Pick a project for the new session first");
         projects.touch(project.id);
-        const thread = await h.newThread(msg.settings, project.path);
+        let cwd = project.path;
+        if (msg.worktree) {
+          cwd = (await worktrees.create(project.path)).path;
+          homes.set(cwd, project.path);
+          // Before the session: windows place it under its project by the worktree it's in.
+          broadcastProjects();
+        }
+        const thread = await h.newThread(msg.settings, cwd).catch(async (err) => {
+          // A worktree made for a session that couldn't start goes again.
+          if (cwd !== project.path) await worktrees.remove(project.path, cwd).then(broadcastProjects, () => {});
+          throw err;
+        });
         owner.set(thread.id, h);
         cwds.set(thread.id, thread.cwd);
         threadId = thread.id;
@@ -492,14 +594,38 @@ async function rpc<M extends keyof RpcMethods>(method: M, params: RpcMethods[M][
     case "projects.rename":
       projects.rename(String(p.id), p.name == null ? null : String(p.name));
       return null;
-    case "projects.remove":
+    case "projects.remove": {
+      const project = projects.get(String(p.id));
+      // A folder showing a worktree gets its own files back first.
+      if (project) await previews.show(project.id, project.path, null).catch((err) => console.error("[preview]", err?.message ?? err));
       terminals.closeProject(String(p.id));
       projects.remove(String(p.id));
       return null;
+    }
     case "terminals.open": {
       const project = projects.get(String(p.projectId));
       if (!project) throw new Error("unknown project");
-      return terminals.open(project.id, project.path, Number(p.cols), Number(p.rows));
+      // In the project folder, or in one of its worktrees (a worktree session's new terminal).
+      const cwd = p.cwd && p.cwd !== project.path && worktreesOf(project.path).some((w) => w.path === p.cwd) ? String(p.cwd) : project.path;
+      return terminals.open(project.id, cwd, Number(p.cols), Number(p.rows));
+    }
+    case "worktrees.settings":
+      return worktrees.settings();
+    case "worktrees.setSettings":
+      return worktrees.setSettings(p);
+    case "worktrees.status":
+      return worktreeStatus();
+    case "worktrees.remove":
+      await removeWorktree(String(p.path));
+      return null;
+    case "worktrees.cleanup":
+      return cleanupWorktrees();
+    case "preview.set": {
+      const project = projects.get(String(p.projectId));
+      if (!project) throw new Error("That project is gone");
+      const target = p.path == null ? null : String(p.path);
+      if (target && !worktreesOf(project.path).some((w) => w.path === target)) throw new Error("That isn't one of the project's worktrees");
+      return previews.show(project.id, project.path, target);
     }
     case "terminals.close":
       terminals.close(String(p.id));
@@ -663,7 +789,7 @@ async function rpc<M extends keyof RpcMethods>(method: M, params: RpcMethods[M][
       if (!project) throw new Error(`unknown project ${p.id}`);
       projects.settleAll(project.id);
       const before = await threadList();
-      settlement.clearActive(before.filter((t) => t.cwd === project.path).map((t) => t.id));
+      settlement.clearActive(before.filter((t) => homeOf(t.cwd) === project.path).map((t) => t.id));
       broadcast({ type: "threads", threads: await threadList() });
       return null;
     }
@@ -740,13 +866,15 @@ const builtins = (): McpBuiltin[] => [
 /** What a harness's runs in a project get (without a switch for it there, nothing to read), and bismuth's own server
  *  for views (core/views.ts) unless it's switched off. */
 async function mcpPlan(cwd: string, h: HarnessId): Promise<McpPlan> {
-  const plan: McpPlan = Object.keys(mcp.get(cwd, h)).length ? mcp.plan(cwd, h, await mcpListings(cwd, false)) : { off: [], on: [], add: {} };
-  return mcp.builtinOn(cwd, h, VIEW_SERVER) ? { ...plan, add: { ...plan.add, [VIEW_SERVER]: views.server(cwd) } } : plan;
+  // A worktree's sessions take its project's switches; views render from the session's own folder.
+  const home = homeOf(cwd);
+  const plan: McpPlan = Object.keys(mcp.get(home, h)).length ? mcp.plan(home, h, await mcpListings(home, false)) : { off: [], on: [], add: {} };
+  return mcp.builtinOn(home, h, VIEW_SERVER) ? { ...plan, add: { ...plan.add, [VIEW_SERVER]: views.server(cwd) } } : plan;
 }
 
 /** The servers a session's runs get of their own: the browser's, its session's tabs (core/browser.ts). */
 function sessionMcp(cwd: string, h: HarnessId, key: string): Record<string, McpDef> {
-  return browser.available && mcp.builtinOn(cwd, h, BROWSER_SERVER) ? { [BROWSER_SERVER]: browser.server(cwd, key) } : {};
+  return browser.available && mcp.builtinOn(homeOf(cwd), h, BROWSER_SERVER) ? { [BROWSER_SERVER]: browser.server(cwd, key) } : {};
 }
 
 function usageReport(days: number): Promise<UsageReport> {
@@ -1043,6 +1171,12 @@ process.on("exit", () => {
 for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(sig, () => process.exit(0));
 
 console.log(`bismuth (${projects.paths().length} projects)\nopen http://${server.hostname}:${server.port}`);
+
+// Previews carry on from before the restart (a worktree gone gives its folder its own files back).
+previews.resume((id, path) => {
+  const project = projects.get(id);
+  return !!project && worktreesOf(project.path).some((w) => w.path === path);
+});
 
 // Under the desktop shell, stdin is a pipe from Electron: when it closes (app quit or crash), shut down too.
 if (process.env.BISMUTH_DESKTOP) {

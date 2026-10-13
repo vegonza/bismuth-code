@@ -12,7 +12,7 @@ export type BackgroundEffect = "none" | "dither" | "ascii" | "halftone" | "scanl
  *  was dragged, in lengths of the image (background.ts `place`). */
 export type Framing = { focalX: number; focalY: number; zoom: number; shiftX?: number; shiftY?: number };
 
-export const SHORTCUTS = ["toggleSidebar", "toggleRightPane", "expandRightPane", "toggleFiles", "showChanges", "showReview", "toggleTerminal", "newSession", "newSessionIn", "openModelPicker", "nextSession", "prevSession", "settleSession", "renameSession", "jump1", "jump2", "jump3", "jump4", "jump5", "jump6", "jump7", "jump8", "jump9", "newTerminal", "closeTerminal", "nextTerminal", "prevTerminal", "maximizeTerminal", "closeFile", "reopenFile", "saveFile", "togglePreview", "goBack", "goForward", "toggleHiddenFiles", "expandFolders", "collapseFolders", "revealFile", "quickOpen", "tab1", "tab2", "tab3", "tab4", "tab5", "tab6", "tab7", "tab8", "tab9", "removeImage", "stopTurn", "newBrowserTab", "focusAddress", "reloadPage", "sideChat"] as const;
+export const SHORTCUTS = ["toggleSidebar", "toggleRightPane", "expandRightPane", "toggleFiles", "showChanges", "showReview", "toggleTerminal", "newSession", "newSessionIn", "openModelPicker", "nextSession", "prevSession", "settleSession", "renameSession", "jump1", "jump2", "jump3", "jump4", "jump5", "jump6", "jump7", "jump8", "jump9", "newTerminal", "closeTerminal", "nextTerminal", "prevTerminal", "maximizeTerminal", "closeFile", "reopenFile", "saveFile", "togglePreview", "goBack", "goForward", "toggleHiddenFiles", "expandFolders", "collapseFolders", "revealFile", "quickOpen", "tab1", "tab2", "tab3", "tab4", "tab5", "tab6", "tab7", "tab8", "tab9", "removeImage", "stopTurn", "newBrowserTab", "focusAddress", "reloadPage", "sideChat", "previewSession", "toggleWorktree"] as const;
 export type ShortcutId = (typeof SHORTCUTS)[number];
 /** Shortcuts that act on the terminal drawer. They may share a combination with one that acts on the session
  *  (Next terminal and Next session are both Mod+Tab): while a terminal has focus its own wins, elsewhere the
@@ -91,6 +91,10 @@ export const DEFAULT_KEYMAP: Keymap = {
   reloadPage: "f5",
   // A side chat off the open session, as a tab of the right panel (sidechat.ts).
   sideChat: "mod-alt-s",
+  // The project folder shows the open worktree session's files (web/worktrees.ts); from a project folder session, its own.
+  previewSession: "mod-shift-r",
+  // The new-session screen's Project folder / New worktree.
+  toggleWorktree: "mod-.",
 };
 
 export type Prefs = {

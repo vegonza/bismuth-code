@@ -2,12 +2,12 @@
 // under the desktop shell; the window reconnects and reloads into the new build (the draft survives, as with any
 // reload). Running sessions are never stopped without asking: restart when they finish, or now.
 import type { RestartResult, ServerMessage } from "../shared/model";
-import { el, miniSpinner } from "./dom";
+import { el } from "./dom";
 import { restartNeededBanner } from "./notify";
 import { call } from "./store";
+import { hideToast, showToast as toast } from "./toast";
 import { action, dialog } from "./widgets";
 
-let toast: HTMLElement | null = null;
 /** The core is going down on purpose: the window shouldn't report a lost connection. */
 let restarting = false;
 export const isRestarting = () => restarting;
@@ -54,16 +54,7 @@ export function restartNeeded(files: string[]) {
 }
 
 function showToast(text: string, busy: boolean, ...actions: HTMLElement[]) {
-  toast?.remove();
-  toast = el("div", "restart-toast");
-  if (busy) toast.append(miniSpinner());
-  toast.append(el("span", "text", text), ...actions);
-  document.body.append(toast);
-}
-
-function hideToast() {
-  toast?.remove();
-  toast = null;
+  toast(text, { busy, actions });
 }
 
 function confirmRunning(n: number) {

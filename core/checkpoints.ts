@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { BRANCH, UNPUSHED } from "../shared/model";
 
 /** Who the snapshots' commits are by, so they're made without the user's git identity (which may be unset). */
-const AUTHOR = { GIT_AUTHOR_NAME: "bismuth", GIT_AUTHOR_EMAIL: "bismuth@localhost", GIT_COMMITTER_NAME: "bismuth", GIT_COMMITTER_EMAIL: "bismuth@localhost" };
+export const AUTHOR = { GIT_AUTHOR_NAME: "bismuth", GIT_AUTHOR_EMAIL: "bismuth@localhost", GIT_COMMITTER_NAME: "bismuth", GIT_COMMITTER_EMAIL: "bismuth@localhost" };
 
 async function git(cwd: string, args: string[], env: Record<string, string> = {}): Promise<{ ok: boolean; out: string }> {
   try {
@@ -108,7 +108,7 @@ async function pushedCommit(dir: string): Promise<string | null> {
 
 /** The default branch: origin's, else origin's or a local main or master, as its ref and its name. Null when there's
  *  none of them. */
-async function defaultBranch(dir: string): Promise<{ ref: string; name: string } | null> {
+export async function defaultBranch(dir: string): Promise<{ ref: string; name: string } | null> {
   const wanted = ["refs/remotes/origin/HEAD", "refs/remotes/origin/main", "refs/remotes/origin/master", "refs/heads/main", "refs/heads/master"];
   const { ok, out } = await git(dir, ["for-each-ref", "--format=%(refname) %(symref)", ...wanted]);
   if (!ok) return null;

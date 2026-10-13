@@ -20,7 +20,7 @@ import { comboFromEvent, displayCombo, keyContext, shellKeeps, shortcutFor } fro
 import { animator, EASE_OUT, reducedMotion } from "./motion";
 import { isPhone } from "./phone";
 import { onPrefs, prefs } from "./prefs";
-import { call, net, on, projectOf, store, targetProject } from "./store";
+import { call, net, on, projectOf, store, targetProject, tildePath, worktreeOf } from "./store";
 import { activeTheme, onTheme, terminalPalette } from "./theme";
 
 const TAB_W = 118;
@@ -83,7 +83,12 @@ function activeId(projectId: string): string | null {
 }
 /** A program's own title (vim, htop, an agent CLI) names the tab; the shell's default "user@host:cwd" is the same
  *  for every tab of a project, so those keep "Terminal N". */
-const titleOf = (v: View | undefined, t: TerminalInfo) => (v?.title && !/^[^@\s]+@[^:\s]+:/.test(v.title) ? v.title : `Terminal ${t.n}`);
+const titleOf = (v: View | undefined, t: TerminalInfo) => (v?.title && !/^[^@\s]+@[^:\s]+:/.test(v.title) ? v.title : `${worktreeName(t) ?? "Terminal"} ${t.n}`);
+/** The worktree a terminal started in (a worktree session's), by name; null for the project folder's. */
+function worktreeName(t: TerminalInfo): string | null {
+  const p = store.projects.find((x) => x.id === t.projectId);
+  return p && t.cwd !== p.path ? (p.worktrees.find((w) => w.path === t.cwd)?.name ?? t.cwd.split("/").pop() ?? null) : null;
+}
 
 // ---------------- xterm ----------------
 
@@ -244,7 +249,9 @@ async function newTab(projectId: string) {
   const v = views.get(activeId(projectId) ?? "");
   pendingOpen.add(projectId);
   try {
-    const info = await call("terminals.open", { projectId, cols: v?.term.cols ?? 80, rows: v?.term.rows ?? 24 });
+    // A worktree session's new terminal starts in its worktree (still one of the project's tabs).
+    const cwd = store.thread && worktreeOf(store.thread.cwd) ? store.thread.cwd : undefined;
+    const info = await call("terminals.open", { projectId, ...(cwd ? { cwd } : {}), cols: v?.term.cols ?? 80, rows: v?.term.rows ?? 24 });
     saved.active[projectId] = info.id;
     persist();
     if (!infos.some((t) => t.id === info.id)) infos = [...infos, info];
@@ -491,7 +498,7 @@ function renderBar() {
     const v = views.get(t.id);
     const tab = el("div", `term-tab${t.id === active ? " active" : ""}${t.exitCode !== null ? " exited" : ""}`);
     tab.dataset.id = t.id;
-    tab.title = `${titleOf(v, t)}${t.exitCode !== null ? ` · exited ${t.exitCode}` : ""}`;
+    tab.title = `${titleOf(v, t)}${worktreeName(t) ? ` · ${tildePath(t.cwd)}` : ""}${t.exitCode !== null ? ` · exited ${t.exitCode}` : ""}`;
     const close = el("button", "term-close");
     close.title = "Close terminal";
     close.append(icon("x"));
@@ -500,7 +507,7 @@ function renderBar() {
       e.stopPropagation();
       closeTab(t.id);
     };
-    tab.append(icon("squareTerminal", undefined, "glyph"), el("span", "label", titleOf(v, t)), close);
+    tab.append(icon(worktreeName(t) ? "folderGit2" : "squareTerminal", undefined, "glyph"), el("span", "label", titleOf(v, t)), close);
     // Middle click closes (Zeron §1.10).
     tab.onauxclick = (e) => e.button === 1 && (e.preventDefault(), closeTab(t.id));
     tab.onmousedown = (e) => e.button === 1 && e.preventDefault(); // no autoscroll
