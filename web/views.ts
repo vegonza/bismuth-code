@@ -5,7 +5,7 @@
 // theme's light/dark as it changes. A plain HTML view (a project with no view build of its own) is part of the reply:
 // borderless, in bismuth's theme variables and fonts, sent to it when it says hello. A view rendered at a viewport
 // width (`width`: a desktop layout's breakpoints) lays out at that width and is scaled down to fit the row.
-import { el } from "./dom";
+import { $, el } from "./dom";
 import { openCitedPath } from "./refs";
 import { activeTheme, onTheme, themeVars } from "./theme";
 
@@ -94,6 +94,38 @@ const scaled = new ResizeObserver((entries) => {
   });
 });
 
+/** A frame's page is loaded only near the view, and let go again once well away from it: a long thread can hold dozens,
+ *  each a whole app. Meanwhile the frame keeps the size its view last reported, so nothing moves. */
+let near: IntersectionObserver | null = null;
+let far: IntersectionObserver | null = null;
+function watch(frame: HTMLIFrameElement) {
+  const root = $("scroller");
+  near ??= new IntersectionObserver(
+    (entries) => {
+      for (const { target, isIntersecting } of entries) {
+        const frame = target as HTMLIFrameElement;
+        if (!isIntersecting || frame.dataset.loaded) continue;
+        frame.dataset.loaded = "1";
+        frame.src = `/view/${frame.dataset.view}?theme=${theme()}`;
+      }
+    },
+    { root, rootMargin: "100% 0px" },
+  );
+  far ??= new IntersectionObserver(
+    (entries) => {
+      for (const { target, isIntersecting } of entries) {
+        const frame = target as HTMLIFrameElement;
+        if (isIntersecting || !frame.dataset.loaded) continue;
+        delete frame.dataset.loaded;
+        frame.src = "about:blank";
+      }
+    },
+    { root, rootMargin: "300% 0px" },
+  );
+  near.observe(frame);
+  far.observe(frame);
+}
+
 export function viewFrame(id: string, title: string, viewport: number | null = null): HTMLElement {
   const box = el("div", "uiview-box");
   const frame = el("iframe", "uiview");
@@ -101,7 +133,7 @@ export function viewFrame(id: string, title: string, viewport: number | null = n
   frame.title = title;
   frame.dataset.view = id;
   frame.classList.toggle("plain", plainViews.has(id));
-  frame.src = `/view/${id}?theme=${theme()}`;
+  watch(frame);
   box.append(frame);
   if (viewport) {
     frame.dataset.viewport = String(viewport);

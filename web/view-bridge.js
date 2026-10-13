@@ -11,6 +11,23 @@
 (() => {
   const d = document.documentElement;
   const plain = d.hasAttribute("data-bismuth-plain");
+  // A page focusing a field or scrolling something into view as it loads (React's autoFocus, a chat scrolled to its
+  // last message) would scroll the transcript to the frame, wherever the view is, and take the focus from the
+  // composer: the window's scroller is the frame's too. Until the user acts on the view, both are left undone.
+  const acting = () => document.hasFocus() || navigator.userActivation?.isActive;
+  for (const proto of [HTMLElement.prototype, SVGElement.prototype]) {
+    const focus = proto.focus;
+    proto.focus = function (...args) {
+      if (acting()) focus.apply(this, args);
+    };
+  }
+  for (const name of ["scrollIntoView", "scrollIntoViewIfNeeded"]) {
+    const scroll = Element.prototype[name];
+    if (scroll)
+      Element.prototype[name] = function (...args) {
+        if (acting()) scroll.apply(this, args);
+      };
+  }
   if (plain) {
     const base = document.createElement("style");
     // bismuth's default theme, until the window sends the user's (and in a screenshot, which has no window).

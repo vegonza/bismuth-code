@@ -97,12 +97,23 @@ function buildRows(thread: Thread): Row[] {
     let replyStart = true;
     let group: Extract<Row, { kind: "group" }> | null = null;
     const firstRowIx = rows.length;
+    // A view the agent rendered again under the same title (the next view it showed, no prompt between) is its fix
+    // of that one after seeing it: only the last is shown, the ones before stay a call in the activity.
+    const redone = new Set<string>();
+    let lastView = null as { id: string; title: string } | null;
+    for (const item of turn.items) {
+      if (item.kind === "user") lastView = null;
+      const view = item.kind === "tool" ? viewOf(item) : null;
+      if (!view) continue;
+      if (lastView?.title === view.title) redone.add(lastView.id);
+      lastView = { id: item.id, title: view.title };
+    }
     for (const item of turn.items) {
       if (item.kind === "user") {
         group = null;
         push({ kind: "user", key: item.id, item, ts: turn.startedAt }, true);
         replyStart = true;
-      } else if (item.kind === "tool" && viewOf(item)) {
+      } else if (item.kind === "tool" && !redone.has(item.id) && viewOf(item)) {
         // A view the agent rendered: its own row, out of the activity around it, like a question.
         group = null;
         push({ kind: "view", key: item.id, ...viewOf(item)! }, replyStart);
