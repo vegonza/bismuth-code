@@ -1266,7 +1266,8 @@ function toItem(i: C.ThreadItem, done: boolean, threadId: string): Item | null {
     case "exitedReviewMode":
       return { id: i.id, kind: "notice", text: "Exited review mode" };
     case "imageView":
-      return { id: i.id, kind: "notice", text: `Viewed image ${i.path}` };
+      // A tool call like any other (Codex's `view_image`), folded into the turn's group.
+      return { id: i.id, kind: "tool", name: "view_image", input: json({ path: i.path }), output: "", status: "completed" };
     default:
       // hookPrompt, functionCallOutput, sleep, imageGeneration: not shown yet.
       return null;
