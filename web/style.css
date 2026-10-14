@@ -454,10 +454,10 @@ html.wrap-code .code-block pre { white-space: pre-wrap; overflow-wrap: anywhere;
 .dock { position: absolute; left: 0; width: var(--main-w); bottom: var(--terminal-h, 0px); padding: 0 48px 16px; display: flex; flex-direction: column; align-items: center; pointer-events: none; z-index: 8; }
 .dock > * { pointer-events: auto; }
 .dock .stack { position: relative; width: 100%; max-width: var(--content-w); display: flex; flex-direction: column; }
-/* The underlay the transcript scrolls under: the stack's own width and down to the dock's bottom, fading in over
-   24px above and at the sides. Anything wider than the column (a view) carries on past it to the window's edge
-   instead of being cut straight across. */
-.dock .stack::before { content: ""; position: absolute; z-index: -1; top: -24px; left: calc(-1 * var(--under-x)); right: calc(-1 * var(--under-x)); bottom: calc(-1 * var(--dock-pb)); background: var(--main); mask-image: linear-gradient(transparent, #000 24px), linear-gradient(to right, transparent, #000 var(--under-x), #000 calc(100% - var(--under-x)), transparent); mask-composite: intersect; pointer-events: none; }
+/* The underlay the transcript scrolls under: the stack's own shape with a soft shadow of the background around it,
+   down to the dock's bottom (clipped there). Anything wider than the column (a view) carries on past it to the
+   window's edge instead of being cut straight across, and the halo's corners round off like a shadow's. */
+.dock .stack::before { content: ""; position: absolute; z-index: -1; inset: 0 0 calc(-1 * var(--dock-pb) - 64px); border-radius: 14px; background: var(--main); box-shadow: 0 0 var(--under-x) calc(var(--under-x) / 2) var(--main); clip-path: inset(-64px -64px 64px -64px); pointer-events: none; }
 .dock { --under-x: 24px; --dock-pb: 16px; }
 .ring-chip { position: relative; height: 24px; padding: 0 6px; border-radius: 6px; display: flex; align-items: center; gap: 5px; font-size: calc(11px * var(--fs)); color: var(--muted); font-variant-numeric: tabular-nums; transition: background-color 0.15s cubic-bezier(0.4, 0, 0.2, 1); --arc: var(--muted); }
 .ring-chip:hover { background: rgba(var(--ink-rgb), 0.05); }
