@@ -14,10 +14,39 @@ import { activeTheme, onTheme, themeVars } from "./theme";
 export const isViewTool = (name: string) => name === "bismuth-preview · render" || name === "bismuth · render";
 const MIN_H = 40;
 const MAX_H = 900;
-/** Sizes views last reported, so a frame built again (a re-render, coming back to the thread) opens at its size. */
-const sizes = new Map<string, { width: number | null; height: number }>();
+/** Sizes views last reported, so a frame built again (a re-render, coming back to the thread, a reload) opens at its
+ *  size and the transcript doesn't move as its page loads. Kept in localStorage, the most recently seen last. */
+const SIZES_KEY = "bismuth.viewSizes";
+const KEEP = 1000;
+type Size = { width: number | null; height: number };
+const sizes = new Map<string, Size>();
 /** Views known to be plain HTML, so a frame built again opens borderless. */
 const plainViews = new Set<string>();
+try {
+  for (const [id, [width, height, plain]] of Object.entries(JSON.parse(localStorage.getItem(SIZES_KEY) ?? "{}") as Record<string, [number | null, number, 1?]>)) {
+    sizes.set(id, { width, height });
+    if (plain) plainViews.add(id);
+  }
+} catch {}
+let saving = 0;
+function remember(id: string, size: Size) {
+  sizes.delete(id);
+  sizes.set(id, size);
+  for (const old of sizes.keys()) {
+    if (sizes.size <= KEEP) break;
+    sizes.delete(old);
+    plainViews.delete(old);
+  }
+  clearTimeout(saving);
+  saving = window.setTimeout(() => {
+    const out: Record<string, [number | null, number, 1?]> = {};
+    for (const [id, { width, height }] of sizes) out[id] = plainViews.has(id) ? [width, height, 1] : [width, height];
+    localStorage.setItem(SIZES_KEY, JSON.stringify(out));
+  }, 500);
+}
+/** How long a loading page may report less than its view's known size (a script-built page is empty at first) before
+ *  that's taken as its size. */
+const SETTLE_MS = 1500;
 const frames = () => document.querySelectorAll<HTMLIFrameElement>("iframe.uiview");
 
 const theme = () => (activeTheme().appearance === "dark" ? "dark" : "light");
@@ -95,7 +124,8 @@ const scaled = new ResizeObserver((entries) => {
 });
 
 /** A frame's page is loaded only near the view, and let go again once well away from it: a long thread can hold dozens,
- *  each a whole app. Meanwhile the frame keeps the size its view last reported, so nothing moves. */
+ *  each a whole app. Meanwhile the frame keeps the size its view last reported, so nothing moves, and pulses as a
+ *  skeleton until its page has reported a size. */
 let near: IntersectionObserver | null = null;
 let far: IntersectionObserver | null = null;
 function watch(frame: HTMLIFrameElement) {
@@ -106,6 +136,7 @@ function watch(frame: HTMLIFrameElement) {
         const frame = target as HTMLIFrameElement;
         if (!isIntersecting || frame.dataset.loaded) continue;
         frame.dataset.loaded = "1";
+        frame.classList.add("loading");
         frame.src = `/view/${frame.dataset.view}?theme=${theme()}`;
       }
     },
@@ -117,6 +148,7 @@ function watch(frame: HTMLIFrameElement) {
         const frame = target as HTMLIFrameElement;
         if (isIntersecting || !frame.dataset.loaded) continue;
         delete frame.dataset.loaded;
+        frame.classList.add("loading");
         frame.src = "about:blank";
       }
     },
@@ -128,7 +160,7 @@ function watch(frame: HTMLIFrameElement) {
 
 export function viewFrame(id: string, title: string, viewport: number | null = null): HTMLElement {
   const box = el("div", "uiview-box");
-  const frame = el("iframe", "uiview");
+  const frame = el("iframe", "uiview loading");
   frame.sandbox.add("allow-scripts");
   frame.title = title;
   frame.dataset.view = id;
@@ -146,7 +178,7 @@ export function viewFrame(id: string, title: string, viewport: number | null = n
 
 /** `--w`: the frame's width with its border (style.css keeps it within the row and lines a narrow one up with the text).
  *  A frame at a viewport width keeps that width and is scaled to the box, which takes the scaled height. */
-function fit(box: HTMLElement, frame: HTMLIFrameElement, size: { width: number | null; height: number }) {
+function fit(box: HTMLElement, frame: HTMLIFrameElement, size: Size) {
   const border = frame.classList.contains("plain") ? 0 : 2;
   const viewport = Number(frame.dataset.viewport);
   if (!viewport) {
@@ -172,8 +204,15 @@ addEventListener("message", (e) => {
     const plain = e.data.plain === true;
     frame.classList.toggle("plain", plain);
     if (plain) plainViews.add(frame.dataset.view!);
+    else plainViews.delete(frame.dataset.view!);
     const size = sizes.get(frame.dataset.view!);
     if (size) fit(frame.parentElement!, frame, size);
+    // A page loading where its view's size is known keeps that size a moment, until it has built up to it.
+    if (size) {
+      const settle = String(Date.now());
+      frame.dataset.settle = settle;
+      setTimeout(() => frame.dataset.settle === settle && settled(frame), SETTLE_MS);
+    }
     tell(frame);
     if (plain) void fonts().then((list) => tell(frame, { fonts: list }));
     return;
@@ -189,16 +228,27 @@ addEventListener("message", (e) => {
   // Every page gets the current bridge as it's served, so every one reports "size" (and says hello on each load,
   // which is when it's told the theme).
   if (kind !== "size") return;
-  for (const frame of frames()) {
-    if (frame.contentWindow !== e.source) continue;
-    const id = frame.dataset.view!;
-    const height = Math.min(MAX_H, Math.max(MIN_H, Math.ceil(Number(e.data.height) || 0)));
-    const width = Math.max(1, Math.ceil(Number(e.data.width) || 0));
-    sizes.set(id, { width, height });
-    fit(frame.parentElement!, frame, { width, height });
-    return;
-  }
+  const frame = [...frames()].find((f) => f.contentWindow === e.source);
+  if (!frame) return;
+  const height = Math.min(MAX_H, Math.max(MIN_H, Math.ceil(Number(e.data.height) || 0)));
+  const width = Math.max(1, Math.ceil(Number(e.data.width) || 0));
+  reported.set(frame, { width, height });
+  const known = sizes.get(frame.dataset.view!);
+  if (frame.dataset.settle && known && height < known.height) return;
+  settled(frame);
 });
+
+/** What each frame's page last reported, held back while it settles. */
+const reported = new WeakMap<HTMLIFrameElement, Size>();
+/** The frame takes the size its page last reported, and stops pulsing. */
+function settled(frame: HTMLIFrameElement) {
+  delete frame.dataset.settle;
+  const size = reported.get(frame);
+  if (!size) return;
+  frame.classList.remove("loading");
+  remember(frame.dataset.view!, size);
+  fit(frame.parentElement!, frame, size);
+}
 
 onTheme(() => {
   for (const frame of frames()) tell(frame);

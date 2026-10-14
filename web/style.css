@@ -338,6 +338,9 @@ html.wrap-code .code-wrap { background: rgba(var(--wash-rgb), 0.09); color: var(
 .uiview { display: block; box-sizing: border-box; width: min(100%, var(--w)); border: 1px solid var(--border); border-radius: 10px; background: transparent; color-scheme: normal; transition: height 0.2s var(--ease), width 0.2s var(--ease); }
 /* A plain HTML view is part of the reply: no frame, and the page's transparent background shows the conversation's. */
 .uiview.plain { border: 0; border-radius: 0; color-scheme: inherit; }
+/* Its page not loaded yet: a skeleton at the view's last known size. */
+.uiview.loading { border-radius: 10px; background: rgba(var(--wash-rgb), 0.06); animation: sk-pulse 1.4s ease-in-out infinite; }
+html.reduce-motion .uiview.loading { animation: none; }
 /* A view at a viewport width (a desktop layout): the frame keeps that width, scaled to the box (web/views.ts). */
 .uiview-box.scaled { overflow: hidden; }
 .uiview-box.scaled > .uiview { max-width: none; transform-origin: 0 0; transition: none; }
