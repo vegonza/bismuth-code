@@ -15,7 +15,7 @@ import { findFiles, loadSuggestions, newSideChat, showCommit, suggestedFiles } f
 import { renameSession } from "./sidebar";
 import { sideChat } from "./sidechat";
 import { currentHarness, openPicker } from "./picker";
-import { actions, call, net, projectOf, store, targetProject } from "./store";
+import { actions, call, net, projectOf, store, targetProject, workFolder } from "./store";
 
 const MENU_OUT_MS = 100;
 const ROWS_MAX = 50;
@@ -170,7 +170,7 @@ export function initMentions(editor: Editor, host: HTMLElement, chip: (path: str
   /** The token at the caret, followed: the list opened, searched again or closed. */
   function track() {
     const before = document.activeElement === editor.root ? editor.value().slice(0, editor.caret()) : null;
-    const hit = before === null ? null : TOKENS.map(([kind, trigger, re]) => [kind, trigger, re.exec(before)] as const).find(([kind, , m]) => m && (kind === "file" ? !!store.thread : !!skillsOwner()));
+    const hit = before === null ? null : TOKENS.map(([kind, trigger, re]) => [kind, trigger, re.exec(before)] as const).find(([kind, , m]) => m && (kind === "file" ? !!workFolder() : !!skillsOwner()));
     if (!hit) {
       dismissed = null;
       return close();
