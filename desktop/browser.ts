@@ -1,8 +1,8 @@
 // The browser tabs' side of the shell (web/browser.ts draws them, each page a <webview>):
 // - one persistent session for every page (`persist:bismuth-browser`), its cookies kept across launches;
-// - Zen's (or Firefox's) sign-ins synced into it: its profile's cookies copied in as they change, and each site's
-//   localStorage as its pages load (page-preload.cjs), one way, never over what a site has changed here since (two
-//   browsers trading one sign-in's tokens is what gets sites to end it);
+// - Zen's (or Firefox's) sign-ins synced into it: its profile's cookies (session ones too, from its saved session)
+//   copied in as they change, and each site's localStorage as its pages load (page-preload.cjs), one way, never over
+//   what a site has changed here since (two browsers trading one sign-in's tokens is what gets sites to end it);
 // - every page held to what a web page may do: no Node, sandboxed, web addresses only, permissions asked for denied
 //   but a few harmless ones; its only preload is ours, in a world the page can't reach;
 // - a page drawn as a desktop's window or a phone, as Chrome's DevTools draws its devices (the viewport's size, drawn
@@ -356,7 +356,15 @@ function iniSections(text: string): Record<string, string>[] {
   return out;
 }
 
-type ZenCookie = { name: string; value: string; host: string; path: string; expiry: number; isSecure: number; isHttpOnly: number; sameSite: number };
+/** `expiry` null: a session cookie, one that lasts while the browser is open. */
+type ZenCookie = { name: string; value: string; host: string; path: string; expiry: number | null; isSecure: number; isHttpOnly: number; sameSite: number };
+
+/** All the profile's cookies: its database's, and the session cookies it never writes there (many sign-ins are one). */
+function zenCookies(dir: string): ZenCookie[] {
+  const all = new Map<string, ZenCookie>();
+  for (const c of [...readSessionCookies(dir), ...readCookies(dir)]) all.set(keyOf(c), c);
+  return [...all.values()];
+}
 
 /** The profile's cookies, from a copy: the browser keeps its database locked while it runs, and its newest writes are
  *  in the write-ahead log beside it. Container and partitioned cookies stay out (they belong to one tab's context). */
@@ -376,6 +384,46 @@ function readCookies(dir: string): ZenCookie[] {
   }
 }
 
+type SessionCookie = { name: string; value?: string; host: string; path?: string; secure?: boolean; httponly?: boolean; sameSite?: number; originAttributes?: Record<string, unknown> };
+
+/** The profile's session cookies, from what it saves to restore its session: while it runs, its recovery file (written
+ *  every few seconds as they change); closed, what it saved on the way out. Container and partitioned ones stay out. A
+ *  file that can't be read throws, so its cookies aren't taken for signed out of. */
+function readSessionCookies(dir: string): ZenCookie[] {
+  const file = [join(dir, "sessionstore-backups", "recovery.jsonlz4"), join(dir, "sessionstore.jsonlz4")].find((f) => existsSync(f));
+  if (!file) return [];
+  const { cookies = [] } = JSON.parse(new TextDecoder().decode(unmozlz4(readFileSync(file)))) as { cookies?: SessionCookie[] };
+  return cookies
+    .filter((c) => !c.originAttributes?.partitionKey && !c.originAttributes?.userContextId && !c.originAttributes?.privateBrowsingId && !c.originAttributes?.firstPartyDomain)
+    .map((c) => ({ name: c.name, value: c.value ?? "", host: c.host, path: c.path || "/", expiry: null, isSecure: c.secure ? 1 : 0, isHttpOnly: c.httponly ? 1 : 0, sameSite: c.sameSite ?? 0 }));
+}
+
+/** Mozilla's mozLz4 files: a magic, the decompressed size, then one LZ4 block (literals and back-references). */
+function unmozlz4(src: Buffer): Uint8Array {
+  if (src.toString("latin1", 0, 8) !== "mozLz40\0") throw new Error("not mozLz4");
+  const out = new Uint8Array(src.readUInt32LE(8));
+  let pos = 12;
+  let o = 0;
+  while (pos < src.length) {
+    const token = src[pos++];
+    let n = token >> 4;
+    if (n === 15) for (let b = 255; b === 255; n += b) b = src[pos++];
+    out.set(src.subarray(pos, pos + n), o);
+    pos += n;
+    o += n;
+    // The last sequence is literals alone.
+    if (pos >= src.length) break;
+    const off = src[pos] | (src[pos + 1] << 8);
+    pos += 2;
+    let m = token & 15;
+    if (m === 15) for (let b = 255; b === 255; m += b) b = src[pos++];
+    m += 4;
+    for (let i = 0; i < m; i++, o++) out[o] = out[o - off];
+  }
+  if (o !== out.length) throw new Error("not mozLz4");
+  return out;
+}
+
 const keyOf = (c: { host: string; path: string; name: string }) => `${c.host}\t${c.path}\t${c.name}`;
 /** A value's fingerprint, kept instead of it. */
 const hash = (value: string) => createHash("sha1").update(value).digest("base64").slice(0, 16);
@@ -383,6 +431,9 @@ const urlOf = (host: string, path: string, secure: boolean) => `${secure ? "http
 
 /** Firefox's expiry is in milliseconds now, seconds before. */
 const seconds = (expiry: number) => (expiry > 1e11 ? expiry / 1000 : expiry);
+
+/** The cookies copied in since the app started: a session cookie among them that's gone was ended by its site here. */
+const copiedThisRun = new Set<string>();
 
 let syncing = false;
 let again = false;
@@ -396,7 +447,7 @@ async function sync() {
       return;
     }
     const now = Date.now() / 1000;
-    const cookies = readCookies(profile.dir).filter((c) => c.name && seconds(c.expiry) > now);
+    const cookies = zenCookies(profile.dir).filter((c) => c.name && (c.expiry === null || seconds(c.expiry) > now));
     // Each entry: Zen's cookie's hash, then the written value's (one hash alone: from before they were told apart).
     const before: Record<string, string> = readJson(syncedFile);
     const after: Record<string, string> = {};
@@ -414,7 +465,9 @@ async function sync() {
       const key = keyOf(c);
       const sig = createHash("sha1").update(`${c.value}\0${c.expiry}\0${c.isSecure}${c.isHttpOnly}${c.sameSite}`).digest("base64");
       after[key] = `${sig} ${hash(c.value)}`;
-      if (before[key]?.split(" ")[0] === sig) {
+      // A session cookie ends with the app: one copied in before it last started, and gone, is copied in again.
+      const lapsed = c.expiry === null && !here.has(key) && !copiedThisRun.has(key);
+      if (before[key]?.split(" ")[0] === sig && !lapsed) {
         if (before[key].includes(" ")) after[key] = before[key];
         continue;
       }
@@ -436,9 +489,11 @@ async function sync() {
           ...(c.host.startsWith(".") ? { domain: c.host } : {}),
           secure,
           httpOnly: !!c.isHttpOnly,
-          expirationDate: seconds(c.expiry),
+          // No expiry: a session cookie here too.
+          ...(c.expiry === null ? {} : { expirationDate: seconds(c.expiry) }),
           sameSite,
         });
+        copiedThisRun.add(key);
       } catch (err: any) {
         // An insecure twin of a secure cookie (Firefox keeps both, Chromium only the secure one): nothing's missing.
         if (String(err?.message).includes("OVERWRITE_SECURE")) continue;
@@ -604,26 +659,33 @@ function unsnappy(src: Uint8Array): Uint8Array {
   return out;
 }
 
-let watcher: FSWatcher | null = null;
+let watchers: FSWatcher[] = [];
 let watching = "";
 let timer: ReturnType<typeof setTimeout> | null = null;
 
-/** Zen writes its cookies as they change: a sync a moment after it's done writing. */
+/** Zen writes its cookies as they change, and its session cookies with the rest of its session every few seconds: a
+ *  sync a moment after it's done writing. */
 function watchProfile(dir: string) {
   if (watching === dir) return;
-  watcher?.close();
+  stopWatching();
   watching = dir;
-  watcher = watch(dir, (_event, file) => {
-    if (!String(file ?? "").startsWith("cookies.sqlite")) return;
-    if (timer) clearTimeout(timer);
-    timer = setTimeout(() => void sync(), 2000);
-  });
-  watcher.on("error", () => stopWatching());
+  const on = (folder: string, files: RegExp) => {
+    if (!existsSync(folder)) return;
+    const w = watch(folder, (_event, file) => {
+      if (!files.test(String(file ?? ""))) return;
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => void sync(), 2000);
+    });
+    w.on("error", () => stopWatching());
+    watchers.push(w);
+  };
+  on(dir, /^(cookies\.sqlite|sessionstore\.jsonlz4)/);
+  on(join(dir, "sessionstore-backups"), /^recovery\.jsonlz4/);
 }
 
 function stopWatching() {
-  watcher?.close();
-  watcher = null;
+  for (const w of watchers) w.close();
+  watchers = [];
   watching = "";
   if (timer) clearTimeout(timer), (timer = null);
 }
