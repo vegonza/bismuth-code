@@ -1,7 +1,7 @@
 // Electron shell: runs the Bun server (core/main.ts) as a child on a localhost port and shows it in a window. The
 // core can ask to be restarted (exit code 75); the shell starts it again on the same port without closing the window.
 // bun run app [cwd]
-import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, screen, shell } from "electron";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
@@ -132,10 +132,42 @@ function startServer(requested: number): Promise<string> {
 
 let win: BrowserWindow | null = null;
 
+/** The window as it was left: its size and place when neither maximized nor full screen, and whether it was either. */
+type WindowState = { x?: number; y?: number; width: number; height: number; maximized?: boolean; fullscreen?: boolean };
+const windowFile = join(app.getPath("userData"), "window.json");
+
+function savedWindow(): WindowState {
+  try {
+    const s = JSON.parse(readFileSync(windowFile, "utf8")) as WindowState;
+    // Its place only while it's on a screen still (one unplugged since would leave it out of sight): centred otherwise.
+    const { x, y } = s;
+    const onScreen = x !== undefined && y !== undefined && screen.getAllDisplays().some(({ workArea: a }) => x < a.x + a.width && x + s.width > a.x && y < a.y + a.height && y + s.height > a.y);
+    return onScreen ? s : { width: s.width, height: s.height, maximized: s.maximized, fullscreen: s.fullscreen };
+  } catch {
+    return { width: 1300, height: 850 };
+  }
+}
+
+/** Saved as it changes (a moment after), and as it closes: the size to go back to is always the normal one. */
+function keepWindow(w: BrowserWindow) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const save = () => {
+    clearTimeout(timer);
+    if (w.isDestroyed()) return;
+    writeFileSync(windowFile, JSON.stringify({ ...w.getNormalBounds(), maximized: w.isMaximized(), fullscreen: w.isFullScreen() }));
+  };
+  const later = () => (clearTimeout(timer), (timer = setTimeout(save, 500)));
+  w.on("resize", later).on("move", later).on("maximize", later).on("unmaximize", later).on("enter-full-screen", later).on("leave-full-screen", later);
+  w.on("close", save);
+}
+
 function createWindow(url: string) {
+  const saved = savedWindow();
   const w = new BrowserWindow({
-    width: 1300,
-    height: 850,
+    x: saved.x,
+    y: saved.y,
+    width: saved.width,
+    height: saved.height,
     minWidth: 720,
     minHeight: 480,
     title: "bismuth",
@@ -152,7 +184,12 @@ function createWindow(url: string) {
   // Hidden for good: with autoHideMenuBar, a lone Alt would pop Electron's default File/Edit/View bar over the UI.
   // The menu stays attached, so its accelerators (copy/paste, reload, devtools, zoom) keep working.
   w.setMenuBarVisibility(false);
-  w.once("ready-to-show", () => w.show());
+  w.once("ready-to-show", () => {
+    if (saved.maximized) w.maximize();
+    w.show();
+    if (saved.fullscreen) w.setFullScreen(true);
+  });
+  keepWindow(w);
   // Full screen hides the traffic lights: the UI gives their room back.
   w.on("enter-full-screen", () => w.webContents.send("window-fullscreen", true));
   w.on("leave-full-screen", () => w.webContents.send("window-fullscreen", false));
