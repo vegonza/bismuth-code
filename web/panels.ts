@@ -3232,6 +3232,8 @@ function wireDrags() {
     dragging = null;
     mark(null);
     restOn(null);
+    // Let go with the pointer out past a peeking panel: it goes, as when the pointer leaves it.
+    draggedOut(false);
   });
 }
 
@@ -3341,9 +3343,10 @@ function endGrace() {
 function cancelClose() {
   if (closeTimer) clearTimeout(closeTimer), (closeTimer = null);
 }
-/** The peek stays while one of its menus (the scope's list too) is open or a name is being typed in it (its search doesn't hold it: the
- *  pointer leaving takes the search's focus with it). */
-const holding = () => !!menu || !!moreMenu || scopePick.classList.contains("open") || holdDraws > 0 || dragIn > 0;
+/** The peek stays while one of its menus (the scope's list too) is open, a name is being typed in it, or something is being
+ *  dragged over it or out of it (its search doesn't hold it: the pointer leaving takes the search's focus with it). A drag
+ *  has the pointer leave the window as it starts, so only its end lets go. */
+const holding = () => !!menu || !!moreMenu || scopePick.classList.contains("open") || holdDraws > 0 || dragIn > 0 || dragging !== null;
 function scheduleClose() {
   if (closeTimer || holding()) return;
   closeTimer = setTimeout(() => {
@@ -3365,13 +3368,13 @@ function wireDragPeek() {
     pointerX = e.clientX;
     if (dragIn++ === 0) startPeek();
   }, true);
-  addEventListener("dragover", (e: DragEvent) => dragIn > 0 && (pointerX = e.clientX), true);
+  addEventListener("dragover", (e: DragEvent) => (dragIn > 0 || dragging !== null) && (pointerX = e.clientX), true);
   addEventListener("dragleave", () => dragIn > 0 && --dragIn === 0 && draggedOut(true), true);
   // After the panel's own (which asks dragIn), not before.
   addEventListener("drop", () => dragIn > 0 && ((dragIn = 0), draggedOut(false)));
   // The pointer moves only once a drag is over: whatever end it had that wasn't told here (its source taken from the
   // page) is over too.
-  addEventListener("pointermove", () => ((appDrag = false), (dragIn = 0)), { passive: true });
+  addEventListener("pointermove", () => ((appDrag = false), (dragIn = 0), (dragging = null)), { passive: true });
 }
 /** The drag left the window (`left`), or was dropped: dropped on the panel it stays, as a pointer resting there would. */
 function draggedOut(left: boolean) {
