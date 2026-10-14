@@ -2,7 +2,7 @@
 // core can ask to be restarted (exit code 75); the shell starts it again on the same port without closing the window.
 // bun run app [cwd]
 import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from "electron";
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -25,6 +25,19 @@ app.setName("bismuth");
 // One app for every project: launching again (with another folder) hands it to the running window.
 if (!app.requestSingleInstanceLock({ dir })) app.exit(0);
 openDevtools();
+
+// Launched from the Dock or Finder, a Mac app gets launchd's bare PATH, not a terminal's (Homebrew's node, ~/.bun,
+// ~/.local): the core and everything it runs (tsc for Restart bismuth, the agents' CLIs and their tools) take the
+// login shell's, asked once. From a terminal (TERM set), the PATH is that already.
+if (MAC && !process.env.TERM) {
+  try {
+    const out = execFileSync(process.env.SHELL || "/bin/zsh", ["-ilc", 'printf "\\n__bismuth_path=%s" "$PATH"'], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
+    const path = out.split("__bismuth_path=").pop()?.trim();
+    if (path) process.env.PATH = path;
+  } catch {
+    // A shell that fails or hangs: the bare PATH, as before.
+  }
+}
 
 // Launched from a .desktop entry, PATH often lacks ~/.bun/bin.
 function bunPath() {
