@@ -6,6 +6,7 @@
 // Links open as they are (a miss says so); inline code and bare paths in the text become links only once the core
 // finds the file they name. A name several files end with (`README.md`) links too, and asks which one.
 import type { FileRef } from "../shared/model";
+import { el } from "./dom";
 import { fileGlyph } from "./fileicons";
 import { contextMenu, menuItem, menuPoint } from "./popover";
 import { call, store, workFolder } from "./store";
@@ -177,6 +178,19 @@ function wire(node: HTMLElement, c: Cited) {
   node.onauxclick = (e) => e.button === 1 && go(e, true);
 }
 
+/** A glyph put before code's text, kept on the line its first character is on (a long path still wraps after). */
+function leadGlyph(code: HTMLElement, glyph: HTMLElement) {
+  const text = code.firstChild;
+  const tie = el("span", "glyph-tie");
+  tie.append(glyph);
+  if (text instanceof Text) {
+    const first = /^./u.exec(text.data)?.[0].length ?? 0;
+    if (first < text.data.length) text.splitText(first);
+    tie.append(text);
+  }
+  code.prepend(tie);
+}
+
 /** Inline code that could name a file: a path (with a folder, or an extension), maybe a line after it. */
 const PATHLIKE = /^(?:~\/|\.{0,2}\/)?[\w@+\-. ()[\]]*(?:\/[\w@+\-. ()[\]]+)*\/?(?::\d+(?::\d+)?(?:-\d+)?|#L\d+(?:-L\d+)?)?$/;
 function codeCandidate(text: string): Cited | null {
@@ -234,7 +248,7 @@ export function linkFiles(into: HTMLElement, base = "") {
       // (Not yet in the page, when it's known at once: the caller inserts it.)
       if (!(hit?.ref || hit?.many) || !node.parentNode) continue;
       if (node instanceof HTMLElement) {
-        if (!node.querySelector(".file-glyph")) node.prepend(fileGlyph(hit.ref?.path ?? c.path, hit.ref?.dir));
+        if (!node.querySelector(".file-glyph")) leadGlyph(node, fileGlyph(hit.ref?.path ?? c.path, hit.ref?.dir));
         wire(node, c);
         continue;
       }

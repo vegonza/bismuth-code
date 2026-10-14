@@ -297,6 +297,7 @@ html.phone .gutter-host > .gutter-rail { left: auto; right: 5px; top: 5px; botto
 /* File references (refs.ts): a cited file opens in the panel. */
 .md code.file-link, .md a.file-link { cursor: pointer; }
 .md code.file-link:hover { text-decoration: underline; text-underline-offset: 2px; }
+.md code.file-link .glyph-tie { white-space: nowrap; }
 .md code.file-link .file-glyph { display: inline-flex; width: 1.15em; height: 1.15em; vertical-align: -0.2em; margin: 0 3px 0 1px; }
 .md a.file-link:hover { text-decoration-color: currentColor; }
 .md a.file-cite { display: inline-flex; align-items: center; gap: 4px; vertical-align: -3px; height: calc(20px * var(--fs)); max-width: 100%; padding: 0 6px 0 3px; border-radius: 5px; background: rgba(var(--ink-rgb), 0.06); color: rgba(var(--text-rgb), 0.85); font-size: calc(12px * var(--fs)); text-decoration: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
