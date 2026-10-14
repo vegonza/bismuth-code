@@ -231,7 +231,7 @@ function showView(view: PaletteView): void {
   const [placeholder, combo] = {
     commands: ["Search commands and sessions…", "mod-k"],
     projects: ["Search projects…", projectForMcp ? null : bound("newSessionIn")],
-    folders: ["Search folders…", null],
+    folders: ["Search or create folders…", null],
     files: ["Search files by name…", bound("quickOpen")],
     mcp: ["Search MCP servers…", null],
   }[view];
@@ -333,12 +333,13 @@ function projectEntries(q: string[]): Entry[] {
   return rows;
 }
 
-/** The open folder's subfolders, filtered by the query (or by a typed path's last segment). */
+/** The open folder's subfolders, filtered by the query (or by a typed path's last segment); a name none of them
+ *  has offers to create that folder there. */
 function folderEntries(): Entry[] {
   if (!listing) return [];
-  const { filter } = typedPath();
+  const { dir, filter } = typedPath();
   const f = filter.toLowerCase();
-  return listing.entries
+  const rows: Entry[] = listing.entries
     .filter((e) => !f || e.name.toLowerCase().includes(f))
     .map((e) => ({
       group: "folders",
@@ -356,6 +357,20 @@ function folderEntries(): Entry[] {
       },
       pick: () => descend(e.path),
     }));
+  // A typed path's folder must be the one showing, not one still loading.
+  const name = filter.trim();
+  const here = !dir || typedFolder(dir) === listing.path;
+  if (here && name && name !== "." && name !== ".." && !name.includes("/") && !listing.entries.some((e) => e.name === name))
+    rows.push({
+      group: "actions",
+      render: () => {
+        const item = el("button", "palette-command palette-folder");
+        item.append(icon("folderPlus"), el("span", "label", `Create folder “${name}”`));
+        return item;
+      },
+      pick: () => void createFolder(name),
+    });
+  return rows;
 }
 
 /** The files matching the query, best first; before anything's typed, the suggested ones (open, recent, changed,
@@ -462,7 +477,7 @@ function emptyState(): HTMLElement {
         ? [loadingPath ? "Loading folders…" : "Couldn't open this folder", ""]
         : palette!.input.value.trim()
           ? ["No folders match", "Type a path like ~/code or /mnt to jump there."]
-          : ["No folders here", `Add this folder with ${add}, or go back with ←.`]
+          : ["No folders here", `Add this folder with ${add}, type a name to create one, or go back with ←.`]
       : view === "projects"
         ? ["No projects match", "Try a project name or path."]
         : view === "files"
@@ -574,12 +589,14 @@ function typedPath(): { dir: string | null; filter: string } {
   return { dir: raw.slice(0, cut + 1), filter: raw.slice(cut + 1) };
 }
 
+/** A typed path's folder, absolute. */
+const typedFolder = (dir: string) => (dir.startsWith("~") ? listing!.home + dir.slice(1) : dir).replace(/(.)\/+$/, "$1");
+
 let followTimer: ReturnType<typeof setTimeout> | null = null;
 function followTypedPath() {
   const { dir } = typedPath();
   if (!dir || !listing) return;
-  const home = listing.home;
-  const full = (dir.startsWith("~") ? home + dir.slice(1) : dir).replace(/(.)\/+$/, "$1");
+  const full = typedFolder(dir);
   if (full === listing.path) return;
   if (followTimer) clearTimeout(followTimer);
   followTimer = setTimeout(() => void load(full), 80);
@@ -601,6 +618,23 @@ async function addOpenFolder() {
   } finally {
     adding = false;
     if (palette) renderFoot();
+  }
+}
+
+/** Makes the folder in the open one and opens it, so it can be added (or filled with folders of its own). */
+async function createFolder(name: string) {
+  if (!palette || !listing || adding) return;
+  const parent = listing.path;
+  adding = true;
+  try {
+    await call("files.create", { root: parent, path: name, kind: "dir" });
+    browseError = null;
+    descend(parent.replace(/\/$/, "") + "/" + name);
+  } catch (err: any) {
+    browseError = String(err?.message ?? err);
+    renderList();
+  } finally {
+    adding = false;
   }
 }
 
