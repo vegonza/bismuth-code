@@ -750,7 +750,15 @@ export function initSidebar() {
     edgeFades();
   }).observe($("sidebar-lists"));
 
-  on("sidebar", renderLists);
+  // A hidden window keeps the running times but rebuilds no rows: nobody sees them, and each old list stays alive
+  // until it shows (its spinners' animations hold on to it). It catches up when shown.
+  let stale = false;
+  on("sidebar", () => (document.hidden ? (trackRunning(), (stale = true)) : renderLists()));
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden || !stale) return;
+    stale = false;
+    renderLists();
+  });
   addEventListener("keydown", trackJumpHints, true);
   addEventListener("keyup", trackJumpHints, true);
   addEventListener("blur", () => {
