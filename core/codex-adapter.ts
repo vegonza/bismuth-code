@@ -5,9 +5,10 @@
 import { randomUUID } from "node:crypto";
 import type * as C from "../codex-protocol/v2";
 import type { InitializeParams } from "../codex-protocol";
-import { readFileSync } from "node:fs";
+import { Database } from "bun:sqlite";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { finalizeItem, finishedTurns, mergeItem, summary, titleFrom, UNTITLED, type Harness } from "./harness";
 import { JsonRpcPeer, RpcError, type Id } from "./jsonrpc";
 import { fromCodex, toCodex, type McpDef, type McpListing, type McpPlan } from "./mcp";
@@ -73,6 +74,11 @@ export class CodexAdapter implements Harness {
   private limits: C.RateLimitSnapshot | null = null;
   private lastList: ThreadSummary[] | null = null;
   private proc: Bun.Subprocess | null = null;
+  /** A session has used the app-server: it keeps running from then on (see rpc). */
+  private inUse = false;
+  private waking: Promise<JsonRpcPeer> | null = null;
+  private parkTimer: ReturnType<typeof setTimeout> | null = null;
+  private configs = new Map<string, { stamp: string; res: C.ConfigReadResponse }>();
   /** The app-server is stale: the live login changed on disk (account switch) or the CLI was updated. */
   private authStale = false;
   private restarting = false;
@@ -103,7 +109,37 @@ export class CodexAdapter implements Harness {
   /** What Codex compacts new sessions at on its own: the config's limit, else 90% of the configured model's window. */
   configDefault: { limit: number | null; model: string | null; window: number | null } = { limit: null, model: null, window: null };
 
+  /** Nothing runs yet: sessions list from Codex's own index on disk and models from its catalog cache, and the
+   *  app-server starts when something needs it (see rpc). */
   async start() {
+    if (!Bun.which("codex")) throw new Error("codex is not installed (not found on PATH)");
+  }
+
+  /** The app-server, started on demand. Anything a session does (`use`: opening, starting, sending to one) keeps it
+   *  running from then on; until then it only answers queries (config, skills, models) and stops once they've been
+   *  quiet for a while, so a Codex nobody uses this session costs nothing. */
+  private async rpc(use = true): Promise<JsonRpcPeer> {
+    if (use) this.inUse = true;
+    if (this.parkTimer) clearTimeout(this.parkTimer);
+    this.parkTimer = this.inUse ? null : setTimeout(() => this.park(), PARK_AFTER_MS);
+    if (this.peer) return this.peer;
+    if (this.waking) return this.waking;
+    if (this.proc) throw new Error("codex app-server is not running"); // it exited
+    return (this.waking = this.launch().finally(() => (this.waking = null)));
+  }
+
+  /** Queries went quiet and no session has used it: stop it until something asks again. */
+  private park() {
+    if (this.inUse || !this.proc || this.waking) return;
+    const proc = this.proc;
+    this.proc = null;
+    this.peer = null;
+    proc.kill();
+  }
+
+  private async launch(): Promise<JsonRpcPeer> {
+    // A fresh process reads the live login and the CLI as they are now.
+    this.authStale = false;
     // One app-server serves every project: each thread carries its own cwd.
     const proc = Bun.spawn(["codex", "app-server"], {
       cwd: homedir(),
@@ -120,13 +156,12 @@ export class CodexAdapter implements Harness {
     peer.onRequest = (method, params, id) => this.handleServerRequest(method, params, id);
     this.proc = proc;
     peer.onClose = (err) => {
-      if (this.proc !== proc) return; // a deliberate restart replaced it
+      if (this.proc !== proc) return; // a deliberate restart or park replaced it
       this.peer = null;
       for (const p of this.pending.values()) p.resolve({ answers: {} });
       this.pending.clear();
       this.onExit(err);
     };
-    this.peer = peer;
 
     const init: InitializeParams = {
       clientInfo: CLIENT_INFO,
@@ -137,15 +172,36 @@ export class CodexAdapter implements Harness {
         optOutNotificationMethods: ["turn/diff/updated"],
       },
     };
-    await peer.request("initialize", init);
-    peer.notify("initialized");
-    await this.readConfigLimit();
+    try {
+      await peer.request("initialize", init);
+      peer.notify("initialized");
+    } catch (err) {
+      // Not left half-started: the next ask tries again.
+      if (this.proc === proc) this.proc = null;
+      proc.kill();
+      throw err;
+    }
+    this.peer = peer;
+    void this.readConfigLimit();
+    return peer;
+  }
+
+  /** Codex's config as it resolves it for `cwd` (with its layers). Asked of the app-server again only once a config
+   *  file has changed: MCP plans ask before every run of every harness, and the answer is the same until then. */
+  private async configRead(cwd?: string): Promise<C.ConfigReadResponse> {
+    const key = cwd ?? "";
+    const stamp = configStamp(cwd);
+    const hit = this.configs.get(key);
+    if (hit?.stamp === stamp) return hit.res;
+    const res: C.ConfigReadResponse = await (await this.rpc(false)).request("config/read", { includeLayers: true, ...(cwd ? { cwd } : {}) } satisfies C.ConfigReadParams, QUERY_TIMEOUT_MS);
+    this.configs.set(key, { stamp, res });
+    return res;
   }
 
   /** Re-read the config's own limit (it may have been edited by hand or by the Codex CLI). */
   async readConfigLimit() {
     try {
-      const res: C.ConfigReadResponse = await this.rpc().request("config/read", { includeLayers: false } satisfies C.ConfigReadParams, QUERY_TIMEOUT_MS);
+      const res = await this.configRead();
       const v = Number(res.config.model_auto_compact_token_limit ?? 0);
       this.configLimit = v > 0 ? v : null;
       const model = res.config.model ?? this.defaultModel;
@@ -203,7 +259,7 @@ export class CodexAdapter implements Harness {
   /** Its servers for a project (Ctrl+K → MCP servers): as Codex's config resolves them for the folder, and (`live`)
    *  how they're doing in a session loaded there, if any (asking without one would start every server). */
   async mcpListing(cwd: string, live: boolean): Promise<McpListing> {
-    const res: C.ConfigReadResponse = await this.rpc().request("config/read", { includeLayers: true, cwd } satisfies C.ConfigReadParams, QUERY_TIMEOUT_MS);
+    const res = await this.configRead(cwd);
     // Layers come strongest first: a server's source is the first that declares it.
     const from = new Map<string, string>();
     for (const layer of res.layers ?? []) {
@@ -216,7 +272,7 @@ export class CodexAdapter implements Harness {
       try {
         let cursor: string | null = null;
         do {
-          const page: C.ListMcpServerStatusResponse = await this.rpc().request("mcpServerStatus/list", { threadId: loaded.id, detail: "toolsAndAuthOnly", cursor } satisfies C.ListMcpServerStatusParams, QUERY_TIMEOUT_MS);
+          const page: C.ListMcpServerStatusResponse = await (await this.rpc(false)).request("mcpServerStatus/list", { threadId: loaded.id, detail: "toolsAndAuthOnly", cursor } satisfies C.ListMcpServerStatusParams, QUERY_TIMEOUT_MS);
           for (const s of page.data) status[s.name] = { status: codexStatus(s), tools: Object.keys(s.tools).length };
           cursor = page.nextCursor;
         } while (cursor);
@@ -239,10 +295,16 @@ export class CodexAdapter implements Harness {
   // ---------------- queries ----------------
 
   async listModels(): Promise<ModelOption[]> {
+    // Not running: Codex's own catalog cache, which model/list answers from, rather than starting it to ask.
+    const cached = this.peer ? null : cachedModels();
+    if (cached?.length) {
+      this.defaultModel = cached.find((m) => m.isDefault)?.id ?? null;
+      return cached;
+    }
     const out: ModelOption[] = [];
     let cursor: string | null = null;
     do {
-      const res: C.ModelListResponse = await this.rpc().request("model/list", { cursor, limit: 100 } satisfies C.ModelListParams);
+      const res: C.ModelListResponse = await (await this.rpc(false)).request("model/list", { cursor, limit: 100 } satisfies C.ModelListParams);
       for (const m of res.data) {
         if (m.isDefault) this.defaultModel = m.model;
         if (m.hidden) continue;
@@ -263,36 +325,39 @@ export class CodexAdapter implements Harness {
 
   async listThreads(cwds: string[]): Promise<ThreadSummary[]> {
     if (!cwds.length) return [];
-    let pages: C.ThreadListResponse[];
-    try {
-      // One page per project, so a busy one can't crowd the others out of the list.
-      pages = await Promise.all(
-        cwds.map((cwd) =>
-          this.rpc().request<C.ThreadListResponse>("thread/list", {
-            cwd,
-            limit: 50,
-            // Recency, not updated_at: resuming a thread (just opening it) bumps updated_at, which would reorder the
-            // sidebar under every click. recency_at only moves with real activity.
-            sortKey: "recency_at",
-            sortDirection: "desc",
-            archived: false,
-          } satisfies C.ThreadListParams, QUERY_TIMEOUT_MS),
-        ),
+    // Not running: Codex's own index of its sessions, which thread/list answers from, rather than starting it to ask.
+    let found = this.peer ? null : diskThreads(cwds);
+    if (!found) {
+      let pages: C.ThreadListResponse[];
+      try {
+        const rpc = await this.rpc(false);
+        // One page per project, so a busy one can't crowd the others out of the list.
+        pages = await Promise.all(
+          cwds.map((cwd) =>
+            rpc.request<C.ThreadListResponse>("thread/list", {
+              cwd,
+              limit: 50,
+              // Recency, not updated_at: resuming a thread (just opening it) bumps updated_at, which would reorder the
+              // sidebar under every click. recency_at only moves with real activity.
+              sortKey: "recency_at",
+              sortDirection: "desc",
+              archived: false,
+            } satisfies C.ThreadListParams, QUERY_TIMEOUT_MS),
+          ),
+        );
+      } catch (err) {
+        // A stalled app-server must not hang everything that lists (startup, the sidebar, apply's status
+        // check): keep showing the last list, with loaded threads' fresher state.
+        if (!(err instanceof RpcError) || !this.lastList) throw err;
+        return this.lastList.filter((t) => cwds.includes(t.cwd)).map((t) => (this.threads.has(t.id) ? summary(this.threads.get(t.id)!) : t));
+      }
+      found = pages.flatMap((res) =>
+        res.data
+          .filter((t) => !t.parentThreadId)
+          .map((t): ThreadSummary => ({ id: t.id, harness: "codex", title: titleOf(t), updatedAt: activityAt(t), createdAt: t.createdAt * 1000, status: threadStatus(t.status), branch: t.gitInfo?.branch ?? null, cwd: t.cwd })),
       );
-    } catch (err) {
-      // A stalled app-server must not hang everything that lists (startup, the sidebar, apply's status
-      // check): keep showing the last list, with loaded threads' fresher state.
-      if (!(err instanceof RpcError) || !this.lastList) throw err;
-      return this.lastList.filter((t) => cwds.includes(t.cwd)).map((t) => (this.threads.has(t.id) ? summary(this.threads.get(t.id)!) : t));
     }
-    const listed = pages.flatMap((res) =>
-      res.data.filter((t) => !t.parentThreadId).map((t): ThreadSummary => {
-        const loaded = this.threads.get(t.id);
-        return loaded
-          ? summary(loaded)
-          : { id: t.id, harness: "codex", title: titleOf(t), updatedAt: activityAt(t), createdAt: t.createdAt * 1000, status: threadStatus(t.status), branch: t.gitInfo?.branch ?? null, cwd: t.cwd };
-      }),
-    );
+    const listed = found.map((t) => (this.threads.has(t.id) ? summary(this.threads.get(t.id)!) : t));
     // A fork isn't listed until it has a turn of its own: loaded ones with the turns they inherited are.
     const ids = new Set(listed.map((t) => t.id));
     const forks = [...this.threads.values()].filter((t) => !t.subagent && !ids.has(t.id) && t.turns.length && cwds.includes(t.cwd)).map(summary);
@@ -325,14 +390,14 @@ export class CodexAdapter implements Harness {
     const listedCwd = this.lastList?.find((t) => t.id === threadId)?.cwd ?? null;
     await this.planMcp(listedCwd);
     const config = this.threadConfig(listedCwd, this.keyOf(threadId));
-    const res: C.ThreadResumeResponse = await this.rpc().request("thread/resume", {
+    const res: C.ThreadResumeResponse = await (await this.rpc()).request("thread/resume", {
       threadId,
       ...FULL_ACCESS_THREAD,
       ...config.params,
       excludeTurns: true, // full-history hydration is deprecated; page turns instead
     } satisfies C.ThreadResumeParams, OPEN_TIMEOUT_MS);
     // Newest 50 turns with full items, returned newest-first.
-    const page: C.ThreadTurnsListResponse = await this.rpc().request("thread/turns/list", {
+    const page: C.ThreadTurnsListResponse = await (await this.rpc()).request("thread/turns/list", {
       threadId,
       limit: 50,
       sortDirection: "desc",
@@ -359,7 +424,7 @@ export class CodexAdapter implements Harness {
   /** A subagent not run under this app-server: its thread read as Codex keeps it, not resumed (it's its session's to
    *  run). */
   private async readSubagent(id: string, session: string, child: string): Promise<Thread> {
-    const read: C.ThreadReadResponse = await this.rpc().request("thread/read", { threadId: child, includeTurns: true } satisfies C.ThreadReadParams, OPEN_TIMEOUT_MS);
+    const read: C.ThreadReadResponse = await (await this.rpc()).request("thread/read", { threadId: child, includeTurns: true } satisfies C.ThreadReadParams, OPEN_TIMEOUT_MS);
     const existing = this.threads.get(id);
     if (existing) return existing;
     const thread: LoadedThread = {
@@ -376,7 +441,7 @@ export class CodexAdapter implements Harness {
     await this.planMcp(cwd);
     const key = `new-${randomUUID()}`;
     const config = this.threadConfig(cwd, key);
-    const res: C.ThreadStartResponse = await this.rpc().request("thread/start", {
+    const res: C.ThreadStartResponse = await (await this.rpc()).request("thread/start", {
       cwd,
       ...(settings.model ? { model: settings.model } : {}),
       ...FULL_ACCESS_THREAD,
@@ -399,7 +464,7 @@ export class CodexAdapter implements Harness {
     await this.planMcp(parent.cwd);
     const key = `new-${randomUUID()}`;
     const config = this.threadConfig(parent.cwd, key);
-    const res: C.ThreadForkResponse = await this.rpc().request("thread/fork", {
+    const res: C.ThreadForkResponse = await (await this.rpc()).request("thread/fork", {
       threadId: parentId,
       lastTurnId,
       ...FULL_ACCESS_THREAD,
@@ -407,7 +472,7 @@ export class CodexAdapter implements Harness {
       excludeTurns: true,
     } satisfies C.ThreadForkParams, OPEN_TIMEOUT_MS);
     // The fork lists the turns it inherited, under their ids in the parent.
-    const page: C.ThreadTurnsListResponse = await this.rpc().request("thread/turns/list", {
+    const page: C.ThreadTurnsListResponse = await (await this.rpc()).request("thread/turns/list", {
       threadId: res.thread.id,
       limit: 50,
       sortDirection: "desc",
@@ -436,7 +501,7 @@ export class CodexAdapter implements Harness {
 
   /** The skills a session in `cwd` can use (the app-server keeps them cached, and rescans when they change on disk). */
   private async skillList(cwd: string): Promise<C.SkillMetadata[]> {
-    const res: C.SkillsListResponse = await this.rpc().request("skills/list", { cwds: [cwd] } satisfies C.SkillsListParams, QUERY_TIMEOUT_MS);
+    const res: C.SkillsListResponse = await (await this.rpc(false)).request("skills/list", { cwds: [cwd] } satisfies C.SkillsListParams, QUERY_TIMEOUT_MS);
     return res.data.flatMap((e) => e.skills).filter((s) => s.enabled);
   }
 
@@ -460,7 +525,7 @@ export class CodexAdapter implements Harness {
 
     if (thread.activeTurnId) {
       try {
-        await this.rpc().request<C.TurnSteerResponse>("turn/steer", {
+        await (await this.rpc()).request<C.TurnSteerResponse>("turn/steer", {
           threadId,
           input,
           clientUserMessageId,
@@ -491,7 +556,7 @@ export class CodexAdapter implements Harness {
       serviceTier: settings.serviceTier,
       ...FULL_ACCESS_TURN, // re-asserted per turn so threads created elsewhere with other settings get bypassed too
     };
-    const res: C.TurnStartResponse = await this.rpc().request("turn/start", params);
+    const res: C.TurnStartResponse = await (await this.rpc()).request("turn/start", params);
     this.upsertTurn(threadId, res.turn);
   }
 
@@ -500,7 +565,7 @@ export class CodexAdapter implements Harness {
     if (thread.activeTurnId) throw new Error("Wait for the turn to end to compact");
     this.compacting.add(thread.id);
     try {
-      await this.rpc().request("thread/compact/start", { threadId: thread.id } satisfies C.ThreadCompactStartParams);
+      await (await this.rpc()).request("thread/compact/start", { threadId: thread.id } satisfies C.ThreadCompactStartParams);
     } catch (err) {
       this.compacting.delete(thread.id);
       throw err;
@@ -516,12 +581,12 @@ export class CodexAdapter implements Harness {
     const threadId = thread.id;
     const action = ["", "edit", "clear", "pause", "resume"].includes(arg.toLowerCase()) ? arg.toLowerCase() : "set";
     if ((action === "set" || action === "resume") && thread.activeTurnId) throw new Error("Wait for the turn to end to start a goal");
-    const res: C.ThreadGoalGetResponse = await this.rpc().request("thread/goal/get", { threadId } satisfies C.ThreadGoalGetParams);
+    const res: C.ThreadGoalGetResponse = await (await this.rpc()).request("thread/goal/get", { threadId } satisfies C.ThreadGoalGetParams);
     const current = res.goal?.objective.trim() ? res.goal : null;
     this.goals.set(threadId, current);
     if (action === "" || action === "edit") return this.reply(thread, prompt, current ? `Goal ${goalStatus(current)}: ${current.objective.trim()}` : "No goal is set.");
     if (action === "clear") {
-      const { cleared }: C.ThreadGoalClearResponse = await this.rpc().request("thread/goal/clear", { threadId, origin: "user" } satisfies C.ThreadGoalClearParams);
+      const { cleared }: C.ThreadGoalClearResponse = await (await this.rpc()).request("thread/goal/clear", { threadId, origin: "user" } satisfies C.ThreadGoalClearParams);
       this.goals.set(threadId, null);
       return this.reply(thread, prompt, cleared ? "Goal cleared." : "No goal to clear.");
     }
@@ -532,7 +597,7 @@ export class CodexAdapter implements Harness {
     }
     if (action === "set") {
       // A new objective replaces the goal and what it has used. Paused until its turn runs, so Codex doesn't start one.
-      if (current) await this.rpc().request("thread/goal/clear", { threadId, origin: "user" } satisfies C.ThreadGoalClearParams);
+      if (current) await (await this.rpc()).request("thread/goal/clear", { threadId, origin: "user" } satisfies C.ThreadGoalClearParams);
       await this.setGoal(threadId, { objective: arg, status: "paused" });
     }
     const activation = { stopped: false };
@@ -549,7 +614,7 @@ export class CodexAdapter implements Harness {
   }
 
   private async setGoal(threadId: string, change: Pick<C.ThreadGoalSetParams, "objective" | "status">) {
-    const { goal }: C.ThreadGoalSetResponse = await this.rpc().request("thread/goal/set", { threadId, origin: "user", ...change } satisfies C.ThreadGoalSetParams);
+    const { goal }: C.ThreadGoalSetResponse = await (await this.rpc()).request("thread/goal/set", { threadId, origin: "user", ...change } satisfies C.ThreadGoalSetParams);
     this.goals.set(threadId, goal);
   }
 
@@ -572,7 +637,7 @@ export class CodexAdapter implements Harness {
     const activation = this.activating.get(threadId);
     if (activation) activation.stopped = true;
     if (!this.goals.has(threadId)) {
-      const res = await this.rpc().request<C.ThreadGoalGetResponse>("thread/goal/get", { threadId } satisfies C.ThreadGoalGetParams, QUERY_TIMEOUT_MS).catch(() => null);
+      const res = await (await this.rpc()).request<C.ThreadGoalGetResponse>("thread/goal/get", { threadId } satisfies C.ThreadGoalGetParams, QUERY_TIMEOUT_MS).catch(() => null);
       if (res) this.goals.set(threadId, res.goal);
     }
     if (this.goals.get(threadId)?.status === "active")
@@ -582,20 +647,20 @@ export class CodexAdapter implements Harness {
     const turnId = thread.activeTurnId;
     const processes = [...this.runningCommands.values()].filter((c) => c.turnId === turnId);
     // Acknowledged immediately; the terminal state arrives later via turn/completed.
-    await this.rpc().request("turn/interrupt", { threadId, turnId } satisfies C.TurnInterruptParams);
+    await (await this.rpc()).request("turn/interrupt", { threadId, turnId } satisfies C.TurnInterruptParams);
     // Codex keeps a running command alive as a background terminal after an interrupt;
     // a user Stop means stop everything this turn started (t3code does the same).
     await Promise.all(
       processes.map((c) =>
         this.rpc()
-          .request("thread/backgroundTerminals/terminate", { threadId: c.threadId, processId: c.processId } satisfies C.ThreadBackgroundTerminalsTerminateParams)
+          .then((rpc) => rpc.request("thread/backgroundTerminals/terminate", { threadId: c.threadId, processId: c.processId } satisfies C.ThreadBackgroundTerminalsTerminateParams))
           .catch((err) => console.warn(`[codex] terminate ${c.processId} failed:`, err.message)),
       ),
     );
   }
 
   async archive(threadId: string) {
-    await this.rpc().request("thread/archive", { threadId } satisfies C.ThreadArchiveParams);
+    await (await this.rpc()).request("thread/archive", { threadId } satisfies C.ThreadArchiveParams);
     this.threads.delete(threadId);
     this.onEvent(threadId, { type: "thread.archived" });
   }
@@ -960,8 +1025,8 @@ export class CodexAdapter implements Harness {
     p = (async () => {
       const config = this.threadConfig(t.cwd, this.keyOf(t.id));
       try {
-        await this.rpc().request("thread/unsubscribe", { threadId } satisfies C.ThreadUnsubscribeParams, QUERY_TIMEOUT_MS);
-        await this.rpc().request("thread/resume", { threadId, ...FULL_ACCESS_THREAD, ...config.params, excludeTurns: true } satisfies C.ThreadResumeParams, OPEN_TIMEOUT_MS);
+        await (await this.rpc()).request("thread/unsubscribe", { threadId } satisfies C.ThreadUnsubscribeParams, QUERY_TIMEOUT_MS);
+        await (await this.rpc()).request("thread/resume", { threadId, ...FULL_ACCESS_THREAD, ...config.params, excludeTurns: true } satisfies C.ThreadResumeParams, OPEN_TIMEOUT_MS);
         this.applied(threadId, config);
         this.reopened.add(threadId);
         setTimeout(() => this.reopened.delete(threadId), 30_000);
@@ -1001,7 +1066,8 @@ export class CodexAdapter implements Harness {
     this.runningCommands.clear();
     this.limits = null;
     try {
-      await this.start();
+      // One only answering queries starts again when next asked.
+      if (this.inUse) await this.rpc();
     } catch (err: any) {
       this.onExit(err instanceof Error ? err : new Error(String(err)));
     } finally {
@@ -1012,11 +1078,6 @@ export class CodexAdapter implements Harness {
   private rootThreadId(threadId: string) {
     return this.childToParent.get(threadId) ?? threadId;
   }
-
-  private rpc(): JsonRpcPeer {
-    if (!this.peer) throw new Error("codex app-server is not running");
-    return this.peer;
-  }
 }
 
 // ---------------- pure normalization ----------------
@@ -1024,6 +1085,8 @@ export class CodexAdapter implements Harness {
 /** Listing answers in well under a second; opening resumes the thread (MCP servers start), so it gets longer. */
 const QUERY_TIMEOUT_MS = 8_000;
 const OPEN_TIMEOUT_MS = 30_000;
+/** How long an app-server no session has used stays up after its last query. */
+const PARK_AFTER_MS = 60_000;
 
 /** When the thread last saw activity (ms). Codex's updatedAt also moves when a thread is merely resumed. */
 const activityAt = (t: C.Thread) => (t.recencyAt ?? t.updatedAt) * 1000;
@@ -1074,7 +1137,7 @@ function windowLabel(mins: number | null): string {
 const FULL_ACCESS_THREAD = { approvalPolicy: "never", sandbox: "danger-full-access" } as const satisfies Pick<C.ThreadStartParams, "approvalPolicy" | "sandbox">;
 const FULL_ACCESS_TURN = { approvalPolicy: "never", sandboxPolicy: { type: "dangerFullAccess" } } as const satisfies Pick<C.TurnStartParams, "approvalPolicy" | "sandboxPolicy">;
 
-const titleOf = (t: C.Thread) => t.name?.trim() || t.preview.trim().split("\n")[0].slice(0, 80) || UNTITLED;
+const titleOf = (t: { name?: string | null; preview: string }) => t.name?.trim() || t.preview.trim().split("\n")[0].slice(0, 80) || UNTITLED;
 
 // "/usr/bin/bash -lc 'printf hi > x'" -> "printf hi > x"
 function unwrapShell(command: string): string {
@@ -1216,16 +1279,79 @@ function mcpText(r: C.McpToolCallResult): string {
   return r.content.map((c: any) => (c && typeof c === "object" && "text" in c ? String(c.text) : json(c))).join("\n");
 }
 
+const CODEX_HOME = process.env.CODEX_HOME || join(homedir(), ".codex");
+
 /** A model's context window from Codex's own model catalog cache (what it sizes sessions by). */
 function cachedContextWindow(model: string): number | null {
   try {
-    const file = join(process.env.CODEX_HOME || join(homedir(), ".codex"), "models_cache.json");
-    const cache = JSON.parse(readFileSync(file, "utf8"));
+    const cache = JSON.parse(readFileSync(join(CODEX_HOME, "models_cache.json"), "utf8"));
     const entry = (cache.models ?? []).find((m: any) => m.slug === model);
     return entry?.context_window > 0 ? entry.context_window : null;
   } catch {
     return null;
   }
+}
+
+/** The models model/list answers with, from the catalog cache it answers from: the listed ones in Codex's order, the
+ *  config's model the default (else the first). Null without a cache to read. */
+function cachedModels(): ModelOption[] | null {
+  try {
+    const cache = JSON.parse(readFileSync(join(CODEX_HOME, "models_cache.json"), "utf8"));
+    const listed = (cache.models as any[]).filter((m) => m.visibility === "list").sort((a, b) => a.priority - b.priority);
+    let model: unknown = null;
+    try {
+      model = (Bun.TOML.parse(readFileSync(join(CODEX_HOME, "config.toml"), "utf8")) as { model?: unknown }).model;
+    } catch {
+      // no config: Codex's own default
+    }
+    const def = listed.find((m) => m.slug === model) ?? listed[0];
+    return listed.map((m) => ({
+      id: m.slug,
+      harness: "codex",
+      name: m.display_name,
+      efforts: m.supported_reasoning_levels.map((e: any) => e.effort),
+      defaultEffort: m.default_reasoning_level,
+      isDefault: m === def,
+      fastTier: (m.service_tiers ?? []).find((t: any) => t.name.toLowerCase() === "fast")?.id ?? null,
+    }));
+  } catch {
+    return null;
+  }
+}
+
+/** The sessions thread/list answers with, from the index it answers from (state_<n>.sqlite, the newest layout): each
+ *  folder's 50 most recent, interactive (not exec or subagent) and with a prompt. Null when it can't be read. */
+function diskThreads(cwds: string[]): ThreadSummary[] | null {
+  let db: Database | null = null;
+  try {
+    const file = readdirSync(CODEX_HOME)
+      .map((f) => /^state_(\d+)\.sqlite$/.exec(f))
+      .filter((m) => !!m)
+      .sort((a, b) => Number(b[1]) - Number(a[1]))[0]?.[0];
+    if (!file) return null;
+    db = new Database(join(CODEX_HOME, file), { readonly: true });
+    const query = db.query<{ id: string; cwd: string; name: string | null; preview: string; created_at: number; recency_at: number; git_branch: string | null }, [string]>(
+      `select id, cwd, name, preview, created_at, recency_at, git_branch from threads
+       where cwd = ? and archived = 0 and source in ('cli', 'vscode') and preview <> ''
+       order by recency_at_ms desc, id desc limit 50`,
+    );
+    return cwds.flatMap((cwd) =>
+      query.all(cwd).map((t): ThreadSummary => ({ id: t.id, harness: "codex", title: titleOf(t), updatedAt: t.recency_at * 1000, createdAt: t.created_at * 1000, status: "notLoaded", branch: t.git_branch, cwd: t.cwd })),
+    );
+  } catch (err: any) {
+    console.error("[codex] reading its sessions from disk failed, asking the app-server:", err?.message ?? err);
+    return null;
+  } finally {
+    db?.close();
+  }
+}
+
+/** When the config files Codex resolves for `cwd` last changed: the user's and the system's, and each project
+ *  folder's `.codex/config.toml` from `cwd` up. */
+function configStamp(cwd?: string): string {
+  const files = [join(CODEX_HOME, "config.toml"), "/etc/codex/config.toml"];
+  for (let dir = cwd; dir && dir !== dirname(dir); dir = dirname(dir)) files.push(join(dir, ".codex", "config.toml"));
+  return files.map((f) => statSync(f, { throwIfNoEntry: false })?.mtimeMs ?? 0).join(",");
 }
 
 /** A server OpenAI's desktop app wrote into the config for Codex itself (its node_repl, OpenAI's docs): left out of
