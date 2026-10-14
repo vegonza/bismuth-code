@@ -466,7 +466,7 @@ function setText(key: string, d: Doc, text: string, undoable: boolean) {
 const shown = (r: string, path: string) => root() === r && session()?.active === path;
 
 function hooksFor(r: string, path: string): CodeHooks {
-  return { edited: () => edited(r, path), definition: (pos) => void goToDefinition(r, path, pos), changes: () => (changesShown(docKey(r, path)), shown(r, path) && renderBar()) };
+  return { edited: () => edited(r, path), definition: (pos) => void goToDefinition(r, path, pos), changes: () => (changesShown(docKey(r, path)), shown(r, path) && renderBar()), leave: () => focusComposer() };
 }
 
 /** Read a file (again): a text file's editor follows the disk while it has no unsaved edits; with some, a change

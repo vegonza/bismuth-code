@@ -1,7 +1,8 @@
 // Vim keys as the user has them in Cursor (VSCodeVim's settings.json): their mappings, Ctrl keys left to the editor
 // and the app but for the few Vim keeps, and the system clipboard as the unnamed register. Vim's state is global, so
 // this runs once, the first time an editor takes Vim keys.
-import type { EditorView } from "@codemirror/view";
+import { StateEffect, StateField, type Extension } from "@codemirror/state";
+import { Decoration, EditorView, type DecorationSet } from "@codemirror/view";
 import { Vim } from "@replit/codemirror-vim";
 
 type Map = [lhs: string, rhs: string, ctx?: "normal" | "visual" | "operatorPending"];
@@ -99,6 +100,44 @@ function systemClipboard() {
   });
 }
 
+/** vim.highlightedyank: what's yanked shows for a moment, in place of Vim's "N lines yanked" line under the editor. */
+const YANK_MS = 200;
+const flash = StateEffect.define<{ from: number; to: number }[]>();
+const yankMark = Decoration.mark({ class: "cm-yanked" });
+const flashed = StateField.define<DecorationSet>({
+  create: () => Decoration.none,
+  update(set, tr) {
+    for (const e of tr.effects) if (e.is(flash)) return Decoration.set(e.value.map((r) => yankMark.range(r.from, r.to)));
+    return set.map(tr.changes);
+  },
+  provide: (f) => EditorView.decorations.from(f),
+});
+/** An editor's part in Vim keys: the yank highlight. */
+export const vimExtras: Extension = [flashed, EditorView.baseTheme({ ".cm-yanked": { backgroundColor: "rgba(var(--accent-rgb), 0.35)" } })];
+
+let flashes = 0;
+function flashYank(view: EditorView) {
+  if (view.state.field(flashed, false) === undefined) return;
+  const ranges = view.state.selection.ranges.filter((r) => !r.empty).map((r) => ({ from: r.from, to: r.to }));
+  if (!ranges.length) return;
+  const n = ++flashes;
+  view.dispatch({ effects: flash.of(ranges) });
+  setTimeout(() => n === flashes && view.dom.isConnected && view.dispatch({ effects: flash.of([]) }), YANK_MS);
+}
+
+type Pos = { line: number; ch: number };
+const first = (...ps: Pos[]) => ps.reduce((a, b) => (b.line < a.line || (b.line === a.line && b.ch < a.ch) ? b : a));
+/** Vim's own yank, less its message: the operator has selected what it takes. */
+function yank() {
+  Vim.defineOperator("yank", (cm: any, args: any, ranges: { anchor: Pos; head: Pos }[], oldAnchor: Pos) => {
+    const vim = cm.state.vim;
+    const endPos = vim.visualMode ? first(vim.sel.anchor, vim.sel.head, ranges[0].head, ranges[0].anchor) : oldAnchor;
+    Vim.getRegisterController().pushText(args.registerName, "yank", cm.getSelection(), args.linewise, vim.visualBlock);
+    flashYank(cm.cm6);
+    return endPos;
+  });
+}
+
 let set = false;
 /** `definition`: go to definition from an editor's caret, for gd (VSCodeVim's: Vim's own only searches the file). */
 export function setUpVim(definition: (view: EditorView) => void) {
@@ -108,6 +147,7 @@ export function setUpVim(definition: (view: EditorView) => void) {
   for (const [lhs, rhs, ctx] of NOREMAP) Vim.noremap(lhs, rhs, ctx as string);
   for (const [lhs, rhs, ctx] of MAP) Vim.map(lhs, rhs, ctx as string);
   systemClipboard();
+  yank();
   Vim.defineAction("goToDefinition", (cm: any) => definition(cm.cm6));
   Vim.mapCommand("gd", "action", "goToDefinition", {}, { context: "normal" });
 }

@@ -31,7 +31,7 @@ import { tags as t } from "@lezer/highlight";
 import { vim } from "@replit/codemirror-vim";
 import { gitChanges, reviewDiff } from "./gitdiff";
 import { prefs } from "./prefs";
-import { setUpVim } from "./vim";
+import { setUpVim, vimExtras } from "./vim";
 
 /** Past this the editor shows the text without colours: parsing it would stall typing. */
 const HIGHLIGHT_MAX = 300_000;
@@ -55,7 +55,7 @@ function lineKeys(up: string, down: string): Extension {
 
 /** Vim keys (Settings → General), or the plain ones. Ahead of the other keymaps, which Vim's must come before. */
 const keyMode = new Compartment();
-const keysFor = (vimKeys: boolean): Extension => (vimKeys ? (setUpVim(definitionAtCaret), [vim(), lineKeys("k", "j")]) : lineKeys("ArrowUp", "ArrowDown"));
+const keysFor = (vimKeys: boolean): Extension => (vimKeys ? (setUpVim(definitionAtCaret), [vim(), vimExtras, lineKeys("k", "j")]) : lineKeys("ArrowUp", "ArrowDown"));
 
 /** A file editor's go to definition (its hooks'), for keys that aren't its own: Vim's gd. */
 const definitionHook = Facet.define<(pos: number) => void, ((pos: number) => void) | null>({ combine: (fs) => fs[0] ?? null });
@@ -70,6 +70,8 @@ export type CodeHooks = {
   definition: (pos: number) => void;
   /** Whether the text differs from git's copy, or its changes show, went one way or the other. */
   changes: () => void;
+  /** Shift+Escape: focus goes back to the app (Escape is Vim's), so its shortcuts and the composer have the keys. */
+  leave: () => void;
 };
 
 function languageFor(path: string): LanguageSupport | StreamLanguage<unknown> | null {
@@ -371,6 +373,8 @@ export function codeState(text: string, path: string, hooks: CodeHooks): EditorS
   return EditorState.create({
     doc: text,
     extensions: [
+      // Ahead of Vim's keys, which would take it as Escape.
+      Prec.highest(EditorView.domEventHandlers({ keydown: (e) => e.key === "Escape" && e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey && (e.preventDefault(), hooks.leave(), true) })),
       keyMode.of(keysFor(prefs.vimKeys)),
       lineNumbers(),
       gitChanges(hooks.changes),
