@@ -3,7 +3,7 @@
 // bismuth's own (refs/bismuth/turns/<thread>) through a scratch index: the user's index, branches and stash are never
 // touched. One per session, its latest turn's; it goes when the session is archived.
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, rmSync } from "node:fs";
+import { accessSync, constants, copyFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BRANCH, UNPUSHED } from "../shared/model";
@@ -11,9 +11,13 @@ import { BRANCH, UNPUSHED } from "../shared/model";
 /** Who the snapshots' commits are by, so they're made without the user's git identity (which may be unset). */
 export const AUTHOR = { GIT_AUTHOR_NAME: "bismuth", GIT_AUTHOR_EMAIL: "bismuth@localhost", GIT_COMMITTER_NAME: "bismuth", GIT_COMMITTER_EMAIL: "bismuth@localhost" };
 
-async function git(cwd: string, args: string[], env: Record<string, string> = {}): Promise<{ ok: boolean; out: string }> {
+async function git(cwd: string, args: string[], env: Record<string, string> = {}, input?: string): Promise<{ ok: boolean; out: string }> {
   try {
-    const p = Bun.spawn(["git", "-C", cwd, ...args], { stdin: "ignore", stdout: "pipe", stderr: "ignore", env: { ...process.env, ...env } });
+    const p = Bun.spawn(["git", "-C", cwd, ...args], { stdin: input === undefined ? "ignore" : "pipe", stdout: "pipe", stderr: "ignore", env: { ...process.env, ...env } });
+    if (input !== undefined) {
+      p.stdin!.write(input);
+      void p.stdin!.end();
+    }
     const out = await new Response(p.stdout).text();
     return { ok: (await p.exited) === 0, out };
   } catch {
@@ -39,6 +43,31 @@ function serially<T>(key: string, fn: () => Promise<T>): Promise<T> {
   return next;
 }
 
+/** Every file of the working tree into the index `env` names. `add -A` gives up on the first file it can't read (one
+ *  another user owns, a repository inside whose config it can't open, as a container leaves behind), where `git status`
+ *  only passes over it: then the tracked files go in, and the untracked ones that can be read, the rest passed over too. */
+async function addAll(top: string, env: Record<string, string>): Promise<boolean> {
+  if ((await git(top, ["add", "-A", "--", "."], env)).ok) return true;
+  const [tracked, others] = await Promise.all([
+    git(top, ["add", "-u", "--ignore-errors", "--", "."], env),
+    git(top, ["ls-files", "-z", "-o", "--exclude-standard"], env),
+  ]);
+  if (!others.ok) return false;
+  // A folder ending in "/" is a repository of its own.
+  const readable = others.out.split("\0").filter((p) => {
+    if (!p || p.endsWith("/")) return false;
+    try {
+      accessSync(join(top, p), constants.R_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+  if (!readable.length) return tracked.ok;
+  const added = await git(top, ["add", "--ignore-errors", "--pathspec-from-file=-", "--pathspec-file-nul"], env, readable.join("\0"));
+  return tracked.ok && added.ok;
+}
+
 /** The working tree as git would commit all of it, as a tree's id. Through a scratch index per repository, kept
  *  between calls so only the files that changed are read again; it starts as a copy of the repository's own (its
  *  record of every file saves reading them all), or from HEAD when that copy won't do (a split or sparse index). */
@@ -51,11 +80,9 @@ export function worktreeTree(top: string, gitDir: string): Promise<string | null
     const fresh = async () => {
       rmSync(index, { force: true });
       await git(top, ["read-tree", "HEAD"], env);
-      return git(top, ["add", "-A", "--", "."], env);
+      return addAll(top, env);
     };
-    let added = await git(top, ["add", "-A", "--", "."], env);
-    if (!added.ok) added = await fresh();
-    if (!added.ok) return null;
+    if (!(await addAll(top, env)) && !(await fresh())) return null;
     // `add -A` never takes out what it put in before an ignore rule covered it (a folder ignored after it was added):
     // those go, unless the repository's own index tracks them, as git keeps tracking an ignored file it already has.
     const ignored = (e: Record<string, string> = {}) => git(top, ["ls-files", "-z", "-c", "-i", "--exclude-standard"], e).then((r) => r.out.split("\0").filter(Boolean));
@@ -67,7 +94,7 @@ export function worktreeTree(top: string, gitDir: string): Promise<string | null
     }
     let written = await git(top, ["write-tree"], env);
     // The index kept names objects the repository doesn't have (its .git deleted and made again): built anew.
-    if (!written.ok && (await fresh()).ok) written = await git(top, ["write-tree"], env);
+    if (!written.ok && (await fresh())) written = await git(top, ["write-tree"], env);
     return written.ok && written.out.trim() ? written.out.trim() : null;
   });
 }
