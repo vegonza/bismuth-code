@@ -5,6 +5,10 @@ const { contextBridge, ipcRenderer } = require("electron");
 contextBridge.exposeInMainWorld("bismuthDesktop", {
   /** A whole HTML document printed to a PDF where the user picks (`name` offered); resolves to where, or null. */
   savePdf: (html, name) => ipcRenderer.invoke("save-pdf", html, name),
+  /** The window's frame (desktop/main.ts): `trafficLights` on a Mac, where they sit in the UI's titlebar strip, and
+   *  whether it's full screen (which hides them) as the page loads; `onFullscreen` hears it change. */
+  frame: ipcRenderer.sendSync("window-frame"),
+  onFullscreen: (fn) => ipcRenderer.on("window-fullscreen", (_e, on) => fn(on)),
   /** The browser tabs (desktop/browser.ts): their pages' session, and what the shell tells about them. */
   browser: {
     partition: "persist:bismuth-browser",

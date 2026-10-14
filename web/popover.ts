@@ -15,7 +15,8 @@ export type Popover = { card: HTMLElement; close: () => void };
  */
 export function openPopover(host: HTMLElement, card: HTMLElement, opts: { from?: "below" | "above" | "left"; keep?: HTMLElement[]; onClose?: () => void } = {}): Popover {
   const motion = { below: ["menu-in", "menu-out"], above: ["menu-in-down", "menu-out-down"], left: ["menu-in-side", "menu-out-side"] }[opts.from ?? "below"];
-  card.classList.add(motion[0]);
+  // `popover`: floating over the titlebar strip, it stays clickable where the strip moves the window (a Mac's).
+  card.classList.add("popover", motion[0]);
   card.tabIndex = -1;
   host.append(card);
   let closed = false;

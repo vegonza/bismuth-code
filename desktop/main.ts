@@ -1,8 +1,8 @@
 // Electron shell: runs the Bun server (core/main.ts) as a child on a localhost port and shows it in a window. The
 // core can ask to be restarted (exit code 75); the shell starts it again on the same port without closing the window.
 // bun run app [cwd]
-import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from "electron";
-import { spawn, type ChildProcess } from "node:child_process";
+import { app, BrowserWindow, dialog, ipcMain, Menu, screen, shell } from "electron";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -10,6 +10,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { devtoolsPort, guardWebviews, initBrowser, openDevtools } from "./browser.ts";
 
 const root = resolve(import.meta.dirname, "..");
+const MAC = process.platform === "darwin";
 const icon = join(root, "assets", "icon.png");
 // Electron's own argv: [electron, ".", ...args] in dev, [app, ...args] when packaged; skip Chromium switches.
 const folderArg = (argv: string[], cwd: string) => {
@@ -24,6 +25,19 @@ app.setName("bismuth");
 // One app for every project: launching again (with another folder) hands it to the running window.
 if (!app.requestSingleInstanceLock({ dir })) app.exit(0);
 openDevtools();
+
+// Launched from the Dock or Finder, a Mac app gets launchd's bare PATH, not a terminal's (Homebrew's node, ~/.bun,
+// ~/.local): the core and everything it runs (tsc for Restart bismuth, the agents' CLIs and their tools) take the
+// login shell's, asked once. From a terminal (TERM set), the PATH is that already.
+if (MAC && !process.env.TERM) {
+  try {
+    const out = execFileSync(process.env.SHELL || "/bin/zsh", ["-ilc", 'printf "\\n__bismuth_path=%s" "$PATH"'], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
+    const path = out.split("__bismuth_path=").pop()?.trim();
+    if (path) process.env.PATH = path;
+  } catch {
+    // A shell that fails or hangs: the bare PATH, as before.
+  }
+}
 
 // Launched from a .desktop entry, PATH often lacks ~/.bun/bin.
 function bunPath() {
@@ -118,16 +132,51 @@ function startServer(requested: number): Promise<string> {
 
 let win: BrowserWindow | null = null;
 
+/** The window as it was left: its size and place when neither maximized nor full screen, and whether it was either. */
+type WindowState = { x?: number; y?: number; width: number; height: number; maximized?: boolean; fullscreen?: boolean };
+const windowFile = join(app.getPath("userData"), "window.json");
+
+function savedWindow(): WindowState {
+  try {
+    const s = JSON.parse(readFileSync(windowFile, "utf8")) as WindowState;
+    // Its place only while it's on a screen still (one unplugged since would leave it out of sight): centred otherwise.
+    const { x, y } = s;
+    const onScreen = x !== undefined && y !== undefined && screen.getAllDisplays().some(({ workArea: a }) => x < a.x + a.width && x + s.width > a.x && y < a.y + a.height && y + s.height > a.y);
+    return onScreen ? s : { width: s.width, height: s.height, maximized: s.maximized, fullscreen: s.fullscreen };
+  } catch {
+    return { width: 1300, height: 850 };
+  }
+}
+
+/** Saved as it changes (a moment after), and as it closes: the size to go back to is always the normal one. */
+function keepWindow(w: BrowserWindow) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const save = () => {
+    clearTimeout(timer);
+    if (w.isDestroyed()) return;
+    writeFileSync(windowFile, JSON.stringify({ ...w.getNormalBounds(), maximized: w.isMaximized(), fullscreen: w.isFullScreen() }));
+  };
+  const later = () => (clearTimeout(timer), (timer = setTimeout(save, 500)));
+  w.on("resize", later).on("move", later).on("maximize", later).on("unmaximize", later).on("enter-full-screen", later).on("leave-full-screen", later);
+  w.on("close", save);
+}
+
 function createWindow(url: string) {
+  const saved = savedWindow();
   const w = new BrowserWindow({
-    width: 1300,
-    height: 850,
+    x: saved.x,
+    y: saved.y,
+    width: saved.width,
+    height: saved.height,
     minWidth: 720,
     minHeight: 480,
     title: "bismuth",
     icon,
     backgroundColor: "#0e0f11",
     show: false,
+    // On a Mac, no title bar over the UI's own: the traffic lights sit at the left of its titlebar strip, which leaves
+    // them room and moves the window (web/style.css, `html.traffic-lights`).
+    ...(MAC ? { titleBarStyle: "hidden" as const, trafficLightPosition: { x: 12, y: 14 } } : {}),
     // webviewTag: the browser tabs' pages (desktop/browser.ts holds each one to a web page's rights).
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, webviewTag: true, preload: join(root, "desktop", "preload.cjs") },
   });
@@ -135,7 +184,15 @@ function createWindow(url: string) {
   // Hidden for good: with autoHideMenuBar, a lone Alt would pop Electron's default File/Edit/View bar over the UI.
   // The menu stays attached, so its accelerators (copy/paste, reload, devtools, zoom) keep working.
   w.setMenuBarVisibility(false);
-  w.once("ready-to-show", () => w.show());
+  w.once("ready-to-show", () => {
+    if (saved.maximized) w.maximize();
+    w.show();
+    if (saved.fullscreen) w.setFullScreen(true);
+  });
+  keepWindow(w);
+  // Full screen hides the traffic lights: the UI gives their room back.
+  w.on("enter-full-screen", () => w.webContents.send("window-fullscreen", true));
+  w.on("leave-full-screen", () => w.webContents.send("window-fullscreen", false));
 
   // Links in rendered markdown open in the system browser; the window never navigates off the local server.
   const origin = new URL(url).origin;
@@ -153,6 +210,11 @@ function createWindow(url: string) {
   w.on("closed", () => (win = null));
   win = w;
 }
+
+// How the window draws its frame, asked once by the preload as the page loads (a reload in full screen included).
+ipcMain.on("window-frame", (e) => {
+  e.returnValue = { trafficLights: MAC, fullscreen: !!BrowserWindow.fromWebContents(e.sender)?.isFullScreen() };
+});
 
 /** Where the last PDF was saved: the next one's dialog opens there (Downloads at first). */
 let pdfDir: string | null = null;

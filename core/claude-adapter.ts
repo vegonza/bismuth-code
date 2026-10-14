@@ -4,8 +4,9 @@
 // - A turn runs in one CLI process: the prompt is its first stdin line, `--session-id` names a new session and
 //   `--resume` continues one. The CLI's own `result` frame ends the turn; stdin then closes and the CLI exits
 //   (unless background tasks keep it up, below).
-// - Steering writes another user line mid-run (`priority: "now"`, or "next" while a tool runs so it isn't
-//   aborted); the CLI folds it in at its next step and replays it, which is when it joins the transcript.
+// - Steering writes another user line mid-run, with no priority: the CLI folds it in at its next step (after its
+//   result, as a turn of its own) and replays it, which is when it joins the transcript. "now" would cut in, but
+//   the CLI then runs the steer beside the step it cut, two loops forking one session.
 // - Background tasks outlive the `result` of the turn that started them, and the CLI follows up on each one
 //   that ends with a turn of its own. Subagents are the turn's own work, so it stays open until they report.
 //   Shells (dev servers, watchers) only keep the process up: their follow-ups reopen the last turn, and a new
@@ -96,7 +97,6 @@ type Run = {
   messageId: string | null;
   blocks: Map<number, string>;
   lastIndex: number;
-  openTools: Set<string>;
   toolStarts: Map<string, number>;
   /** Steers written to stdin that the CLI hasn't replayed yet. */
   pendingSteers: Set<string>;
@@ -473,9 +473,8 @@ export class ClaudeAdapter implements Harness {
     const command = isCommand(text);
     if (live && !live.finished && !live.closed) {
       if (command) throw new Error("Wait for the turn to end to run a command");
-      // Steer: `now` cuts in at once, but would abort a running tool, so wait for it instead.
       live.pendingSteers.add(uuid);
-      this.write(live, { type: "user", uuid, priority: live.openTools.size ? "next" : "now", message: { role: "user", content: text }, parent_tool_use_id: null });
+      this.write(live, { type: "user", uuid, message: { role: "user", content: text }, parent_tool_use_id: null });
       return;
     }
 
@@ -532,7 +531,6 @@ export class ClaudeAdapter implements Harness {
       messageId: null,
       blocks: new Map(),
       lastIndex: -1,
-      openTools: new Set(),
       toolStarts: new Map(),
       pendingSteers: new Set(),
       agents: 0,
@@ -772,12 +770,11 @@ export class ClaudeAdapter implements Harness {
         let item: Item | null = null;
         if (block.type === "text") item = { id: `${run.messageId}:${e.index}`, kind: "assistant", text: block.text ?? "", phase: null, done: false };
         else if (block.type === "thinking") {
-          // Shown once it has words: a thought cut off by a steer before its summary leaves nothing.
+          // Shown once it has words: a thought cut off (an interrupt) before its summary leaves nothing.
           run.blocks.set(e.index, `${run.messageId}:${e.index}`);
           if (block.thinking) item = { id: `${run.messageId}:${e.index}`, kind: "reasoning", summary: [block.thinking], done: false };
         }
         else if (block.type === "tool_use") {
-          run.openTools.add(block.id);
           run.toolStarts.set(block.id, Date.now());
           item = toolItem(block.id, block.name, block.input ?? {}, run.threadId);
         }
@@ -818,7 +815,6 @@ export class ClaudeAdapter implements Harness {
         const text = block.thinking || (prev?.kind === "reasoning" ? prev.summary.join("") : "");
         if (text || prev) this.upsertItem(run.threadId, run.turnId, { id, kind: "reasoning", summary: text ? [text] : [], done: true });
       } else if (block.type === "tool_use") {
-        run.openTools.add(block.id);
         if (block.name === "TodoWrite" && thread) {
           thread.plan = todos(block.input);
           this.emitThread(thread);
@@ -849,13 +845,16 @@ export class ClaudeAdapter implements Harness {
       const text = promptText(content);
       if (text === null) return;
       const images = blocksOf(content).filter((b) => b.type === "image").length;
-      this.upsertItem(run.threadId, run.turnId, { id: f.uuid ?? randomUUID(), kind: "user", text, images });
+      // Steers queued as a turn ends go in as one prompt: the CLI replays the first alone, then all of them joined (a
+      // line each, under the last one's id), which is what its transcript keeps. The joined one takes the first's place.
+      const last = this.threads.get(run.threadId)?.turns.find((t) => t.id === run.turnId)?.items.at(-1);
+      const joins = last?.kind === "user" && text.startsWith(`${last.text}\n`);
+      this.upsertItem(run.threadId, run.turnId, { id: joins ? last.id : (f.uuid ?? randomUUID()), kind: "user", text, images });
       return;
     }
     const result = f.tool_use_result ?? f.toolUseResult;
     for (const block of blocksOf(content)) {
       if (block.type !== "tool_result") continue;
-      run.openTools.delete(block.tool_use_id);
       const item = this.findItem(run.threadId, run.turnId, block.tool_use_id);
       if (!item) continue;
       let done = completeTool(item, block, result);
@@ -901,10 +900,9 @@ export class ClaudeAdapter implements Harness {
         }
       }
     }
-    // A `now` steer interrupts the turn it lands in with a result of its own: that's a step boundary, not the
-    // end. Hold it until the steer replays; if nothing follows, the steer was absorbed and the turn is over.
+    // A steer not taken in yet: the CLI goes on with it after this result, and that's still this turn.
     if (run.pendingSteers.size && !run.interrupted) {
-      this.hold(run, f);
+      run.heldResult = f;
       return;
     }
     // Subagents still at work: the CLI follows up on their reports, and that's still this turn.
@@ -947,13 +945,11 @@ export class ClaudeAdapter implements Harness {
     }
   }
 
-  private hold(run: Run, result?: any) {
-    if (result) run.heldResult = result;
+  private hold(run: Run) {
     if (run.held) clearTimeout(run.held);
     run.held = setTimeout(() => {
       run.held = null;
-      run.pendingSteers.clear();
-      if (run.heldResult && !run.finished && !run.agents) this.settle(run, run.heldResult);
+      if (run.heldResult && !run.finished && !run.agents && !run.pendingSteers.size) this.settle(run, run.heldResult);
     }, QUIET_MS);
   }
 
