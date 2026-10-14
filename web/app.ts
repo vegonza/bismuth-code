@@ -67,7 +67,13 @@ let creating = false;
 net.send = (msg) => {
   if (msg.type === "send") {
     if (!msg.threadId) creating = true;
-    store.echo = { threadId: msg.threadId, text: msg.text, at: Date.now(), seen: msg.threadId ? promptCount(store.thread) : 0 };
+    // One still on its way when another follows (steers sent in a row) keeps its bubble, as a sent one does, until
+    // the thread has it (by text: buildRows).
+    const prev = store.echo;
+    if (prev?.threadId && prev.threadId === msg.threadId)
+      store.sent.push({ threadId: prev.threadId, id: `echo:${prev.at}`, text: prev.text, at: prev.at, seen: prev.like, prompts: prev.seen });
+    const t = msg.threadId ? store.thread : null;
+    store.echo = { threadId: msg.threadId, text: msg.text, at: Date.now(), seen: promptCount(t), like: t ? promptsLike(t, msg.text) : 0 };
     render("transcript");
   }
   if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));

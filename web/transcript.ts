@@ -179,14 +179,14 @@ function buildRows(thread: Thread): Row[] {
   });
   seam(thread.turns.length);
   // The prompt just sent shows at once, ahead of the harness's echo (Codex takes a second or more on a new
-  // session's first turn).
+  // session's first turn); with the sent ones still waiting, in the order they went out.
+  // Gone once the thread has it, by text as the sent ones (another prompt arriving first isn't it); or, should the
+  // harness word it differently, once the thread has had more prompts for a while.
   const echo = store.echo;
-  if (echo && promptCount(thread) > echo.seen) store.echo = null;
-  else if (echo?.threadId === thread.id) {
-    push({ kind: "user", key: `echo:${echo.at}`, item: { id: `echo:${echo.at}`, kind: "user", text: echo.text, images: 0 }, ts: echo.at }, true);
-    hoverGroup.set(`echo:${echo.at}`, `u:echo:${echo.at}`);
-  }
-  for (const s of sent) if (![...heads.values()].includes(s)) pendingRow(`sent:${s.id}`, s.text, s.at);
+  if (echo?.threadId === thread.id && (promptsLike(thread, echo.text) > echo.like || (Date.now() - echo.at > 30_000 && promptCount(thread) > echo.seen))) store.echo = null;
+  const waiting = sent.filter((s) => ![...heads.values()].includes(s)).map((s) => ({ key: `sent:${s.id}`, text: s.text, at: s.at }));
+  if (store.echo?.threadId === thread.id) waiting.push({ key: `echo:${store.echo.at}`, text: store.echo.text, at: store.echo.at });
+  for (const w of waiting.sort((a, b) => a.at - b.at)) pendingRow(w.key, w.text, w.at);
   if (thread.notice)
     push({ kind: "error", key: `notice:${thread.id}`, label: /retrying/i.test(thread.notice) ? "Retrying" : "Error", text: thread.notice, warning: /retrying/i.test(thread.notice) });
   return rows;

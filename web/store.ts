@@ -37,8 +37,9 @@ export const store = {
   /** A thread asked of the core but not loaded yet; the sidebar already shows it selected. */
   opening: null as string | null,
   /** The prompt just sent, shown as the newest bubble until the harness echoes it back (null threadId: a
-   *  new session not created yet). `seen` is how many prompts the thread had when it was sent. */
-  echo: null as { threadId: string | null; text: string; at: number; seen: number } | null,
+   *  new session not created yet). `seen` is how many prompts the thread had when it was sent, `like` how many
+   *  with its text. */
+  echo: null as { threadId: string | null; text: string; at: number; seen: number; like: number } | null,
   /** Queued prompts the core just sent, shown like `echo` until the harness records them: `seen` is how many
    *  prompts with the same text the thread had, `prompts` how many prompts in all. */
   sent: [] as { threadId: string; id: string; text: string; at: number; seen: number; prompts: number }[],
@@ -64,9 +65,12 @@ export const store = {
 /** Prompts the harness has recorded in a thread. */
 export const promptCount = (t: Thread | null) => t?.turns.reduce((n, turn) => n + turn.items.filter((i) => i.kind === "user").length, 0) ?? 0;
 
-/** Prompts in a thread with this text. */
-export const promptsLike = (t: Thread, text: string) =>
-  t.turns.reduce((n, turn) => n + turn.items.filter((i) => i.kind === "user" && i.text.trim() === text.trim()).length, 0);
+/** Prompts in a thread with this text, or holding it as some of their lines: Claude Code folds steers sent in a row
+ *  into one prompt, a line each. */
+export const promptsLike = (t: Thread, text: string) => {
+  const want = text.trim();
+  return t.turns.reduce((n, turn) => n + turn.items.filter((i) => i.kind === "user" && `\n${i.text.trim()}\n`.includes(`\n${want}\n`)).length, 0);
+};
 
 /** The registered project a session's folder belongs to: the project folder, or one of its worktrees. */
 export const projectOf = (cwd: string | null | undefined) =>
