@@ -557,7 +557,19 @@ function banner(text: string | null) {
 
 // ---------------- boot ----------------
 
+/** The desktop app on a Mac draws no title bar: its traffic lights sit in the titlebar strip, which leaves them room
+ *  unless the window is full screen (desktop/main.ts). A shell from before (or another platform) says nothing. */
+function initFrame() {
+  type Frame = { frame?: { trafficLights: boolean; fullscreen: boolean }; onFullscreen?(fn: (on: boolean) => void): void };
+  const desktop = (window as { bismuthDesktop?: Frame }).bismuthDesktop;
+  if (!desktop?.frame?.trafficLights) return;
+  const fullscreen = (on: boolean) => document.documentElement.classList.toggle("traffic-lights", !on);
+  fullscreen(desktop.frame.fullscreen);
+  desktop.onFullscreen?.(fullscreen);
+}
+
 initTheme();
+initFrame();
 /** The files panel shown on one of its views (the phone's ··· menu). */
 const explorerOn = (view: "files" | "changes" | "agents") => (document.getElementById("app")!.classList.contains("files-open") || toggleFiles(), showSidebarView(view));
 // A side chat's frame (sidechat.ts) is the chat column alone: the window around it has the rest.

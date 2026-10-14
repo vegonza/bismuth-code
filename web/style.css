@@ -110,11 +110,20 @@ button { cursor: pointer; }
 /* Shut, the column is only its border: that goes too. */
 #app.sidebar-collapsed #sidebar { border-right-color: transparent; }
 
-.titlebar-cluster { position: absolute; top: 0; left: 0; height: var(--titlebar-h); padding: 4px 10px 0; display: flex; align-items: center; z-index: 20; transition: opacity 0.15s, visibility 0.15s; }
+.titlebar-cluster { position: absolute; top: 0; left: 0; height: var(--titlebar-h); padding: 4px 10px 0 calc(10px + var(--lights, 0px)); display: flex; align-items: center; z-index: 20; transition: opacity 0.15s, visibility 0.15s; }
 /* Shut beside an expanded panel, the cluster would sit over the panel's own tabs and controls: it steps aside. */
 #app.sidebar-collapsed.pane-expanded > .titlebar-cluster { opacity: 0; visibility: hidden; }
 .titlebar-cluster .nav { display: flex; gap: 2px; margin-left: 8px; }
 .titlebar-cluster .new { margin-left: 8px; transition: opacity 0.15s; }
+/* The desktop app on a Mac (desktop/main.ts): no title bar over the UI's, the window's traffic lights at the left of
+   its titlebar strip (`--lights`: their room, which whatever sits there steps right of); full screen hides them, and
+   the class goes. The strip's bare background moves the window (a double-click zooms it); what's in it, and anything
+   floating over it, stays the page's. Regions count in document order, each carving out of those before: the band
+   first, as #app's ::before. The sidebar widens by what the cluster grew, so its ··· keeps its distance. */
+html.traffic-lights { --lights: 70px; --sidebar-w: 236px; }
+html.traffic-lights #app::before { content: ""; position: fixed; top: 0; left: 0; right: 0; height: var(--titlebar-h); -webkit-app-region: drag; pointer-events: none; }
+html.traffic-lights :is(.titlebar-cluster, .sidebar-top, .chat-titlebar, .panel-toggles, .rp-bar, .fp-head, .s-back) *,
+html.traffic-lights :is(.popover, body > :not(#app)) { -webkit-app-region: no-drag; }
 .wc-btn { width: 24px; height: 24px; border-radius: 6px; display: flex; align-items: center; justify-content: center; color: var(--muted); transition: background-color 0.15s; }
 .wc-btn:hover { background: var(--hover); }
 .wc-btn:disabled { opacity: 0.35; cursor: default; background: none; }
@@ -209,8 +218,8 @@ button { cursor: pointer; }
      expanding it covers the chat, which holds still underneath. */
   --main-w: calc(100vw - var(--sb) - min(var(--rp), var(--rp-n, 0px)) - var(--fp)); }
 .chat-titlebar { position: absolute; top: 0; left: 0; width: calc(var(--main-w) - 10px); height: var(--titlebar-h); padding: 4px 16px 0; display: flex; align-items: center; gap: 6px; z-index: 10; background: linear-gradient(var(--main) 70%, transparent); pointer-events: none; }
-/* Clears the window-control cluster while the sidebar is (nearly) closed. */
-.chat-titlebar { padding-left: max(16px, calc(132px - var(--sb))); }
+/* Clears the window-control cluster (and a Mac's traffic lights before it) while the sidebar is (nearly) closed. */
+.chat-titlebar { padding-left: max(16px, calc(132px + var(--lights, 0px) - var(--sb))); }
 .chat-titlebar .icon { width: 14px; height: 14px; color: var(--muted); }
 .chat-titlebar .title { font-size: calc(12px * var(--fs)); font-weight: 500; color: rgba(var(--text-rgb), 0.85); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chat-titlebar .title { pointer-events: auto; }
@@ -813,7 +822,7 @@ html.paused *, html.paused *::before, html.paused *::after { animation-play-stat
 .settings { position: absolute; inset: 0; z-index: 15; display: flex; background: var(--main); outline: none; }
 .s-side { width: var(--sidebar-w); flex: none; display: flex; flex-direction: column; background: var(--sidebar); border-right: 1px solid var(--border); }
 /* Back sits in the titlebar strip, where the sidebar's controls normally are. */
-.s-back { flex: none; height: var(--titlebar-h); padding: 4px 8px 0; display: flex; align-items: center; }
+.s-back { flex: none; height: var(--titlebar-h); padding: 4px 8px 0 calc(8px + var(--lights, 0px)); display: flex; align-items: center; }
 .s-search { flex: none; height: 32px; margin: 4px 8px 0; padding: 0 6px 0 9px; display: flex; align-items: center; gap: 7px; border-radius: 8px; background: rgba(var(--wash-rgb), 0.05); border: 1px solid transparent; cursor: text; transition: border-color 0.15s, background-color 0.15s; }
 .s-search:hover { background: rgba(var(--wash-rgb), 0.07); }
 .s-search:focus-within { border-color: rgba(var(--accent-rgb), 0.55); background: rgba(var(--wash-rgb), 0.05); }
@@ -1430,6 +1439,8 @@ html[data-appearance="light"] .cmd-palette { background: color-mix(in srgb, var(
 /* The panels' 8px inset on both sides; with the explorer shut, it stops 4px short of the anchors (their 8px inset, two
    26px buttons and the 4px between them), so its own buttons read as one row with theirs. */
 .rp-bar { height: var(--titlebar-h); flex: none; display: flex; align-items: center; gap: 4px; padding: 4px calc(8px + max(0px, 60px - var(--fp))) 0 8px; }
+/* Expanded, it starts at the sidebar's edge: what the sidebar no longer covers of a Mac's traffic lights, it leaves room for. */
+#app.pane-expanded .rp-bar { padding-left: calc(8px + max(0px, var(--lights, 0px) - var(--sb))); }
 .rp-tabs { flex: 0 1 auto; min-width: 0; height: 100%; display: flex; align-items: center; gap: 4px; overflow-x: auto; scrollbar-width: none; }
 .rp-tabs::-webkit-scrollbar { display: none; }
 .rp-tabs.fade-right { mask-image: linear-gradient(to right, #000 calc(100% - 36px), transparent); }

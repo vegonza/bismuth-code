@@ -10,6 +10,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { devtoolsPort, guardWebviews, initBrowser, openDevtools } from "./browser.ts";
 
 const root = resolve(import.meta.dirname, "..");
+const MAC = process.platform === "darwin";
 const icon = join(root, "assets", "icon.png");
 // Electron's own argv: [electron, ".", ...args] in dev, [app, ...args] when packaged; skip Chromium switches.
 const folderArg = (argv: string[], cwd: string) => {
@@ -128,6 +129,9 @@ function createWindow(url: string) {
     icon,
     backgroundColor: "#0e0f11",
     show: false,
+    // On a Mac, no title bar over the UI's own: the traffic lights sit at the left of its titlebar strip, which leaves
+    // them room and moves the window (web/style.css, `html.traffic-lights`).
+    ...(MAC ? { titleBarStyle: "hidden" as const, trafficLightPosition: { x: 12, y: 14 } } : {}),
     // webviewTag: the browser tabs' pages (desktop/browser.ts holds each one to a web page's rights).
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, webviewTag: true, preload: join(root, "desktop", "preload.cjs") },
   });
@@ -136,6 +140,9 @@ function createWindow(url: string) {
   // The menu stays attached, so its accelerators (copy/paste, reload, devtools, zoom) keep working.
   w.setMenuBarVisibility(false);
   w.once("ready-to-show", () => w.show());
+  // Full screen hides the traffic lights: the UI gives their room back.
+  w.on("enter-full-screen", () => w.webContents.send("window-fullscreen", true));
+  w.on("leave-full-screen", () => w.webContents.send("window-fullscreen", false));
 
   // Links in rendered markdown open in the system browser; the window never navigates off the local server.
   const origin = new URL(url).origin;
@@ -153,6 +160,11 @@ function createWindow(url: string) {
   w.on("closed", () => (win = null));
   win = w;
 }
+
+// How the window draws its frame, asked once by the preload as the page loads (a reload in full screen included).
+ipcMain.on("window-frame", (e) => {
+  e.returnValue = { trafficLights: MAC, fullscreen: !!BrowserWindow.fromWebContents(e.sender)?.isFullScreen() };
+});
 
 /** Where the last PDF was saved: the next one's dialog opens there (Downloads at first). */
 let pdfDir: string | null = null;
