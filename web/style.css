@@ -113,14 +113,13 @@ button { cursor: pointer; }
 .titlebar-cluster { position: absolute; top: 0; left: 0; height: var(--titlebar-h); padding: 4px 10px 0 calc(10px + var(--lights, 0px)); display: flex; align-items: center; z-index: 20; transition: opacity 0.15s, visibility 0.15s; }
 /* Shut beside an expanded panel, the cluster would sit over the panel's own tabs and controls: it steps aside. */
 #app.sidebar-collapsed.pane-expanded > .titlebar-cluster { opacity: 0; visibility: hidden; }
-.titlebar-cluster .nav { display: flex; gap: 2px; margin-left: 8px; }
 .titlebar-cluster .new { margin-left: 8px; transition: opacity 0.15s; }
 /* The desktop app on a Mac (desktop/main.ts): no title bar over the UI's, the window's traffic lights at the left of
    its titlebar strip (`--lights`: their room, which whatever sits there steps right of); full screen hides them, and
    the class goes. The strip's bare background moves the window (a double-click zooms it); what's in it, and anything
    floating over it, stays the page's. Regions count in document order, each carving out of those before: the band
-   first, as #app's ::before. The sidebar widens by what the cluster grew, so its ··· keeps its distance. */
-html.traffic-lights { --lights: 70px; --sidebar-w: 236px; }
+   first, as #app's ::before. */
+html.traffic-lights { --lights: 70px; }
 html.traffic-lights #app::before { content: ""; position: fixed; top: 0; left: 0; right: 0; height: var(--titlebar-h); -webkit-app-region: drag; pointer-events: none; }
 html.traffic-lights :is(.titlebar-cluster, .sidebar-top, .chat-titlebar, .panel-toggles, .rp-bar, .fp-head, .s-back) *,
 html.traffic-lights :is(.popover, body > :not(#app)) { -webkit-app-region: no-drag; }
@@ -219,7 +218,7 @@ html.traffic-lights :is(.popover, body > :not(#app)) { -webkit-app-region: no-dr
   --main-w: calc(100vw - var(--sb) - min(var(--rp), var(--rp-n, 0px)) - var(--fp)); }
 .chat-titlebar { position: absolute; top: 0; left: 0; width: calc(var(--main-w) - 10px); height: var(--titlebar-h); padding: 4px 16px 0; display: flex; align-items: center; gap: 6px; z-index: 10; background: linear-gradient(var(--main) 70%, transparent); pointer-events: none; }
 /* Clears the window-control cluster (and a Mac's traffic lights before it) while the sidebar is (nearly) closed. */
-.chat-titlebar { padding-left: max(16px, calc(132px + var(--lights, 0px) - var(--sb))); }
+.chat-titlebar { padding-left: max(16px, calc(76px + var(--lights, 0px) - var(--sb))); }
 .chat-titlebar .icon { width: 14px; height: 14px; color: var(--muted); }
 .chat-titlebar .title { font-size: calc(12px * var(--fs)); font-weight: 500; color: rgba(var(--text-rgb), 0.85); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chat-titlebar .title { pointer-events: auto; }

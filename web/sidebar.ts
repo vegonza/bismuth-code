@@ -11,7 +11,7 @@ import { pickerOpen } from "./picker";
 import { prefs } from "./prefs";
 import { setSettingsJumpHints, settingsOpen, toggleSettings } from "./settings";
 import { contextMenu, menuPoint, type Popover } from "./popover";
-import { actions, call, nav, on, persist, projectName, projectOf, render, store, tildePath, worktreeOf } from "./store";
+import { actions, call, on, persist, projectName, projectOf, render, store, tildePath, worktreeOf } from "./store";
 import { switchPreview } from "./worktrees";
 import { toggleViewMenu } from "./viewmenu";
 import { dialog } from "./widgets";
@@ -59,24 +59,12 @@ function titlebarCluster() {
   hint(toggle, "Toggle sidebar", "toggleSidebar");
   toggle.append(icon("panelLeft"));
   toggle.onclick = toggleSidebar;
-  const back = el("button", "wc-btn");
-  back.title = "Back";
-  back.append(icon("arrowLeft"));
-  back.onclick = () => actions.back();
-  const forward = el("button", "wc-btn");
-  forward.title = "Forward";
-  forward.append(icon("arrowRight"));
-  forward.onclick = () => actions.forward();
-  const navBox = el("div", "nav");
-  navBox.append(back, forward);
   const plus = el("button", "wc-btn new");
   hint(plus, "New session", "newSession");
   plus.append(icon("plus"));
   plus.onclick = () => actions.newThread();
-  cluster.replaceChildren(toggle, navBox, plus);
+  cluster.replaceChildren(toggle, plus);
   on("header", () => {
-    back.disabled = nav.index <= 0;
-    forward.disabled = nav.index >= nav.stack.length - 1;
     // The plus fades out on an empty new-session screen, where it would do nothing (from a draft, it starts another).
     const useful = (plusShown = !!store.thread || draftHasContent(openNewDraft().id));
     plus.style.opacity = useful ? "1" : "0";
