@@ -277,16 +277,15 @@ export const sidebarTone = (t: Theme) => flatten(ink(t, 0.045), t.shell);
 function vars(t: Theme): Record<string, string> {
   const dark = t.appearance === "dark";
   const inputTint = flatten(t.input, t.bg);
-  // Floating cards and the composer: solid tones, or translucent tints over a backdrop blur when frosted.
+  // Floating cards: solid tones, or translucent tints over a backdrop blur when frosted. The composer stays solid.
   const cardBg = !t.frost ? inputTint : dark ? alpha(t.overlay, checkedAlpha(t, t.overlay, 0.5)) : alpha(t.overlay, 0.45);
-  const composerBg = !t.frost ? inputTint : dark ? alpha(t.input, checkedAlpha(t, t.input, t.input[3] / 255)) : alpha(inputTint, 0.35);
   const switchOn = dark ? flatten(alpha(BLACK, 0.14), t.accentStrong) : flatten(alpha(mix(t.accent, WHITE, 0.1), 0.98), t.shell);
   const switchOff = flatten(ink(t, dark ? (t.frost ? 0.22 : 0.18) : t.frost ? 0.12 : 0.1), t.shell);
   const out: Record<string, string> = {
     "--main": css(t.shell),
     "--sidebar": css(sidebarTone(t)),
     "--theme-bg": css(t.bg),
-    "--input": css(composerBg),
+    "--input": css(inputTint),
     "--card-bg": css(cardBg),
     "--frost": t.frost ? `blur(16px) saturate(1.4)` : "none",
     "--text": css(t.text),

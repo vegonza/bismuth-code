@@ -466,11 +466,6 @@ html.wrap-code .code-block pre { white-space: pre-wrap; overflow-wrap: anywhere;
 .dock { position: absolute; left: 0; width: var(--main-w); bottom: var(--terminal-h, 0px); padding: 0 48px 16px; display: flex; flex-direction: column; align-items: center; pointer-events: none; z-index: 8; }
 .dock > * { pointer-events: auto; }
 .dock .stack { position: relative; width: 100%; max-width: var(--content-w); display: flex; flex-direction: column; }
-/* The underlay the transcript scrolls under: the stack's own shape with a soft shadow of the background around it,
-   down to the dock's bottom (clipped there). Anything wider than the column (a view) carries on past it to the
-   window's edge instead of being cut straight across, and the halo's corners round off like a shadow's. */
-.dock .stack::before { content: ""; position: absolute; z-index: -1; inset: 0 0 calc(-1 * var(--dock-pb) - 64px); border-radius: 14px; background: var(--main); box-shadow: 0 0 var(--under-x) calc(var(--under-x) / 2) var(--main); clip-path: inset(-64px -64px 64px -64px); pointer-events: none; }
-.dock { --under-x: 24px; --dock-pb: 16px; }
 .ring-chip { position: relative; height: 24px; padding: 0 6px; border-radius: 6px; display: flex; align-items: center; gap: 5px; font-size: calc(11px * var(--fs)); color: var(--muted); font-variant-numeric: tabular-nums; transition: background-color 0.15s cubic-bezier(0.4, 0, 0.2, 1); --arc: var(--muted); }
 .ring-chip:hover { background: rgba(var(--ink-rgb), 0.05); }
 .ring-tip { position: absolute; right: -4px; bottom: calc(100% + 6px); z-index: 40; padding: 5px 10px; white-space: nowrap; font-size: calc(12px * var(--fs)); color: var(--text); font-variant-numeric: tabular-nums; pointer-events: none; opacity: 0; transform: translateY(2px); transition: opacity 0.12s, transform 0.12s; }
@@ -495,7 +490,6 @@ html.wrap-code .code-block pre { white-space: pre-wrap; overflow-wrap: anywhere;
 /* Zeron's new-session placement: the input box alone is centred in the window, 8px below the midpoint (the
    padding); the selectors float above and below it. */
 #main.new-thread .dock { top: 0; justify-content: center; padding-top: 16px; padding-bottom: 0; }
-#main.new-thread .dock .stack::before { display: none; }
 .selector-row { position: absolute; left: 0; right: 0; height: 20px; display: flex; align-items: center; gap: 12px; padding: 0 16px; }
 .selector-row.top { top: -28px; justify-content: flex-end; }
 .selector-row.bottom { bottom: -28px; }
@@ -510,16 +504,15 @@ html.wrap-code .code-block pre { white-space: pre-wrap; overflow-wrap: anywhere;
 .chip.pick:hover { background: rgba(var(--ink-rgb), 0.06); color: var(--text); }
 .chip.pick .caret { width: 11px; height: 11px; opacity: 0.7; }
 
-/* Frosted surfaces that host other frosted cards (the composer: model picker and context cards; the view menu: its
-   submenu) paint their frost on a ::before behind their content. An element with backdrop-filter of its own is a
-   backdrop root: cards inside it could only blur what's inside it, so they showed the page through, unblurred. */
-.composer, .card.view-menu { isolation: isolate; }
-.composer::before, .card.view-menu::before { content: ""; position: absolute; inset: 0; z-index: -1; border-radius: inherit; -webkit-backdrop-filter: var(--frost); backdrop-filter: var(--frost); pointer-events: none; }
-.composer::before { background: var(--input); }
+/* Frosted surfaces that host other frosted cards (the view menu: its submenu) paint their frost on a ::before behind
+   their content. An element with backdrop-filter of its own is a backdrop root: cards inside it could only blur what's
+   inside it, so they showed the page through, unblurred. */
+.card.view-menu { isolation: isolate; }
+.card.view-menu::before { content: ""; position: absolute; inset: 0; z-index: -1; border-radius: inherit; -webkit-backdrop-filter: var(--frost); backdrop-filter: var(--frost); pointer-events: none; }
 .card.view-menu { background: none; -webkit-backdrop-filter: none; backdrop-filter: none; }
 .card.view-menu::before { background: var(--card-bg); }
 /* Capy's box: the text over a row of controls, from one line in a session; a new session's box starts taller. */
-.composer { position: relative; border-radius: 14px; border: 1px solid var(--border); display: grid; grid-template-columns: auto 1fr auto auto auto; grid-template-areas: "strip strip strip strip strip" "input input input input input" "attach . picker context send"; padding: 0 12px 8px; align-items: end; transition: border-radius 0.2s var(--ease); }
+.composer { position: relative; border-radius: 14px; border: 1px solid var(--border); background: var(--input); display: grid; grid-template-columns: auto 1fr auto auto auto; grid-template-areas: "strip strip strip strip strip" "input input input input input" "attach . picker context send"; padding: 0 12px 8px; align-items: end; transition: border-radius 0.2s var(--ease); }
 .composer.roomy { min-height: 120px; }
 /* Zeron's AttachmentStrip: 56px rounded thumbnails over the text, the remove button revealed on hover. */
 .attach-strip { grid-area: strip; display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 4px 0; position: relative; }
@@ -631,7 +624,7 @@ html.wrap-code .code-block pre { white-space: pre-wrap; overflow-wrap: anywhere;
    chrome, one question per page. */
 .stack.asking .composer { display: none; }
 .question-panel { position: relative; isolation: isolate; border-radius: 14px; border: 1px solid var(--border); display: flex; flex-direction: column; outline: none; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -4px rgba(0, 0, 0, 0.1); }
-.question-panel::before { content: ""; position: absolute; inset: 0; z-index: -1; border-radius: inherit; background: var(--input); -webkit-backdrop-filter: var(--frost); backdrop-filter: var(--frost); pointer-events: none; }
+.question-panel::before { content: ""; position: absolute; inset: 0; z-index: -1; border-radius: inherit; background: var(--input); pointer-events: none; }
 .question-panel.sent { opacity: 0.6; pointer-events: none; transition: opacity 0.15s; }
 .qp-body { padding: 16px 16px 0; display: flex; flex-direction: column; }
 .qp-head { display: flex; align-items: center; gap: 10px; }
@@ -1972,7 +1965,7 @@ html.phone .chat-titlebar :is(.project-icon, .monogram) { width: 16px; height: 1
 html.phone .chat-titlebar .monogram { font-size: 10px; line-height: 16px; }
 html.phone #transcript { padding-top: calc(var(--titlebar-h) + 8px); }
 html.phone .trow { padding: 0 14px; }
-html.phone .dock { padding: 0 8px 8px; --under-x: 8px; --dock-pb: 8px; }
+html.phone .dock { padding: 0 8px 8px; }
 /* The new-session page: the composer at the bottom, under the thumb (the desktop centres it in the window). */
 html.phone #main.new-thread .dock { top: auto; justify-content: flex-end; padding-top: 0; }
 /* The row under the composer (the branch) hangs below it: the dock lifts the composer clear of the screen's edge. */
