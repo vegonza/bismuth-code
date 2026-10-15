@@ -75,6 +75,7 @@ import trash2 from "lucide-static/icons/trash-2.svg" with { type: "text" };
 import listFilter from "lucide-static/icons/list-filter.svg" with { type: "text" };
 import messageCircle from "lucide-static/icons/message-circle.svg" with { type: "text" };
 import messageCirclePlus from "lucide-static/icons/message-circle-plus.svg" with { type: "text" };
+import messagesSquare from "lucide-static/icons/messages-square.svg" with { type: "text" };
 import maximize2 from "lucide-static/icons/maximize-2.svg" with { type: "text" };
 import minimize2 from "lucide-static/icons/minimize-2.svg" with { type: "text" };
 import externalLink from "lucide-static/icons/external-link.svg" with { type: "text" };
@@ -99,7 +100,7 @@ const ICONS = {
   bell, blocks, chartNoAxesColumn, info, image, keyboard, moon, refreshCw, rotateCcw, rotateCw, layers, files, monitorSmartphone, slidersHorizontal, sun, x,
   circleCheck, undo2, arrowLeft, arrowRight, arrowUp, arrowUpRight, bot, brain, check, chevronDown, chevronLeft, chevronRight, copy, file,
   filePlus, fileDiff, folder, folderPlus, house, gitBranch, globe, monitor, openai, panelLeft, pencil, plug, plus, search, settings,
-  squarePen, squareTerminal, star, triangleAlert, wrench, zap, maximize2, minimize2, gripVertical, trash2, messageCircle, messageCirclePlus,
+  squarePen, squareTerminal, star, triangleAlert, wrench, zap, maximize2, minimize2, gripVertical, trash2, messageCircle, messageCirclePlus, messagesSquare,
   panelRight, folderTree, eye, eyeClosed, bookOpen, download, code, minus, externalLink, folderOpen, copyPlus, clipboardCopy, save, arrowDown, listFilter,
   gitCompare, cloudUpload, smartphone, qrCode, cloud, gitCommitHorizontal, tag, gitBranchPlus, folderGit2, monitorPlay, wrapText, squareSlash,
 };

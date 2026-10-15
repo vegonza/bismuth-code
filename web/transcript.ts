@@ -585,7 +585,51 @@ function bubbleText(bubble: HTMLElement, text: string, images: Map<string, strin
   bubble.append(text.slice(last));
 }
 
+/** A message another Claude session sent this one (`SendMessage` across sessions): the CLI hands it over as the
+ *  prompt, wrapped in `<cross-session-message from-name="…">` tags. Null when the prompt is anything else. */
+function crossSessionMessages(text: string): { from: string; body: string }[] | null {
+  const re = /<cross-session-message\b([^>]*)>([\s\S]*?)<\/cross-session-message>/g;
+  if (!text.trimStart().startsWith("<cross-session-message") || text.replace(re, "").trim()) return null;
+  return [...text.matchAll(re)].map((m) => {
+    const attr = (name: string) => m[1].match(new RegExp(`\\b${name}="([^"]*)"`))?.[1];
+    return { from: attr("from-name") || attr("from") || "another session", body: m[2].trim() };
+  });
+}
+
+/** An incoming cross-session message: it isn't the user's, so it reads as a card on the agent's side, not a bubble. */
+function crossSessionRow(row: Extract<Row, { kind: "user" }>, messages: { from: string; body: string }[]): HTMLElement[] {
+  const out: HTMLElement[] = messages.map((m) => {
+    const card = el("div", "q-card xs-card");
+    const head = el("div", "q-card-head");
+    const tile = el("span", "q-card-tile");
+    tile.append(icon("messagesSquare"));
+    head.append(tile, el("span", "q-card-label", "Message from"), el("span", "q-card-value", m.from));
+    const body = el("div", "md xs-card-body");
+    renderMarkdown(m.body, body);
+    card.append(head, body);
+    // Opened as the row (signature() redraws it on that): one toggle opens every card in it.
+    const key = row.key;
+    const long = m.body.length > USER_COLLAPSE_CHARS || m.body.split("\n").length > USER_COLLAPSED_LINES;
+    const open = bubbleOpen.has(key);
+    if (long) {
+      if (!open) body.classList.add("collapsed");
+      const toggle = el("div", "bubble-toggle", open ? "Show less" : "Show more");
+      toggle.onclick = () => {
+        if (open) bubbleOpen.delete(key);
+        else bubbleOpen.add(key);
+        update();
+      };
+      card.append(toggle);
+    }
+    return card;
+  });
+  if (row.ts) out.push(metaStrip(row.ts, false, messages.map((m) => m.body).join("\n\n")));
+  return out;
+}
+
 function userRow(row: Extract<Row, { kind: "user" }>): HTMLElement[] {
+  const cross = crossSessionMessages(row.item.text);
+  if (cross) return crossSessionRow(row, cross);
   const out: HTMLElement[] = [];
   // Images ride the prompt as a list of paths under the text (attachments.ts); split them back out. Every image
   // gets a thumbnail, and an "Image N" in the text that names one shows as its chip.

@@ -259,6 +259,10 @@ html.traffic-lights :is(.popover, body > :not(#app)) { -webkit-app-region: no-dr
 .q-card-q { color: var(--muted); }
 .q-card-a { margin-top: 2px; color: var(--text); font-weight: 500; }
 .q-card-a.none { color: var(--faint); font-weight: 400; font-style: italic; }
+/* A message from another session (crossSessionRow): the question card's frame, its words as markdown under the head. */
+.md.xs-card-body { margin-top: 6px; padding: 0 6px 0 28px; font-size: calc(13px * var(--fs)); line-height: calc(20px * var(--fs)); }
+.md.xs-card-body.collapsed { max-height: calc(20px * 5 * var(--fs)); overflow: hidden; mask-image: linear-gradient(#000 60%, transparent); }
+.xs-card .bubble-toggle { justify-content: flex-start; padding: 6px 0 0 28px; }
 .attach-badge { display: flex; justify-content: flex-end; padding-bottom: 6px; font-size: calc(12px * var(--fs)); color: var(--muted); }
 
 /* hover metadata strip: timestamp + copy */
