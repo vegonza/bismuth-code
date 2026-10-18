@@ -10,7 +10,8 @@ import { openPalette } from "./palette";
 import { pickerOpen } from "./picker";
 import { prefs } from "./prefs";
 import { setSettingsJumpHints, settingsOpen, toggleSettings } from "./settings";
-import { contextMenu, menuPoint, type Popover } from "./popover";
+import { contextMenu, menuPoint, onPopoverClosed, openPopovers, type Popover } from "./popover";
+import { edgePeek, type EdgePeek } from "./edgepeek";
 import { actions, call, on, persist, projectName, projectOf, render, store, tildePath, worktreeOf } from "./store";
 import { switchPreview } from "./worktrees";
 import { toggleViewMenu } from "./viewmenu";
@@ -72,8 +73,14 @@ function titlebarCluster() {
   });
 }
 
+/** With the sidebar put away, touching the window's left edge slides it in over everything (edgepeek.ts). */
+let peek: EdgePeek | null = null;
+/** The session rows show: docked, or peeking from the window's edge. */
+const sidebarShown = () => !$("app").classList.contains("sidebar-collapsed") || !!peek?.peeking;
+
 export function toggleSidebar() {
   store.sidebarCollapsed = !store.sidebarCollapsed;
+  if (!store.sidebarCollapsed) peek?.dock();
   $("app").classList.toggle("sidebar-collapsed", store.sidebarCollapsed);
   persist();
 }
@@ -396,7 +403,7 @@ function trackJumpHints(e: KeyboardEvent | MouseEvent) {
   const matches = !!held && !recording.active && !pickerOpen() && JUMPS.some((id) => modifiersOf(prefs.keymap[id]) === held);
   // Inside Settings the same keys pick its tabs, so the hints move there.
   setSettingsJumpHints(matches && settingsOpen());
-  setJumpHints(matches && store.view.jumpHints && !settingsOpen() && !$("app").classList.contains("sidebar-collapsed"));
+  setJumpHints(matches && store.view.jumpHints && !settingsOpen() && sidebarShown());
 }
 
 function renderLists() {
@@ -657,6 +664,7 @@ function editInline(label: HTMLElement, value: string, save: (name: string) => v
     editing = false;
     if (keep) save(input.value.trim());
     render("sidebar", "header");
+    peek?.released();
   };
   input.onclick = (e) => e.stopPropagation();
   input.ondblclick = (e) => e.stopPropagation();
@@ -674,8 +682,7 @@ export function renameSession(id: string) {
   const t = store.summaries.get(id);
   if (!t) return;
   if (isPhone()) return renameDialog(id, t.title);
-  const sidebar = !$("app").classList.contains("sidebar-collapsed");
-  const row = sidebar ? $("sidebar-lists").querySelector<HTMLElement>(`.row[data-id="${CSS.escape(id)}"] .title`) : null;
+  const row = sidebarShown() ? $("sidebar-lists").querySelector<HTMLElement>(`.row[data-id="${CSS.escape(id)}"] .title`) : null;
   const header = store.thread?.id === id ? $("chat-titlebar").querySelector<HTMLElement>(".title") : null;
   const label = row ?? header;
   if (!label) return;
@@ -712,8 +719,20 @@ function edgeFades() {
   lists.classList.toggle("fade-bottom", lists.scrollTop + lists.clientHeight < lists.scrollHeight - 1);
 }
 
-export function initSidebar() {
+/** `refocus`: the composer takes the focus (the sidebar's peek went with it). */
+export function initSidebar(refocus: () => void) {
   titlebarCluster();
+  peek = edgePeek({
+    side: "left",
+    panel: $("sidebar"),
+    cls: "sidebar-peek",
+    peekable: () => store.sidebarCollapsed && !isPhone() && !$("app").classList.contains("settings-open"),
+    // A menu (a session's, the view options) or a name being typed in it holds it out.
+    holding: () => openPopovers() > 0 || renaming(),
+    refocus,
+  });
+  // A menu closed (or a rename entered) with the pointer out past it: it waits for the pointer to come back.
+  onPopoverClosed(() => peek!.released());
   $("app").classList.toggle("sidebar-collapsed", store.sidebarCollapsed);
   // Animate toggles only once the restored state has painted.
   requestAnimationFrame(() => requestAnimationFrame(() => $("app").classList.add("animated")));

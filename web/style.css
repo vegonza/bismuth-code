@@ -109,10 +109,16 @@ button { cursor: pointer; }
 #sidebar { width: var(--sb); flex: none; overflow: hidden; background: var(--sidebar); border-right: 1px solid var(--border); display: flex; min-height: 0; position: relative; transition: border-color 0.2s; }
 /* Shut, the column is only its border: that goes too. */
 #app.sidebar-collapsed #sidebar { border-right-color: transparent; }
+/* Put away, it peeks from the window's left edge (edgepeek.ts), as the explorer does from the right: placed just off
+   it at its usual width, slid in over everything (under the titlebar's toggles, which stay put), and back out. Docked
+   while it peeks, the chat makes room beside it until it settles back into its column. */
+#app.sidebar-peek #sidebar { position: absolute; top: 0; left: 0; bottom: 0; width: var(--sidebar-w); z-index: 12; border-right-color: var(--border); transform: translateX(-100%); box-shadow: none; transition: transform 0.15s cubic-bezier(0.4, 0, 1, 1), box-shadow 0.15s cubic-bezier(0.4, 0, 1, 1); }
+#app.sidebar-peek-shown #sidebar { transform: none; box-shadow: 16px 0 40px rgba(0, 0, 0, 0.22); transition: transform 0.2s cubic-bezier(0, 0, 0.58, 1), box-shadow 0.2s cubic-bezier(0, 0, 0.58, 1); }
+#app.sidebar-peek #main { margin-left: var(--sb); }
 
 .titlebar-cluster { position: absolute; top: 0; left: 0; height: var(--titlebar-h); padding: 4px 10px 0 calc(10px + var(--lights, 0px)); display: flex; align-items: center; z-index: 20; transition: opacity 0.15s, visibility 0.15s; }
 /* Shut beside an expanded panel, the cluster would sit over the panel's own tabs and controls: it steps aside. */
-#app.sidebar-collapsed.pane-expanded > .titlebar-cluster { opacity: 0; visibility: hidden; }
+#app.sidebar-collapsed.pane-expanded:not(.sidebar-peek-shown) > .titlebar-cluster { opacity: 0; visibility: hidden; }
 .titlebar-cluster .new { margin-left: 8px; transition: opacity 0.15s; }
 /* The desktop app on a Mac (desktop/main.ts): no title bar over the UI's, the window's traffic lights at the left of
    its titlebar strip (`--lights`: their room, which whatever sits there steps right of); full screen hides them, and
@@ -305,13 +311,13 @@ html.traffic-lights :is(.popover, body > :not(#app)) { -webkit-app-region: no-dr
 html.phone .gutter-host > .gutter-rail { left: auto; right: 5px; top: 5px; bottom: 5px; padding-left: 0; z-index: 1; }
 .md hr { border: 0; height: 1px; background: var(--border); }
 .md :not(pre) > code { font: var(--code-size) var(--mono); color: var(--accent); background: var(--accent-wash); border-radius: 4.5px; padding: 1px 2px; }
+.md :not(pre) > code.yanked { background: rgba(var(--accent-rgb), 0.35); } /* copied by a middle click (markdown.ts) */
 .md img { max-width: 100%; height: auto; }
 /* File references (refs.ts): a cited file opens in the panel. */
 .md code.file-link, .md a.file-link { cursor: pointer; }
 .md code.file-link:hover { text-decoration: underline; text-underline-offset: 2px; }
 /* The glyph sits in the code's leading padding, out of the text: the padding keeps it on the first character's line,
    and the name stays one run of text (a first character split off into its own element can round to a pixel
-.md :not(pre) > code.yanked { background: rgba(var(--accent-rgb), 0.35); } /* copied by a middle click (markdown.ts) */
    lower than the rest). */
 .md code.file-link:has(> .file-glyph) { position: relative; padding-left: calc(6px + 1.15em); }
 .md code.file-link > .file-glyph { position: absolute; left: 3px; top: calc(1px + 0.074em); display: flex; width: 1.15em; height: 1.15em; }
@@ -1399,11 +1405,11 @@ html[data-appearance="light"] .cmd-palette { background: color-mix(in srgb, var(
 .fp { width: var(--fp); }
 /* Shut, a column is hidden outright once it has glided away (nothing to tab into, no hairline left). */
 #app:not(.pane-open) .rp, #app:not(.files-open) .fp { visibility: hidden; transition: visibility 0s linear 0.2s; }
-/* Put away, the explorer peeks from the window's right edge (panels.ts): placed just off it at its usual width, then
-   slid in over everything, and back out (a transition, so it turns around smoothly mid-way). In decelerating, out
-   quicker and accelerating, so leaving it lets go at once. */
+/* Put away, the explorer peeks from the window's right edge (edgepeek.ts), as the sidebar does from the left: placed
+   just off it at its usual width, then slid in over everything, and back out (a transition, so it turns around
+   smoothly mid-way). In decelerating, out quicker and accelerating, so leaving it lets go at once. */
 #app.files-peek .fp { position: absolute; top: 0; right: 0; bottom: 0; width: var(--fp-w); z-index: 12; visibility: visible; transform: translateX(100%); box-shadow: none; transition: transform 0.15s cubic-bezier(0.4, 0, 1, 1), box-shadow 0.15s cubic-bezier(0.4, 0, 1, 1); }
-#app.files-peek.peek-shown .fp { transform: none; box-shadow: -16px 0 40px rgba(0, 0, 0, 0.22); transition: transform 0.2s cubic-bezier(0, 0, 0.58, 1), box-shadow 0.2s cubic-bezier(0, 0, 0.58, 1); }
+#app.files-peek-shown .fp { transform: none; box-shadow: -16px 0 40px rgba(0, 0, 0, 0.22); transition: transform 0.2s cubic-bezier(0, 0, 0.58, 1), box-shadow 0.2s cubic-bezier(0, 0, 0.58, 1); }
 /* The host's own controls stay put above it, as the toggles do: the top row doesn't change under a peek. */
 #app.files-peek .rp-ctl { position: relative; z-index: 13; }
 /* The content keeps its width while the column glides (Zeron's stable_panel_content_width), held to the column's

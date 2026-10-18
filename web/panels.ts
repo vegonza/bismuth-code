@@ -33,6 +33,7 @@ import { canSavePdf, savePdf } from "./printpdf";
 import { onPrefs, prefs, setPrefs, type ChangesScope, type ShortcutId } from "./prefs";
 import { actions, call, net, on, store, tildePath, workFolder } from "./store";
 import { reducedMotion, RESIZE_MS, slideFold } from "./motion";
+import { edgePeek, framePointer, notePointer, type EdgePeek } from "./edgepeek";
 import { contextMenu as openContextMenu, menuPoint, toggleSwitch, type MenuEntry, type Popover } from "./popover";
 import { dialog, select as selectMenu } from "./widgets";
 import { onTheme } from "./theme";
@@ -308,7 +309,7 @@ function rescope() {
   const r = root();
   const s = session();
   if (!r || !s) return;
-  if (s.files || peeking) void loadGit(r, true).then(() => root() === r && renderExplorer());
+  if (s.files || peek.peeking) void loadGit(r, true).then(() => root() === r && renderExplorer());
   else {
     if (s.surfaces && s.active) void loadBase(r, s.active);
   }
@@ -353,15 +354,15 @@ function refresh(delay = 0) {
     refreshTimer = null;
     const r = root();
     const s = session();
-    if (!r || !s || (!s.files && !s.surfaces && !peeking)) return;
-    if (s.files || peeking) {
+    if (!r || !s || (!s.files && !s.surfaces && !peek.peeking)) return;
+    if (s.files || peek.peeking) {
       const t = treeOf(r);
       const dirs = t.ready ? ["", ...[...t.expanded].filter((d) => t.children.has(d))] : [];
       void Promise.all([loadGit(r), ...dirs.map((d) => load(r, d))]).then(() => root() === r && renderExplorer());
     }
     if (s.surfaces && s.active) void loadFile(r, s.active, true);
     // The review open without the explorer, which reads git (whether on a branch, for the scopes) and the changes with it.
-    if (s.surfaces && s.tabs.includes(REVIEW) && !(s.files || peeking)) void loadGit(r);
+    if (s.surfaces && s.tabs.includes(REVIEW) && !(s.files || peek.peeking)) void loadGit(r);
   }, delay);
 }
 
@@ -642,11 +643,7 @@ export function toggleFiles(focusTree = true) {
   s.files = !s.files;
   persist();
   // Peeking, it docks where it already shows: the chat makes room under it, and it settles into the column after.
-  if (s.files && peeking) {
-    peeking = false;
-    cancelClose();
-    setTimeout(() => !peeking && app.classList.remove("files-peek", "peek-shown"), RESIZE_MS + 20);
-  }
+  if (s.files) peek.dock();
   layout();
   renderExplorer();
   if (s.files) {
@@ -1266,7 +1263,7 @@ function layout(snap = false) {
   // Shut, the sidebar still keeps its 1px hairline. On a phone it's a drawer over the chat, and each panel covers the
   // whole screen.
   const avail = isPhone() ? innerWidth : Math.max(0, innerWidth - (store.sidebarCollapsed ? 1 : SIDEBAR_W));
-  // The explorer's width when it shows, docked or peeking.
+  // The explorer's width when it shows, docked or peek.peeking.
   const fwOpen = isPhone() ? avail : Math.max(Math.min(FILES_MIN, avail * 0.3), Math.min(saved.filesW, avail - CHAT_MIN - (showPane ? PANE_MIN : 0)));
   const fw = showFiles ? fwOpen : 0;
   const normal = !showPane ? 0 : isPhone() ? avail : Math.max(Math.min(PANE_MIN, avail * 0.4), Math.min(saved.paneW, avail - fw - CHAT_MIN));
@@ -2120,7 +2117,7 @@ function renderScope(r: string, t: Tree) {
   const key = `${r}\0${t.repo}:${t.branched}:${shown}`;
   if (key === scopeDrawn && scopePick.isConnected) return;
   scopeDrawn = key;
-  const pick = scopeMenu(r, t, released);
+  const pick = scopeMenu(r, t, () => peek.released());
   scopePick.replaceWith(pick);
   scopePick = pick;
 }
@@ -2295,7 +2292,7 @@ export function showSidebarView(view: SidebarView) {
   }
   // Opened when it's away; showing as a peek, it stays one (pinning it is the corner toggle's).
   const s = session();
-  if (s && !s.files && !peeking) toggleFiles(view === "files");
+  if (s && !s.files && !peek.peeking) toggleFiles(view === "files");
   else if (moved && explorerShown()) {
     // Slid over to what's already drawn (the tree when idle, the changes on every read); a tree left behind is
     // drawn once the slide is done, not before it starts.
@@ -2331,7 +2328,7 @@ export function openReview(path?: string) {
   renderPane();
   // Without the explorer, git's read here too: whether the folder's on a branch of its own decides the scopes.
   const r = root()!;
-  if (!(s.files || peeking)) void loadGit(r);
+  if (!(s.files || peek.peeking)) void loadGit(r);
   void changesData.refresh().then(() => review.scrollTo(path));
 }
 
@@ -2368,7 +2365,7 @@ function rowsOf(t: Tree, dir: string, depth: number, out: Row[]): Row[] {
 }
 
 /** Shown while the files panel is docked or peeking from the window's edge. */
-const explorerShown = () => !!session()?.files || peeking;
+const explorerShown = () => !!session()?.files || peek.peeking;
 
 /** Rows kept between draws when nothing about them changed, so hover and focus don't flicker under a refresh. */
 let rowCache = new Map<string, HTMLElement>();
@@ -2593,7 +2590,7 @@ function treeKey(e: KeyboardEvent) {
       return activateEntry(r, t, cur);
     case "Escape":
       handled();
-      if (peeking) return endPeek(true);
+      if (peek.peeking) return peek.end(true);
       return focusComposer();
     case "F2":
       if (!cur) return;
@@ -2668,7 +2665,7 @@ function searchKey(e: KeyboardEvent) {
   if (e.key === "Escape") {
     e.preventDefault();
     e.stopPropagation();
-    if (!search.value && peeking) return endPeek(true);
+    if (!search.value && peek.peeking) return peek.end(true);
     closeSearch();
     treeEl.focus({ preventScroll: true });
     return;
@@ -2726,7 +2723,7 @@ function toggleMoreMenu(e?: MouseEvent) {
   // With the changes showing, git's rows instead.
   const git = sidebarView() === "changes" ? changes.menuRows(() => moreMenu?.close()) : null;
   const rows = git ?? [eye, "-" as const, row("folderOpen", "Expand all folders", close(() => void expandFolders()), bound("expandFolders")), row("folder", "Collapse all folders", close(collapseFolders), bound("collapseFolders"))];
-  moreMenu = openContextMenu(menuPoint(e, moreBtn), rows, { trigger: moreBtn, className: "fp-menu", onClose: () => ((moreMenu = null), released()) });
+  moreMenu = openContextMenu(menuPoint(e, moreBtn), rows, { trigger: moreBtn, className: "fp-menu", onClose: () => ((moreMenu = null), peek.released()) });
 }
 
 /** The tree's changed files only, or every file. Switched on, every folder holding changes opens (up to EXPAND_MAX of
@@ -2906,7 +2903,7 @@ let menu: Popover | null = null;
 
 /** A menu at a point (the pointer, or a caret). `beside`: the tree row it's for, which stays marked while it's open. */
 function contextMenu(at: { x: number; y: number }, items: MenuEntry[], beside?: HTMLElement | null) {
-  menu = openContextMenu(at, items, { beside, onClose: () => ((menu = null), released()) });
+  menu = openContextMenu(at, items, { beside, onClose: () => ((menu = null), peek.released()) });
 }
 
 const bound = (id: ShortcutId) => (prefs.keymap[id] ? displayCombo(prefs.keymap[id]) : undefined);
@@ -3063,7 +3060,7 @@ function beginRename(r: string, e: FileEntry) {
   holdDraws++;
   nameInput(row, e.name, [0, e.kind === "dir" ? e.name.length : stemEnd(e.name)], (name) => {
     holdDraws--;
-    released();
+    peek.released();
     if (!name) return renderExplorer();
     const to = parentOf(e.path) ? `${parentOf(e.path)}/${name}` : name;
     call("files.rename", { root: r, from: e.path, to })
@@ -3079,7 +3076,7 @@ function beginRename(r: string, e: FileEntry) {
 /** New file or folder: a row with a name to type, at the top of the folder it goes in (opened first). */
 async function beginCreate(r: string, dir: string, kind: "file" | "dir") {
   const t = treeOf(r);
-  if (!filesOpen() && !peeking) toggleFiles(false);
+  if (!filesOpen() && !peek.peeking) toggleFiles(false);
   if (dir && !t.expanded.has(dir)) await toggleDir(r, t, dir, true);
   const depth = dir ? dir.split("/").length : 0;
   const row = el("div", `ft-row ft-new${kind === "dir" ? " dir" : ""}`);
@@ -3096,7 +3093,7 @@ async function beginCreate(r: string, dir: string, kind: "file" | "dir") {
   holdDraws++;
   nameInput(row, "", [0, 0], (name) => {
     holdDraws--;
-    released();
+    peek.released();
     row.remove();
     if (!name) return renderExplorer();
     const path = dir ? `${dir}/${name}` : name;
@@ -3232,7 +3229,7 @@ function wireDrags() {
     dragging = null;
     mark(null);
     restOn(null);
-    // Let go with the pointer out past a peeking panel: it goes, as when the pointer leaves it.
+    // Let go with the pointer out past a peek.peeking panel: it goes, as when the pointer leaves it.
     draggedOut(false);
   });
 }
@@ -3271,89 +3268,14 @@ async function importDropped(r: string, dir: string, entries: FileSystemEntry[])
 
 // ---------------- the edge peek ----------------
 
-/** With the files panel put away, touching the window's right edge with the pointer slides it in over everything; it
- *  slides away once the pointer has left it for a moment. Followed by where the
- *  pointer is, not by enter/leave on a panel that moves under it. */
-let peeking = false;
-let closeTimer: Timer | null = null;
-/** How close to the window's edge counts as touching it: past the scrollbars, which stay usable. */
-const EDGE_PX = 3;
-const PEEK_LINGER = 100;
+/** With the files panel put away, touching the window's right edge with the pointer slides it in over everything
+ *  (edgepeek.ts). */
+let peek: EdgePeek;
 
-const peekable = () => {
-  const s = session();
-  return !!s && !s.files && !app.classList.contains("settings-open");
-};
-
-/** Where the pointer last was, across the window. */
-let pointerX = 0;
-/** A menu beside the peek just closed (or a name typed in it was entered) with the pointer out past the panel: it
- *  stays while the pointer heads back to it, and goes once it strays GRACE_SLACK past the nearest it came, or rests
- *  (GRACE_MS) without coming nearer. */
-let grace: { gap: number; timer: Timer } | null = null;
-const GRACE_MS = 1200;
-const GRACE_SLACK = 16;
-
-/** The pointer at `x` across a frame's page `width` wide (a view's frame is scaled to its row, a browser tab's page drawn
- *  at its viewport's scale): at its place across the window. */
-export function framePointer(frame: HTMLElement, x: number, buttons: number, width: number) {
-  const box = frame.getBoundingClientRect();
-  onPointer(box.left + (width > 0 ? (x * box.width) / width : x), buttons);
-}
-
-/** The pointer moved to `x` across the window, `buttons` held. */
-function onPointer(x: number, buttons: number) {
-  pointerX = x;
-  if (!peeking) {
-    // Back over it while it's still sliding away: it comes back.
-    if (app.classList.contains("files-peek") && !buttons && x >= explorer.getBoundingClientRect().left) return startPeek();
-    if (x >= innerWidth - EDGE_PX && !buttons) startPeek();
-    return;
-  }
-  // Over the panel (or within a few pixels of its edge): it stays. Anywhere else: it goes, after a moment.
-  const gap = innerWidth - explorer.offsetWidth - 8 - x;
-  if (gap <= 0) return endGrace(), cancelClose();
-  if (!grace) return scheduleClose();
-  if (gap > grace.gap + GRACE_SLACK) return endPeek();
-  if (gap < grace.gap) (grace.gap = gap), restGrace();
-}
-
-/** Something that held the peek open let go of it: with the pointer out past the panel, the grace begins. */
-function released() {
-  const gap = innerWidth - explorer.offsetWidth - 8 - pointerX;
-  if (!peeking || holding() || gap <= 0) return;
-  cancelClose();
-  endGrace();
-  grace = { gap, timer: graceTimer() };
-}
-const graceTimer = () =>
-  setTimeout(() => {
-    grace = null;
-    if (peeking && !holding()) endPeek();
-  }, GRACE_MS);
-function restGrace() {
-  if (!grace) return;
-  clearTimeout(grace.timer);
-  grace.timer = graceTimer();
-}
-function endGrace() {
-  if (grace) clearTimeout(grace.timer), (grace = null);
-}
-
-function cancelClose() {
-  if (closeTimer) clearTimeout(closeTimer), (closeTimer = null);
-}
 /** The peek stays while one of its menus (the scope's list too) is open, a name is being typed in it, or something is being
  *  dragged over it or out of it (its search doesn't hold it: the pointer leaving takes the search's focus with it). A drag
  *  has the pointer leave the window as it starts, so only its end lets go. */
 const holding = () => !!menu || !!moreMenu || scopePick.classList.contains("open") || holdDraws > 0 || dragIn > 0 || dragging !== null;
-function scheduleClose() {
-  if (closeTimer || holding()) return;
-  closeTimer = setTimeout(() => {
-    closeTimer = null;
-    if (peeking && !holding()) endPeek();
-  }, PEEK_LINGER);
-}
 
 /** Files dragged in from outside the window (a file manager): the panel comes out for as long as they're over it, to
  *  drop them on a folder. Counted in and out (every element entered and left), like the composer's drop zone. A drag
@@ -3365,10 +3287,10 @@ function wireDragPeek() {
   addEventListener("dragend", () => (appDrag = false), true);
   addEventListener("dragenter", (e: DragEvent) => {
     if (appDrag || !e.dataTransfer?.types.includes("Files")) return;
-    pointerX = e.clientX;
-    if (dragIn++ === 0) startPeek();
+    notePointer(e.clientX);
+    if (dragIn++ === 0) peek.start();
   }, true);
-  addEventListener("dragover", (e: DragEvent) => (dragIn > 0 || dragging !== null) && (pointerX = e.clientX), true);
+  addEventListener("dragover", (e: DragEvent) => (dragIn > 0 || dragging !== null) && notePointer(e.clientX), true);
   addEventListener("dragleave", () => dragIn > 0 && --dragIn === 0 && draggedOut(true), true);
   // After the panel's own (which asks dragIn), not before.
   addEventListener("drop", () => dragIn > 0 && ((dragIn = 0), draggedOut(false)));
@@ -3378,35 +3300,7 @@ function wireDragPeek() {
 }
 /** The drag left the window (`left`), or was dropped: dropped on the panel it stays, as a pointer resting there would. */
 function draggedOut(left: boolean) {
-  if (peeking && (left || innerWidth - explorer.offsetWidth - 8 - pointerX > 0)) scheduleClose();
-}
-
-function startPeek() {
-  if (!peekable() || peeking) return;
-  peeking = true;
-  renderExplorer();
-  // Hidden, nothing was watched: what changed meanwhile (a commit) is read again, as when it's opened.
-  refresh();
-  // Placed off the edge first (at once: placing it isn't a slide), then slid in, from wherever it is should it still be
-  // sliding out.
-  if (!app.classList.contains("files-peek")) {
-    explorer.style.transition = "none";
-    app.classList.add("files-peek");
-    void explorer.offsetWidth;
-    explorer.style.transition = "";
-  }
-  app.classList.add("peek-shown");
-}
-
-function endPeek(refocus = false) {
-  cancelClose();
-  endGrace();
-  if (!peeking) return;
-  peeking = false;
-  const hadFocus = explorer.contains(document.activeElement);
-  app.classList.remove("peek-shown");
-  setTimeout(() => !peeking && app.classList.remove("files-peek"), RESIZE_MS + 20);
-  if (hadFocus || refocus) focusComposer();
+  if (peek.peeking && (left || peek.gap() > 0)) peek.scheduleClose();
 }
 
 // ---------------- mount ----------------
@@ -3459,6 +3353,19 @@ export function initPanels(refocus: () => void, findFile: () => void) {
   });
 
   explorer = el("aside", "fp");
+  peek = edgePeek({
+    side: "right",
+    panel: explorer,
+    cls: "files-peek",
+    peekable: () => !!session() && !session()!.files && !app.classList.contains("settings-open"),
+    holding,
+    opening: () => {
+      renderExplorer();
+      // Hidden, nothing was watched: what changed meanwhile (a commit) is read again, as when it's opened.
+      refresh();
+    },
+    refocus: () => focusComposer(),
+  });
   const filesInner = el("div", "fp-inner");
   // The band at the top (the titlebar's height), where the toggles sit.
   const band = el("div", "fp-band");
@@ -3597,18 +3504,7 @@ export function initPanels(refocus: () => void, findFile: () => void) {
   });
 
   // The window's right edge, while the explorer is put away: resting there brings it out.
-  addEventListener("pointermove", (e: PointerEvent) => e.pointerType === "mouse" && onPointer(e.clientX, e.buttons), { passive: true });
-  // Every frame keeps the pointer's moves to itself: its page passes them on (an HTML preview's: previewDoc; a side
-  // chat's: app.ts's initSide; a view's: view-bridge.js; a browser tab's: desktop/page-preload.cjs, by way of browser.ts).
-  addEventListener("message", (e) => {
-    const at = e.data?.bismuthPointer;
-    if (!Array.isArray(at) || typeof at[0] !== "number" || typeof at[1] !== "number") return;
-    const frame = [...document.querySelectorAll<HTMLIFrameElement>("iframe.fv-html, iframe.sc-frame, iframe.uiview")].find((f) => f.contentWindow === e.source);
-    if (frame) framePointer(frame, at[0], at[1], frame.offsetWidth);
-  });
   wireDragPeek();
-  // The pointer gone from the window: it goes.
-  document.documentElement.addEventListener("pointerleave", () => peeking && scheduleClose());
 
   toggles = el("div", "panel-toggles");
   app.append(pane, explorer, toggles);
@@ -3661,7 +3557,7 @@ export function initPanels(refocus: () => void, findFile: () => void) {
     }
     shown = id;
     expanded = false;
-    endPeek();
+    peek.end();
     clearSearch();
     // Another session's panels are simply there (or not), as Zeron's per-chat panels: no glide.
     layout(true);

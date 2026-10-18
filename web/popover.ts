@@ -8,6 +8,12 @@ const MENU_OUT_MS = 100;
 
 export type Popover = { card: HTMLElement; close: () => void };
 
+/** How many popovers are open, and who hears each one close (a peeking sidebar holds out while one is: sidebar.ts). */
+let openCount = 0;
+export const openPopovers = () => openCount;
+const closedHooks: (() => void)[] = [];
+export const onPopoverClosed = (fn: () => void) => closedHooks.push(fn);
+
 /**
  * Mount `card` into `host` with the entrance motion; it closes on an outside press (ignoring `keep`, usually
  * the trigger, which toggles it itself) or Escape. `from` is the trigger's side: the card travels away from
@@ -46,8 +52,11 @@ export function openPopover(host: HTMLElement, card: HTMLElement, opts: { from?:
     card.classList.add(motion[1]);
     card.style.pointerEvents = "none";
     setTimeout(() => card.remove(), reducedMotion() ? 0 : MENU_OUT_MS + 20);
+    openCount--;
     opts.onClose?.();
+    closedHooks.forEach((fn) => fn());
   }
+  openCount++;
   document.addEventListener("pointerdown", outside, true);
   document.addEventListener("keydown", key, true);
   addEventListener("blur", left);

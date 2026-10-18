@@ -599,7 +599,7 @@ if (!sideChat) initPhone({
   closeFiles: () => toggleFiles(false),
   closeTerminal: hideTerminal,
 });
-if (!sideChat) initSidebar();
+if (!sideChat) initSidebar(() => draft.focus());
 initTranscript();
 if (!sideChat) initTerminal();
 initComposer();
