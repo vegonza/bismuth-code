@@ -311,6 +311,7 @@ html.phone .gutter-host > .gutter-rail { left: auto; right: 5px; top: 5px; botto
 .md code.file-link:hover { text-decoration: underline; text-underline-offset: 2px; }
 /* The glyph sits in the code's leading padding, out of the text: the padding keeps it on the first character's line,
    and the name stays one run of text (a first character split off into its own element can round to a pixel
+.md :not(pre) > code.yanked { background: rgba(var(--accent-rgb), 0.35); } /* copied by a middle click (markdown.ts) */
    lower than the rest). */
 .md code.file-link:has(> .file-glyph) { position: relative; padding-left: calc(6px + 1.15em); }
 .md code.file-link > .file-glyph { position: absolute; left: 3px; top: calc(1px + 0.074em); display: flex; width: 1.15em; height: 1.15em; }

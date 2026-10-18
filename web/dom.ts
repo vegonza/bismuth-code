@@ -26,16 +26,18 @@ export async function picturesIn(root: HTMLElement, ms: number) {
   for (const until = Date.now() + ms; picturesPending(root) && Date.now() < until; ) await new Promise((r) => setTimeout(r, 50));
 }
 
-/** A middle click on `host` (a three-finger tap on a touchpad) presses its copy `button`: the innermost block's when
- *  they nest, and not over a link, which a middle click opens. */
-export function middleCopy(host: HTMLElement, button: HTMLElement) {
+/** A middle click on `host` (a three-finger tap on a touchpad) presses its copy `button` (or calls it, for what
+ *  has no button): the innermost block's when they nest, and not over a link (a cited file's code is one: refs.ts),
+ *  which a middle click opens. */
+export function middleCopy(host: HTMLElement, button: HTMLElement | (() => void)) {
   host.addEventListener("mousedown", (e) => e.button === 1 && e.preventDefault()); // no autoscroll
   // Nor Linux's paste of the primary selection on release, which lands in whatever input has focus (the composer).
   host.addEventListener("mouseup", (e) => e.button === 1 && e.preventDefault());
   host.addEventListener("auxclick", (e) => {
-    if (e.button !== 1 || e.defaultPrevented || (e.target as Element).closest("a")) return;
+    if (e.button !== 1 || e.defaultPrevented || (e.target as Element).closest("a, .file-link")) return;
     e.preventDefault();
-    button.click();
+    if (typeof button === "function") button();
+    else button.click();
   });
 }
 

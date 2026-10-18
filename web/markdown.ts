@@ -119,6 +119,20 @@ function gutterCopies(into: HTMLElement) {
   });
 }
 
+/** Inline code is copied by a middle click too, with no button: it lights up for a moment, as a Vim yank does. Once
+ *  it turns out to name a file (refs.ts, after this) it's a link, which a middle click opens instead (middleCopy). */
+function inlineCopies(into: HTMLElement) {
+  into.querySelectorAll<HTMLElement>(":not(pre) > code").forEach((code) =>
+    middleCopy(code, () => {
+      void navigator.clipboard.writeText(code.textContent ?? "");
+      code.classList.remove("yanked");
+      void code.offsetWidth; // a second copy restarts the flash
+      code.classList.add("yanked");
+      setTimeout(() => code.classList.remove("yanked"), 200);
+    }),
+  );
+}
+
 function listMarkers(list: HTMLOListElement | HTMLUListElement) {
   const start = list instanceof HTMLOListElement ? list.start || 1 : 1;
   [...list.children].forEach((li, i) => {
@@ -145,6 +159,7 @@ export function renderMarkdown(text: string, into: HTMLElement, base = "", gutte
     if (/^https?:\/\//i.test(a.getAttribute("href") ?? "")) a.dataset.web = "";
   });
   linkFiles(into, base);
+  inlineCopies(into);
   if (gutter) gutterCopies(into);
   diagrams(into);
 }
