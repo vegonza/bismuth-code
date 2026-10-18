@@ -425,7 +425,7 @@ function toolView(item: ToolItem): ToolView {
   }
 }
 
-function toolRow(item: ToolItem, continues: boolean): HTMLElement {
+function toolRow(item: ToolItem, continues: boolean, live: boolean): HTMLElement {
   const view = toolView(item);
   const row = el("div", `titem${view.failed ? " failed" : ""}${view.body ? " expandable" : ""}`);
   const rail = el("div", "rail");
@@ -442,6 +442,8 @@ function toolRow(item: ToolItem, continues: boolean): HTMLElement {
     if (typeof view.detail === "string") detail.title = view.detail;
     head.append(detail);
   }
+  const since = live ? runningSince(item) : null;
+  if (since != null) head.append(sinceLabel(since, ""));
   const open = view.body ? (itemFolds.get(item.id) ?? view.defaultOpen) : false;
   if (view.body) {
     const trail = el("span", "trail");
@@ -459,6 +461,24 @@ function toolRow(item: ToolItem, continues: boolean): HTMLElement {
   return row;
 }
 
+const callSeen = new Map<string, number>(); // call id -> first time we saw it running, when the core has no start time
+/** When a command or tool call still at work started. */
+function runningSince(item: ToolItem): number | null {
+  if ((item.kind !== "command" && item.kind !== "tool") || item.status !== "inProgress") return null;
+  if (!callSeen.has(item.id)) callSeen.set(item.id, item.startedAt ?? Date.now());
+  return item.startedAt ?? callSeen.get(item.id)!;
+}
+/** A call's running time, kept counting by tickTimes; blank for its first seconds, so quick calls don't flash one. */
+function sinceLabel(since: number, prefix: string): HTMLElement {
+  const when = el("span", "when");
+  when.dataset.since = String(since);
+  when.dataset.prefix = prefix;
+  when.dataset.after = String(CALL_TIME_AFTER_S);
+  when.textContent = sinceText(when);
+  return when;
+}
+const CALL_TIME_AFTER_S = 3;
+
 function groupRow(row: Extract<Row, { kind: "group" }>): HTMLElement {
   const open = groupFolds.get(row.key) ?? row.live;
   const box = el("div", `tgroup${open ? " open" : ""}${row.live ? " active" : ""}`);
@@ -466,6 +486,9 @@ function groupRow(row: Extract<Row, { kind: "group" }>): HTMLElement {
   const slot = el("span", "chev-slot");
   slot.append(icon("chevronDown", undefined, "chev"));
   head.append(slot, el("span", "summary", groupSummary(row.items) || "Working"));
+  // Folded, the head says how long the call at work has been running (else a quiet command reads as a hung session).
+  const since = row.live && !open ? row.items.map(runningSince).findLast((t) => t != null) : null;
+  if (since != null) head.append(sinceLabel(since, "running · "));
   head.onclick = () => {
     groupFolds.set(row.key, !open);
     update();
@@ -473,7 +496,7 @@ function groupRow(row: Extract<Row, { kind: "group" }>): HTMLElement {
   const body = el("div", "tgroup-body");
   const list = el("div", "tlist");
   // Only build the tree while open; collapsing animates the grid row, then the content is dropped next render.
-  if (open) row.items.forEach((item, i) => list.append(toolRow(item, i < row.items.length - 1)));
+  if (open) row.items.forEach((item, i) => list.append(toolRow(item, i < row.items.length - 1, row.live)));
   body.append(list);
   box.append(head, body);
   return box;
@@ -526,10 +549,13 @@ function agentStep(item: SpawnItem): HTMLElement {
   return box;
 }
 
-/** The time on subagents at work, kept counting. */
-function tickAgents() {
-  for (const when of rowsEl().querySelectorAll<HTMLElement>(".agent-step .when[data-since]"))
-    when.textContent = elapsed((Date.now() - Number(when.dataset.since)) / 1000);
+function sinceText(when: HTMLElement): string {
+  const secs = (Date.now() - Number(when.dataset.since)) / 1000;
+  return secs < Number(when.dataset.after ?? 0) ? "" : `${when.dataset.prefix ?? ""}${elapsed(secs)}`;
+}
+/** The time on subagents and calls at work, kept counting. */
+function tickTimes() {
+  for (const when of rowsEl().querySelectorAll<HTMLElement>(".when[data-since]")) when.textContent = sinceText(when);
 }
 
 // ---------------- other rows ----------------
@@ -961,6 +987,6 @@ export function initTranscript() {
   });
   setInterval(() => {
     renderTrailer();
-    tickAgents();
+    tickTimes();
   }, 1000);
 }

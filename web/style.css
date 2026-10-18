@@ -383,7 +383,8 @@ html.wrap-code .code-block pre { white-space: pre-wrap; overflow-wrap: anywhere;
 .agent-step .chev-slot { display: flex; align-items: center; justify-content: center; color: var(--muted); }
 .agent-step .chev-slot .icon { width: 14px; height: 14px; }
 .agent-step .summary { color: var(--text); }
-.agent-step .when { flex: none; font-size: calc(11px * var(--fs)); color: var(--faint); font-variant-numeric: tabular-nums; }
+.agent-step .when, .tgroup-head .when, .thead .when { flex: none; font-size: calc(11px * var(--fs)); color: var(--faint); font-variant-numeric: tabular-nums; }
+.tgroup-head .when:empty, .thead .when:empty { display: none; }
 .agent-step.failed .chev-slot, .agent-step.failed .summary { color: var(--danger); }
 .agent-step .trail { width: 18px; height: 18px; flex: none; display: flex; align-items: center; justify-content: center; opacity: 0; }
 .agent-step .trail .icon { width: 12px; height: 12px; }

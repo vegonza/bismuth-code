@@ -161,10 +161,11 @@ export type Item =
   | { id: string; kind: "user"; text: string; images: number }
   | { id: string; kind: "assistant"; text: string; phase: "commentary" | "final_answer" | null; done: boolean }
   | { id: string; kind: "reasoning"; summary: string[]; done: boolean }
-  | { id: string; kind: "command"; command: string; cwd: string; output: string; exitCode: number | null; durationMs: number | null; status: ItemStatus }
+  // startedAt (ms): when the core first saw the call running, for how long it has been at it.
+  | { id: string; kind: "command"; command: string; cwd: string; output: string; exitCode: number | null; durationMs: number | null; status: ItemStatus; startedAt?: number }
   | { id: string; kind: "fileChange"; changes: FileChange[]; status: ItemStatus }
   // agent: a subagent's spawn, the thread its transcript is (subagentThread).
-  | { id: string; kind: "tool"; name: string; input: string; output: string; status: ItemStatus; agent?: string }
+  | { id: string; kind: "tool"; name: string; input: string; output: string; status: ItemStatus; agent?: string; startedAt?: number }
   | { id: string; kind: "webSearch"; query: string }
   | { id: string; kind: "plan"; text: string }
   | { id: string; kind: "notice"; text: string }

@@ -74,11 +74,16 @@ export function finalizeItem(item: Item, turnStatus: TurnStatus): Item {
 /** Insert or replace by id; a completed snapshot wins, a late "started" never regresses one. */
 export function mergeItem(turn: Turn, item: Item): Item {
   const idx = turn.items.findIndex((i) => i.id === item.id);
-  if (idx < 0) {
+  const prev = idx < 0 ? null : turn.items[idx];
+  // A call keeps the time it was first seen running: a command quiet for minutes shows how long it's been at it.
+  if ((item.kind === "command" || item.kind === "tool") && item.startedAt == null) {
+    const since = prev && (prev.kind === "command" || prev.kind === "tool") ? prev.startedAt : !prev && item.status === "inProgress" ? Date.now() : undefined;
+    if (since != null) item = { ...item, startedAt: since };
+  }
+  if (!prev) {
     turn.items.push(item);
     return item;
   }
-  const prev = turn.items[idx];
   if ("done" in prev && prev.done && "done" in item && !item.done) return prev;
   turn.items[idx] = item;
   return item;
