@@ -9,7 +9,9 @@ import { $, basename, el, elapsed, firstLine, miniSpinner, timestamp } from "./d
 import { fileGlyph } from "./fileicons";
 import { icon, type IconName } from "./icons";
 import { copyText, renderMarkdown } from "./markdown";
-import { rollText } from "./motion";
+import type { Player as ClawdPlayer } from "./lazy/clawd";
+import { loadClawd } from "./lazy";
+import { reducedMotion, rollText } from "./motion";
 import { openCitedPath } from "./refs";
 import { on, promptCount, promptsLike, store } from "./store";
 import { isViewTool, viewFrame, viewOf } from "./views";
@@ -760,11 +762,19 @@ function buildRow(row: Row): HTMLElement {
 
 // ---------------- working trailer ----------------
 
-const FLAVOUR = [
-  "Six-sevening", "Cooking", "Yapping", "Rizzing", "Mewing", "Glazing", "Mogging", "Vibing", "Yeeting", "Simping", "Slaying", "Grinding", "Manifesting",
-  "Bamboozling", "Kerfuffling", "Galumphing", "Skedaddling", "Finagling", "Wrangling", "Faffing", "Waffling", "Bumbling", "Moseying", "Zhuzhing", "Bedazzling", "Schmoozing", "Frolicking", "Shimmying", "Booping", "Vrooming",
+// Each word with the Clawd emote that acts it out (web/lazy/clawd.ts), in the colours of the harness at work.
+const FLAVOUR: [word: string, emote: string][] = [
+  ["Six-sevening", "SixSeven"], ["Cooking", "Laptop"], ["Yapping", "Thinking"], ["Rizzing", "Rizzing"], ["Mogging", "Mogging"],
+  ["Glazing", "Excited"], ["Vibing", "Swaying"], ["Yeeting", "Confetti"], ["Slaying", "BreakDancing"], ["Grinding", "Desktop"],
+  ["Manifesting", "Lightbulb"], ["Bedazzling", "Spark"], ["Bamboozling", "Dizzy"],
+  ["Frolicking", "JumpingHappy"], ["Boogieing", "DancingHappy"], ["Shimmying", "Hula"], ["Skedaddling", "CrabWalking"],
+  ["Moseying", "Walking"], ["Snooping", "LookingAround"], ["Waffling", "Turning"],
+  ["Bumbling", "Facepalm"], ["Booping", "Pointing"], ["Schmoozing", "Waving"], ["Sulking", "Disappointed"],
 ];
 const seen = new Map<string, number>(); // turn id -> first time we saw it running, when the core has no start time
+/** Clawd's module: undefined until a turn first runs, null while it loads (or if it failed to). */
+let clawd: typeof import("./lazy/clawd") | null | undefined;
+let mascot: ClawdPlayer | null = null;
 
 function activeTurn(): Turn | null {
   const t = store.thread;
@@ -784,12 +794,27 @@ function renderTrailer() {
   const started = turn.startedAt ?? seen.get(turn.id)!;
   const secs = Math.max(0, (Date.now() - started) / 1000);
   let seed = 0;
-  for (const ch of thread.id) seed = (seed * 31 + ch.charCodeAt(0)) >>> 0;
-  const word = FLAVOUR[(seed + Math.floor(secs / 7)) % FLAVOUR.length];
+  for (const ch of turn.id) seed = (seed * 31 + ch.charCodeAt(0)) >>> 0;
+  if (clawd === undefined) {
+    clawd = null;
+    loadClawd().then((m) => ((clawd = m), renderTrailer()), () => {});
+  }
+  // Clawd if the build found the desktop app's animations (else the dots); then only the words he has an emote for.
+  const own = clawd?.ready ? clawd : null;
+  const words = own ? FLAVOUR.filter(([, emote]) => own.has(emote)) : FLAVOUR;
+  const at = (seed + Math.floor(secs / 7)) % words.length;
   box.hidden = false;
-  if (!box.firstChild) box.append(miniSpinner(), el("span", "word"), el("span", "elapsed"));
-  // A new flavour word rolls in, as the model picker's label does.
-  rollText(box.querySelector<HTMLElement>(".word")!, `${word}…`);
+  const glyph = own ? `clawd ${thread.id}` : "dots";
+  if (!box.firstChild || box.dataset.glyph !== glyph) {
+    box.dataset.glyph = glyph;
+    const label = el("span", "word");
+    // A new flavour word rolls in, as the model picker's label does: with Clawd, as he starts its move (each word on
+    // for as long as its move takes), else every 7 seconds.
+    mascot = own?.player(thread.harness, words, at, (word) => rollText(label, `${word}…`), reducedMotion) ?? null;
+    box.replaceChildren(mascot?.el ?? miniSpinner(), label, el("span", "elapsed"));
+  }
+  if (!mascot) rollText(box.querySelector<HTMLElement>(".word")!, `${words[at][0]}…`);
+  box.style.paddingTop = mascot ? `${Math.max(16, Math.ceil(mascot.rise()) + 4)}px` : "";
   box.querySelector(".elapsed")!.textContent = elapsed(secs);
 }
 

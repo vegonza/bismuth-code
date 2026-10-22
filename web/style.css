@@ -460,6 +460,9 @@ html.wrap-code .code-block pre { white-space: pre-wrap; overflow-wrap: anywhere;
 #working .word { color: var(--muted); }
 #working .elapsed { color: var(--faint); position: relative; top: 1px; font-variant-numeric: tabular-nums; }
 #working .mspin { grid-template-columns: repeat(2, 3px); grid-auto-rows: 3px; gap: 1.5px; }
+/* Clawd (web/lazy/clawd.ts): his standing pose sits in the row; what he raises, throws or thinks draws up into the room above it. */
+#working .clawd { position: relative; flex: none; }
+#working .clawd canvas { position: absolute; image-rendering: pixelated; pointer-events: none; }
 .mspin i { border-radius: 50%; animation: mspin 0.75s cubic-bezier(0.25, 0.1, 0.25, 1) infinite; }
 .mspin { display: grid; grid-template-columns: repeat(2, 2px); grid-auto-rows: 2px; gap: 1px; flex: none; }
 @keyframes mspin { 0% { opacity: 1; } 45% { opacity: 0.1; } 92% { opacity: 0.1; } 100% { opacity: 1; } }

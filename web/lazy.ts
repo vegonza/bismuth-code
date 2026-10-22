@@ -5,3 +5,4 @@ const imported = (name: string) => import(/* @vite-ignore */ `./lazy/${name}.js`
 export const loadMermaid = (): Promise<typeof import("./lazy/mermaid")> => imported("mermaid");
 export const loadXlsx = (): Promise<typeof import("./lazy/xlsx")> => imported("xlsx");
 export const loadSharks = (): Promise<typeof import("./lazy/sharks")> => imported("sharks");
+export const loadClawd = (): Promise<typeof import("./lazy/clawd")> => imported("clawd");
