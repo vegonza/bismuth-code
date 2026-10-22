@@ -18,7 +18,7 @@ import { closeSettings, openSettings, refresh } from "./settings";
 import { projectArt, renameSession, sessionRow, sortedSummaries, toggleSidebar } from "./sidebar";
 import { newTerminal, toggleMaximize, toggleTerminal } from "./terminal";
 import { newSideChat, openBrowser, closeActiveFile, reopenClosedFile, collapseFolders, copyActivePath, downloadPdf, expandFolders, findFiles, loadSuggestions, openFile, openReview, showChangesSince, showCommit, suggestedFiles, toggleChanges, toggleExpand, toggleFiles, revealActiveFile, toggleHiddenFiles, togglePane, togglePreview } from "./panels";
-import { actions, call, on, projectName, store, targetProject, tildePath, workFolder } from "./store";
+import { actions, call, on, projectName, projectOf, store, targetProject, tildePath, workFolder } from "./store";
 import { showToast } from "./toast";
 import { previewSession, switchPreview } from "./worktrees";
 
@@ -301,17 +301,29 @@ function threadEntry(t: ThreadSummary): Entry {
   };
 }
 
-/** The projects, the one new sessions start in first, then by last use; New project closes the list. Picking one
- *  starts a session there, or (from MCP servers) shows its servers. */
+/** When each project was last used: a session last started there, or the latest activity of one in it. */
+function projectUse(): Map<string, number> {
+  const used = new Map(store.projects.map((p) => [p.id, p.lastUsedAt]));
+  for (const t of store.summaries.values()) {
+    const p = projectOf(t.cwd);
+    if (p) used.set(p.id, Math.max(used.get(p.id)!, t.updatedAt));
+  }
+  return used;
+}
+
+/** The projects by last use, searched or not; New project closes the list. Picking one starts a session there, or
+ *  (from MCP servers) shows its servers. */
 function projectEntries(q: string[]): Entry[] {
   const target = projectForMcp ? mcpProject : targetProject();
-  const sorted = [...store.projects].sort((a, b) => Number(b.id === target?.id) - Number(a.id === target?.id) || b.lastUsedAt - a.lastUsedAt);
+  const used = projectUse();
+  const sorted = [...store.projects].sort((a, b) => used.get(b.id)! - used.get(a.id)!);
   const rows: Entry[] = sorted
     .filter((p) => matches(q, `${p.name} ${tildePath(p.path)}`))
     .map((p) => ({
       group: "projects",
       render: (q) => {
-        const item = el("button", "palette-command palette-project");
+        // A div, so the remove button can sit inside it.
+        const item = el("div", "palette-command palette-project");
         const label = el("span", "label");
         const name = el("span", "name");
         name.append(highlight(p.name, q));
@@ -320,6 +332,7 @@ function projectEntries(q: string[]): Entry[] {
         label.append(name, path);
         item.append(projectArt(p), label);
         if (p.id === target?.id) item.append(el("span", "palette-note", "Current"));
+        if (!projectForMcp) item.append(removeProjectButton(p));
         return item;
       },
       pick: () => {
@@ -331,6 +344,20 @@ function projectEntries(q: string[]): Entry[] {
   const add = COMMANDS.find((c) => c.label === "New project")!;
   if (!projectForMcp && matches(q, add.label)) rows.push({ ...commandEntry(add), group: "actions" });
   return rows;
+}
+
+/** The hover ×: the project leaves the app (this list and the sidebar); its sessions stay with the harnesses and
+ *  come back if the folder is added again. */
+function removeProjectButton(p: Project): HTMLElement {
+  const b = el("button", "palette-remove");
+  b.title = "Remove project · its sessions are kept";
+  b.append(icon("x"));
+  b.onclick = (e) => {
+    e.stopPropagation();
+    palette?.input.focus();
+    void call("projects.remove", { id: p.id }).catch((err) => showToast(String(err?.message ?? err), { tone: "error", ms: 5000 }));
+  };
+  return b;
 }
 
 /** The open folder's subfolders, filtered by the query (or by a typed path's last segment); a name none of them
