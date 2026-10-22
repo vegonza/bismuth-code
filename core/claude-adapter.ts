@@ -468,6 +468,8 @@ export class ClaudeAdapter implements Harness {
     // Asked before anything else, so nothing else can start a run for the thread in between.
     const plan = await this.mcpPlan(thread.cwd).catch((): McpPlan => ({ off: [], on: [], add: {} }));
     const mcp: McpPlan = { ...plan, add: { ...plan.add, ...this.sessionMcp(thread.cwd, threadId) } };
+    const fork = this.forks[threadId];
+    if (fork && !this.runs.has(threadId)) await this.cutFork(threadId, fork);
     const live = this.runs.get(threadId);
     const uuid = randomUUID();
     const command = isCommand(text);
@@ -562,8 +564,36 @@ export class ClaudeAdapter implements Harness {
   private session(id: string): string[] {
     if (this.onDisk.has(id)) return ["--resume", id];
     const fork = this.forks[id];
-    if (fork) return ["--resume", fork.parent, "--fork-session", "--session-id", id, "--resume-session-at", fork.at];
+    if (fork) return ["--resume", this.forkCut(id), "--fork-session", "--session-id", id, "--resume-session-at", fork.at];
     return ["--session-id", id];
+  }
+
+  private forkCut = (id: string) => join(this.stateDir, "claude-forks", `${id}.jsonl`);
+
+  /** A side chat forks its parent's transcript cut at the fork point, not the parent itself: the CLI loads a session
+   *  from its last compaction on, so once the parent compacts past the fork point, that point is gone from it. */
+  private async cutFork(id: string, fork: Fork) {
+    const path = join(projectDir(fork.cwd), `${fork.parent}.jsonl`);
+    if (!existsSync(path)) throw new Error(`no Claude Code session ${fork.parent} to branch from`);
+    const kept: string[] = [];
+    let found = false;
+    for await (const line of lines(Bun.file(path).stream())) {
+      kept.push(line);
+      if (line.includes(fork.at) && parse(line)?.uuid === fork.at) {
+        found = true;
+        break;
+      }
+    }
+    if (!found) throw new Error("Couldn't find where this side chat branched off in its parent's transcript");
+    mkdirSync(join(this.stateDir, "claude-forks"), { recursive: true, mode: 0o700 });
+    writeFileSync(this.forkCut(id), kept.join("\n") + "\n", { mode: 0o600 });
+  }
+
+  private dropFork(id: string) {
+    if (!this.forks[id]) return;
+    delete this.forks[id];
+    this.saveForks();
+    rmSync(this.forkCut(id), { force: true });
   }
 
   /** A live process keeps the flags it started with: switch the ones this turn changes. */
@@ -624,10 +654,7 @@ export class ClaudeAdapter implements Harness {
     if (run?.finished) run.proc.kill("SIGTERM");
     this.archived.add(threadId);
     writeFileSync(join(this.stateDir, "claude-archived.json"), JSON.stringify([...this.archived]));
-    if (this.forks[threadId]) {
-      delete this.forks[threadId];
-      this.saveForks();
-    }
+    this.dropFork(threadId);
     this.threads.delete(threadId);
     this.onEvent(threadId, { type: "thread.archived" });
   }
@@ -702,10 +729,7 @@ export class ClaudeAdapter implements Harness {
         if (f.subtype === "init") {
           run.model = f.model ?? run.model;
           this.onDisk.add(run.threadId);
-          if (this.forks[run.threadId]) {
-            delete this.forks[run.threadId];
-            this.saveForks();
-          }
+          this.dropFork(run.threadId);
           this.sawMcp(run, f.mcp_servers);
         } else if (f.subtype === "compact_boundary") this.upsertItem(run.threadId, run.turnId, { id: f.uuid ?? randomUUID(), kind: "notice", text: "Context compacted" });
         else if (f.subtype === "background_tasks_changed") this.backgroundChanged(run, f.tasks ?? []);
