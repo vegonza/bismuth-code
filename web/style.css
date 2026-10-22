@@ -1841,6 +1841,8 @@ button.bw-nav-key:active { background: rgba(255, 255, 255, 0.16); }
 .ft-row.selected, .ft-row.current { background: rgba(var(--wash-rgb), 0.08); color: var(--text); }
 .ft:focus .ft-row.selected { background: rgba(var(--wash-rgb), 0.12); }
 .ft-row.ignored { opacity: 0.52; }
+/* A repository nested in the project: its name in VS Code's submodule blue. */
+.ft-row.repo .ft-name { color: var(--repo); }
 /* An empty folder: grey, selected or not. */
 .ft-row.empty { color: var(--faint); }
 .ft-row.empty .ft-icon { opacity: 0.55; }

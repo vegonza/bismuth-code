@@ -74,7 +74,8 @@ export type PreviewResult = { written: number; deleted: number; kept: string[] }
 export type FolderListing = { path: string; home: string; parent: string | null; entries: { name: string; path: string; isRepo: boolean }[] };
 
 /** A session folder's entry, for the file tree. `path` is relative to the folder, "/"-separated. */
-export type FileEntry = { name: string; path: string; kind: "dir" | "file"; ignored: boolean };
+/** `repo`: a folder with a .git of its own, a repository nested in the project. */
+export type FileEntry = { name: string; path: string; kind: "dir" | "file"; ignored: boolean; repo?: boolean };
 /** A file to view: its text, an image (as a data URL), or why it can't show. */
 export type FileContent =
   | { kind: "text"; text: string; size: number; mtime: number }

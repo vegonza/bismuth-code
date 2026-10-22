@@ -302,6 +302,8 @@ function vars(t: Theme): Record<string, string> {
     "--warning": css(t.warning),
     "--warning-muted": css(t.warningMuted),
     "--success": css(t.success),
+    // VS Code's gitDecoration.submoduleResourceForeground, for repositories nested in the project.
+    "--repo": css(ensureContrast(hex(dark ? "#8db9e2" : "#1258a7"), t.bg, 3)),
     "--border": css(t.border),
     "--border-strong": css(t.borderStrong),
     "--hover": css(t.hover),

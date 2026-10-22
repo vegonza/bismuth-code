@@ -126,10 +126,19 @@ async function ignoredOf(root: string, rels: string[]): Promise<Set<string>> {
 
 const toWire = (rel: string) => rel.split(sep).join("/");
 
-/** One directory's entries: folders first, then by name. Ignored ones are left out, or marked when `all`. */
+/** The innermost folder from `root` down to `abs` with a .git of its own: whose ignore rules count there. */
+function repoAt(root: string, abs: string): string {
+  for (let d = abs; d.length > root.length && d.startsWith(root); d = dirname(d)) if (existsSync(join(d, ".git"))) return d;
+  return root;
+}
+
+/** One directory's entries: folders first, then by name. Ignored ones are left out, or marked when `all`. A repository
+ *  nested inside (a folder with a .git of its own) is marked `repo`, is never ignored, and its insides answer to its
+ *  own ignore rules, not the outer one's (which may ignore it whole). */
 export async function listDirectory(rootPath: string, dir: string, all: boolean): Promise<FileEntry[]> {
   const root = rootOf(rootPath);
   const abs = inside(root, dir);
+  const repo = repoAt(root, abs);
   let names: string[];
   try {
     names = readdirSync(abs);
@@ -147,14 +156,13 @@ export async function listDirectory(rootPath: string, dir: string, all: boolean)
     } catch {
       continue;
     }
-    entries.push({ name, path, kind, ignored: false });
+    entries.push({ name, path, kind, ignored: false, repo: kind === "dir" && existsSync(join(abs, name, ".git")) });
     if (entries.length >= MAX_DIRECTORY_ENTRIES) break;
   }
   // Directories go to check-ignore with a trailing slash so dir-only patterns ("build/") match them.
-  const ignored = await ignoredOf(root, entries.map((e) => (e.kind === "dir" ? `${e.path}/` : e.path)));
-  const out = entries
-    .map((e) => ({ ...e, ignored: ignored.has(e.kind === "dir" ? `${e.path}/` : e.path) || ignored.has(e.path) }))
-    .filter((e) => all || !e.ignored);
+  const key = (e: FileEntry) => toWire(relative(repo, join(abs, e.name))) + (e.kind === "dir" ? "/" : "");
+  const ignored = await ignoredOf(repo, entries.filter((e) => !e.repo).map(key));
+  const out = entries.map((e) => ({ ...e, ignored: !e.repo && (ignored.has(key(e)) || ignored.has(key(e).replace(/\/$/, ""))) })).filter((e) => all || !e.ignored);
   return out.sort((a, b) => (a.kind === b.kind ? a.name.localeCompare(b.name, undefined, { sensitivity: "base", numeric: true }) : a.kind === "dir" ? -1 : 1));
 }
 

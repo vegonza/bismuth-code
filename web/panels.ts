@@ -2442,7 +2442,7 @@ function entryRow(r: string, t: Tree, e: FileEntry, depth: number, cache: Map<st
   const git = isDir ? t.gitDirs.get(e.path) : t.git[e.path];
   // A folder listed with nothing in it (or nothing shown) is greyed, so it needn't be opened to tell.
   const empty = isDir && t.children.get(e.path)?.length === 0;
-  const cls = `ft-row${isDir ? " dir" : ""}${empty ? " empty" : ""}${open ? " open" : ""}${t.selected === e.path ? " selected" : ""}${currentFile() === e.path ? " current" : ""}${e.ignored && !git ? " ignored" : ""}${git ? ` git-${git}` : ""}`;
+  const cls = `ft-row${isDir ? " dir" : ""}${empty ? " empty" : ""}${open ? " open" : ""}${t.selected === e.path ? " selected" : ""}${currentFile() === e.path ? " current" : ""}${e.ignored && !git ? " ignored" : ""}${e.repo && !git ? " repo" : ""}${git ? ` git-${git}` : ""}`;
   const sig = `${cls}|${depth}|${e.name}`;
   const kept = rowCache.get(e.path);
   if (kept?.dataset.sig === sig) return cache.set(e.path, kept), kept;
