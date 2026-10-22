@@ -1,12 +1,17 @@
 // The new-thread background (Zeron's new_thread_background_{image,effects,mask}.rs): an image across the top
 // of the new-session screen, fading out downward and opening a soft cutout around the composer, optionally
 // rebuilt by an effect (dither, ASCII, halftone, scanlines). The file lives in IndexedDB; its name and
-// framing (focal point + zoom) in prefs. Also the Adjust dialog that sets the framing.
+// framing (focal point + zoom) in prefs, which remember the last few images used, each as it was left. Also the
+// Adjust dialog that sets the framing. Or, instead of an image,
+// an animation (web/lazy/), played through the same fade and cutout while the screen is up.
 import { upload } from "./attachments";
 import { $, el } from "./dom";
 import { isPhone } from "./phone";
-import { icon } from "./icons";
-import { prefs, setPrefs, onPrefs, type BackgroundEffect, type Framing } from "./prefs";
+import { icon, type IconName } from "./icons";
+import { loadSharks } from "./lazy";
+import type { Scene } from "./lazy/sharks";
+import { animator, reducedMotion } from "./motion";
+import { prefs, setPrefs, onPrefs, type BackgroundAnimation, type BackgroundEffect, type BackgroundImage, type Framing } from "./prefs";
 import { activeTheme, onTheme } from "./theme";
 import { action } from "./widgets";
 
@@ -16,6 +21,10 @@ export const EFFECTS: { id: BackgroundEffect; label: string; description: string
   { id: "ascii", label: "ASCII", description: "Recreates the artwork with colored characters on black." },
   { id: "halftone", label: "Halftone", description: "Recreates the artwork with colored print dots on black." },
   { id: "scanlines", label: "Scanlines", description: "Adds a pronounced horizontal display-line texture." },
+];
+
+export const ANIMATIONS: { id: BackgroundAnimation; label: string; description: string; icon: IconName; load: () => Promise<{ createScene: (font: string) => Scene }> }[] = [
+  { id: "sharks", label: "Sharks", description: "ASCII sharks hunting schools of fish.", icon: "fish", load: loadSharks },
 ];
 
 /** Below 1× the artwork no longer covers the hero: it shrinks inside it and its bare edges fade out (fadeRamp). */
@@ -38,6 +47,10 @@ export const heroHeight = () => Math.min(innerHeight * VIEWPORT_RATIO, MAX_HEIGH
 const DB = "bismuth";
 const STORE = "blobs";
 const KEY = "newThreadBackground";
+/** Where an image's file is in IndexedDB. */
+const blobKey = (bg: BackgroundImage) => (bg.id ? `${KEY}:${bg.id}` : KEY);
+/** How many images are remembered. */
+const RECENT = 10;
 
 function db(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -63,27 +76,36 @@ type Source = { url: string; width: number; height: number; colors: Uint8Clamped
 let source: Promise<Source | null> | null = null;
 const rendered = new Map<string, HTMLCanvasElement>();
 
-/** The image: the core's copy, which every window shares, else this window's own. */
-async function imageBlob(): Promise<Blob | undefined> {
-  const bg = prefs.background;
-  if (!bg) return undefined;
+const sameImage = (a: BackgroundImage | null | undefined, b: BackgroundImage | null | undefined) => !!a && !!b && a.id === b.id && a.name === b.name;
+
+/** An image's file: the core's copy, which every window shares, else this window's own. */
+async function imageBlob(bg: BackgroundImage): Promise<Blob | undefined> {
   const shared = bg.path ? await fetch(`/attachment?path=${encodeURIComponent(bg.path)}`).then((r) => (r.ok ? r.blob() : undefined), () => undefined) : undefined;
   if (shared) return shared;
-  const own = await idb<Blob | undefined>("readonly", (s) => s.get(KEY)).catch(() => undefined);
+  const own = await idb<Blob | undefined>("readonly", (s) => s.get(blobKey(bg))).catch(() => undefined);
   // Chosen before images were shared: it goes to the core now, so other windows (a phone) get it too.
-  if (own && !bg.path) void share(own, bg.name);
+  if (own && !bg.path) void share(own, bg);
   return own;
 }
 
-async function share(blob: Blob, name: string) {
-  const path = await upload(blob, name).catch(() => null);
-  if (path && prefs.background?.name === name && !prefs.background.path) setPrefs({ background: { ...prefs.background, path } });
+async function share(blob: Blob, bg: BackgroundImage) {
+  const path = await upload(blob, bg.name).catch(() => null);
+  if (!path) return;
+  const withPath = <T extends BackgroundImage>(b: T): T => (sameImage(b, bg) && !b.path ? { ...b, path } : b);
+  setPrefs({ background: prefs.background && withPath(prefs.background), recentBackgrounds: prefs.recentBackgrounds.map(withPath) });
 }
 
-/** Decode the stored image once, as a ≤2048px proxy with its luminance (BT.709). */
+/** A URL to show a remembered image at (a menu's thumbnail); null if its file is gone. */
+export async function imageUrl(bg: BackgroundImage): Promise<string | null> {
+  if (bg.path) return `/attachment?path=${encodeURIComponent(bg.path)}`;
+  const own = await idb<Blob | undefined>("readonly", (s) => s.get(blobKey(bg))).catch(() => undefined);
+  return own ? URL.createObjectURL(own) : null;
+}
+
+/** Decode the image in use once, as a ≤2048px proxy with its luminance (BT.709). */
 export function loadSource(): Promise<Source | null> {
   source ??= (async () => {
-    const blob = await imageBlob();
+    const blob = prefs.background && (await imageBlob(prefs.background));
     if (!blob) return null;
     const bitmap = await createImageBitmap(blob).catch(() => null);
     if (!bitmap) return null;
@@ -100,18 +122,45 @@ export function loadSource(): Promise<Source | null> {
   return source;
 }
 
-export async function setImage(file: File) {
-  await idb("readwrite", (s) => s.put(file, KEY));
-  // A format the core doesn't take (or one too large) stays this window's alone.
-  const path = await upload(file, file.name).catch(() => undefined);
-  forget();
-  setPrefs({ background: { name: file.name, ...(path ? { path } : {}), focalX: 0.5, focalY: 0.5, zoom: 1 } });
+/** Show `bg` with `effect`, first among the remembered images; the oldest past RECENT is forgotten. */
+function useImage(bg: BackgroundImage, effect: BackgroundEffect) {
+  const recent = [{ ...bg, effect }, ...prefs.recentBackgrounds.filter((r) => !sameImage(r, bg))];
+  for (const old of recent.slice(RECENT)) void idb("readwrite", (s) => s.delete(blobKey(old))).catch(() => {});
+  if (!sameImage(bg, prefs.background)) forget();
+  setPrefs({ background: bg, backgroundEffect: effect, backgroundAnimation: null, recentBackgrounds: recent.slice(0, RECENT) });
 }
 
-export async function removeImage() {
-  await idb("readwrite", (s) => s.delete(KEY)).catch(() => {});
+/** A file chosen: as it was left if it's one of the remembered images, else new, as is and centred. */
+export async function setImage(file: File) {
+  const known = prefs.recentBackgrounds.find((r) => r.name === file.name && r.size === file.size);
+  if (known) return useImage(known, known.effect);
+  const id = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+  const bg: BackgroundImage = { id, name: file.name, size: file.size, focalX: 0.5, focalY: 0.5, zoom: 1 };
+  await idb("readwrite", (s) => s.put(file, blobKey(bg)));
+  // A format the core doesn't take (or one too large) stays this window's alone.
+  const path = await upload(file, file.name).catch(() => undefined);
+  useImage(path ? { ...bg, path } : bg, "none");
+}
+
+/** Back to a remembered image, framed and with the effect it had. */
+export const useRecent = (bg: BackgroundImage & { effect: BackgroundEffect }) => useImage(bg, bg.effect);
+
+/** A new framing or effect for the image in use, remembered with it. */
+export function adjustImage(framing: Framing | null, effect = prefs.backgroundEffect) {
+  if (prefs.background) useImage({ ...prefs.background, ...framing }, effect);
+}
+
+/** No background at all, or (`animation`) that animation in place of the image. The image stays remembered. */
+export function clearBackground(animation: BackgroundAnimation | null = null) {
   forget();
-  setPrefs({ background: null });
+  setPrefs({ background: null, backgroundAnimation: animation });
+}
+
+/** Stop remembering an image (and stop showing it, if it's the one in use). */
+export function forgetRecent(bg: BackgroundImage) {
+  void idb("readwrite", (s) => s.delete(blobKey(bg))).catch(() => {});
+  if (sameImage(bg, prefs.background)) clearBackground();
+  setPrefs({ recentBackgrounds: prefs.recentBackgrounds.filter((r) => !sameImage(r, bg)) });
 }
 
 function forget() {
@@ -348,64 +397,96 @@ function composerBox(): DOMRect | null {
   return new DOMRect(x, y, composer.offsetWidth, composer.offsetHeight);
 }
 
+/** How strongly the hero shows at each point (its alpha): fading out from its top edge to its bottom, at half
+ *  strength in a feathered cutout around the composer (open through the hero's bottom), full outside it. A `full`
+ *  hero (an animation's, over the whole screen) doesn't fade, and its cutout only rings the composer. */
+function heroMask(w: number, h: number, dpr: number, full = false): HTMLCanvasElement {
+  const layer = () => {
+    const c = el("canvas");
+    c.width = Math.round(w * dpr);
+    c.height = Math.round(h * dpr);
+    const ctx = c.getContext("2d")!;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    return [c, ctx] as const;
+  };
+  const [fade, fc] = layer();
+  const grad = fc.createLinearGradient(0, 0, 0, h);
+  grad.addColorStop(0, "#000");
+  grad.addColorStop(1, full ? "#000" : "transparent");
+  fc.fillStyle = grad;
+  fc.fillRect(0, 0, w, h);
+
+  const [mask, mc] = layer();
+  // Half strength everywhere, so the cutout reveals a softened background rather than nothing.
+  mc.globalAlpha = REVEAL_OPACITY;
+  mc.drawImage(fade, 0, 0, w, h);
+  mc.globalAlpha = 1;
+  const box = composerBox();
+  if (!box) {
+    mc.drawImage(fade, 0, 0, w, h);
+    return mask;
+  }
+  const feather = full ? 120 : clamp(h * 0.52, 120, 280);
+  const clearance = 8;
+  const [cut, cc] = layer();
+  cc.drawImage(fade, 0, 0, w, h);
+  cc.globalCompositeOperation = "destination-out";
+  cc.filter = `blur(${feather / 4}px)`;
+  const grow = clearance + feather / 2;
+  cc.beginPath();
+  const bottom = full ? box.bottom : Math.max(box.bottom, h) + feather;
+  cc.roundRect(box.x - grow, box.y - grow, box.width + grow * 2, bottom - box.y + grow * 2, COMPOSER_RADIUS + grow);
+  cc.fill();
+  mc.drawImage(cut, 0, 0, w, h);
+  return mask;
+}
+
+let mask: HTMLCanvasElement | null = null;
+
+/** Show only what the mask lets through of what's on the hero. */
+function applyMask(ctx: CanvasRenderingContext2D) {
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalCompositeOperation = "destination-in";
+  ctx.drawImage(mask!, 0, 0);
+  ctx.globalCompositeOperation = "source-over";
+}
+
 async function paintHero() {
   const main = $("main");
   // Only the new-session screen shows it; elsewhere the last frame just fades out.
   if (!main.classList.contains("new-thread")) return;
   const ticket = ++painting;
-  const art = prefs.background ? await artwork() : null;
+  const animation = prefs.backgroundAnimation;
+  const art = !animation && prefs.background ? await artwork() : null;
+  const live = animation ? await sceneFor(animation) : null;
   if (ticket !== painting) return;
+  shown = live;
   const w = main.clientWidth;
-  const h = Math.round(heroHeight());
-  hero.hidden = !art;
-  if (!art || !w || !h) return;
+  // An image crowns the screen; an animation fills it.
+  const h = Math.round(live ? main.clientHeight : heroHeight());
+  hero.hidden = !art && !live;
+  if ((!art && !live) || !w || !h) return;
   const dpr = devicePixelRatio || 1;
   hero.width = Math.round(w * dpr);
   hero.height = Math.round(h * dpr);
   hero.style.height = `${h}px`;
+  mask = heroMask(w, h, dpr, !!live);
   const ctx = hero.getContext("2d")!;
+
+  if (live) {
+    live.avoid(composerBox());
+    live.resize(w, h, dpr);
+    drawScene();
+    playScene();
+    return;
+  }
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-
-  // The artwork, fading out from the hero's top edge to its bottom.
-  const layer = el("canvas");
-  layer.width = hero.width;
-  layer.height = hero.height;
-  const lc = layer.getContext("2d")!;
-  lc.setTransform(dpr, 0, 0, dpr, 0, 0);
-  const g = fitted(art.source.width, art.source.height, w, h, prefs.background!);
-  lc.imageSmoothingQuality = "high";
-  lc.drawImage(art.canvas, g.x, g.y, g.w, g.h);
-  fadeEdges(lc, g, w, h);
-  const fade = lc.createLinearGradient(0, 0, 0, h);
-  fade.addColorStop(0, "#000");
-  fade.addColorStop(1, "transparent");
-  lc.fillStyle = fade;
-  lc.fillRect(0, 0, w, h);
-
   ctx.clearRect(0, 0, w, h);
-  // Pass one: half strength everywhere, so the cutout reveals a softened image rather than nothing.
-  ctx.globalAlpha = REVEAL_OPACITY;
-  ctx.drawImage(layer, 0, 0, w, h);
-  ctx.globalAlpha = 1;
-  // Pass two: full strength outside a feathered cutout around the composer, open through the hero's bottom.
-  const box = composerBox();
-  if (box) {
-    const feather = clamp(h * 0.52, 120, 280);
-    const clearance = 8;
-    const cut = el("canvas");
-    cut.width = hero.width;
-    cut.height = hero.height;
-    const cc = cut.getContext("2d")!;
-    cc.setTransform(dpr, 0, 0, dpr, 0, 0);
-    cc.drawImage(layer, 0, 0, w, h);
-    cc.globalCompositeOperation = "destination-out";
-    cc.filter = `blur(${feather / 4}px)`;
-    const grow = clearance + feather / 2;
-    cc.beginPath();
-    cc.roundRect(box.x - grow, box.y - grow, box.width + grow * 2, Math.max(box.bottom, h) - box.y + grow * 2 + feather, COMPOSER_RADIUS + grow);
-    cc.fill();
-    ctx.drawImage(cut, 0, 0, w, h);
-  } else ctx.drawImage(layer, 0, 0, w, h);
+  const g = fitted(art!.source.width, art!.source.height, w, h, prefs.background!);
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(art!.canvas, g.x, g.y, g.w, g.h);
+  fadeEdges(ctx, g, w, h);
+  applyMask(ctx);
 }
 
 let queued = false;
@@ -418,12 +499,85 @@ export function repaintHero() {
   });
 }
 
+// ---------------- the animation ----------------
+
+let scene: { id: BackgroundAnimation; scene: Promise<Scene | null> } | null = null;
+const monoFont = () => getComputedStyle(document.documentElement).getPropertyValue("--mono").trim() || "monospace";
+
+/** The animation's scene, loaded the first time it's shown and kept while it stays the one chosen. */
+function sceneFor(id: BackgroundAnimation): Promise<Scene | null> {
+  if (scene?.id !== id) {
+    const entry = ANIMATIONS.find((a) => a.id === id);
+    scene = { id, scene: entry ? entry.load().then((m) => m.createScene(monoFont()), () => null) : Promise.resolve(null) };
+  }
+  return scene.scene;
+}
+
+/** The scene once it's loaded, if it's the one showing. */
+let shown: Scene | null = null;
+
+const TICK = 1 / 60;
+/** Frames are drawn at 30 a second: the cells snap anyway, and the app stays open for hours. */
+const FRAME = 1 / 30;
+
+function drawScene() {
+  if (!shown) return;
+  const ctx = hero.getContext("2d")!;
+  shown.draw(ctx, activeTheme().appearance === "light");
+  applyMask(ctx);
+}
+
+/** Whether the animation should be moving: on screen, the window shown, and motion allowed. */
+function playing() {
+  const app = $("app");
+  return (
+    !!shown &&
+    !hero.hidden &&
+    $("main").classList.contains("new-thread") &&
+    !document.hidden &&
+    !reducedMotion() &&
+    !document.documentElement.classList.contains("paused") &&
+    !app.classList.contains("settings-open") &&
+    !app.classList.contains("ph-home")
+  );
+}
+
+let last = 0;
+let owed = 0;
+let sinceDrawn = 0;
+const playScene = animator((now) => {
+  if (!playing()) {
+    last = 0;
+    return false;
+  }
+  const dt = last ? Math.min(0.1, (now - last) / 1000) : 0;
+  last = now;
+  owed += dt;
+  sinceDrawn += dt;
+  for (let i = 0; owed >= TICK && i < 4; i++, owed -= TICK) shown!.step(TICK);
+  owed = Math.min(owed, TICK);
+  if (sinceDrawn >= FRAME) {
+    sinceDrawn = 0;
+    drawScene();
+  }
+  return true;
+});
+
+/** Where the pointer is on the hero, or null once it's off it. */
+function heroPoint(e: PointerEvent) {
+  const r = hero.getBoundingClientRect();
+  const x = e.clientX - r.left;
+  const y = e.clientY - r.top;
+  return x >= 0 && y >= 0 && x <= r.width && y <= r.height ? { x, y } : null;
+}
+
 export function initBackground() {
   hero = el("canvas", "nt-hero");
   hero.hidden = true;
-  $("main").prepend(hero);
-  new ResizeObserver(repaintHero).observe($("main"));
-  new MutationObserver(repaintHero).observe($("main"), { attributes: true, attributeFilter: ["class"] });
+  const main = $("main");
+  main.prepend(hero);
+  new ResizeObserver(repaintHero).observe(main);
+  new MutationObserver(repaintHero).observe(main, { attributes: true, attributeFilter: ["class"] });
   const dock = $("dock");
   new ResizeObserver(repaintHero).observe(dock);
   new MutationObserver(repaintHero).observe(dock, { childList: true });
@@ -431,8 +585,24 @@ export function initBackground() {
   onTheme(repaintHero);
   onPrefs((prev) => {
     // Another window picked another image (or removed it): this one loads it afresh.
-    if (prev.background?.name !== prefs.background?.name || (prev.background?.path && prev.background.path !== prefs.background?.path)) forget();
-    if (prev.background !== prefs.background || prev.backgroundEffect !== prefs.backgroundEffect) repaintHero();
+    if (!sameImage(prev.background, prefs.background) || (prev.background?.path && prev.background.path !== prefs.background?.path)) forget();
+    if (prev.background !== prefs.background || prev.backgroundEffect !== prefs.backgroundEffect || prev.backgroundAnimation !== prefs.backgroundAnimation) repaintHero();
+  });
+
+  // The image in use before images were remembered becomes the first one remembered.
+  if (prefs.background && !prefs.recentBackgrounds.some((r) => sameImage(r, prefs.background))) adjustImage(null);
+
+  // The animation stops while it can't be seen and picks up where it was once it can.
+  new MutationObserver(playScene).observe($("app"), { attributes: true, attributeFilter: ["class"] });
+  new MutationObserver(playScene).observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+  document.addEventListener("visibilitychange", playScene);
+  // Fish shy from the pointer, and scatter from a click on open water.
+  main.addEventListener("pointermove", (e) => shown?.pointer(e.pointerType === "touch" ? null : heroPoint(e)), { passive: true });
+  main.addEventListener("pointerleave", () => shown?.pointer(null));
+  main.addEventListener("pointerdown", (e) => {
+    const at = heroPoint(e);
+    if (!at || !playing() || (e.target as Element).closest(".composer, button, a, input, textarea, select, [contenteditable], [role=button], .menu")) return;
+    shown!.splash(at.x, at.y);
   });
   repaintHero();
 }
@@ -575,7 +745,7 @@ export async function openAdjust() {
     removeEventListener("keydown", onKey, true);
   };
   const apply = action("Apply", "solid", () => {
-    if (prefs.background) setPrefs({ background: { ...prefs.background, ...normalized(draft) } });
+    adjustImage(normalized(draft));
     close();
   });
   apply.disabled = !s;

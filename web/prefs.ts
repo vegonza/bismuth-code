@@ -7,10 +7,16 @@ export type AccentPreset = "zeron" | "orange" | "amber" | "green" | "cyan" | "bl
 export type Surface = "theme" | "frosted" | "opaque";
 export type ReduceMotion = "system" | "on" | "off";
 export type BackgroundEffect = "none" | "dither" | "ascii" | "halftone" | "scanlines";
+/** An animation the new-thread background plays instead of an image (background.ts `ANIMATIONS`). */
+export type BackgroundAnimation = "sharks";
 /** Pan/zoom of the new-thread background: the focal point (0–1 on each axis), a ¼–4× magnification of the
  *  cover fit (below 1× the image fits inside with its edges fading out), and how far past the frame's edge it
  *  was dragged, in lengths of the image (background.ts `place`). */
 export type Framing = { focalX: number; focalY: number; zoom: number; shiftX?: number; shiftY?: number };
+/** A new-thread background image: its file is with the core at `path` (an upload), for every window, and in
+ *  IndexedDB under `id` (background.ts; none for the one chosen before images were remembered). No path: one
+ *  chosen before images were shared, or one the core wouldn't take. `size` (bytes) tells a file chosen again. */
+export type BackgroundImage = { id?: string; name: string; path?: string; size?: number } & Framing;
 
 export const SHORTCUTS = ["toggleSidebar", "toggleRightPane", "expandRightPane", "toggleFiles", "showChanges", "showReview", "toggleTerminal", "newSession", "newSessionIn", "openModelPicker", "nextSession", "prevSession", "settleSession", "renameSession", "jump1", "jump2", "jump3", "jump4", "jump5", "jump6", "jump7", "jump8", "jump9", "newTerminal", "closeTerminal", "nextTerminal", "prevTerminal", "maximizeTerminal", "closeFile", "reopenFile", "saveFile", "togglePreview", "goBack", "goForward", "toggleHiddenFiles", "expandFolders", "collapseFolders", "revealFile", "quickOpen", "tab1", "tab2", "tab3", "tab4", "tab5", "tab6", "tab7", "tab8", "tab9", "removeImage", "stopTurn", "newBrowserTab", "focusAddress", "reloadPage", "sideChat", "previewSession", "toggleWorktree"] as const;
 export type ShortcutId = (typeof SHORTCUTS)[number];
@@ -104,10 +110,13 @@ export type Prefs = {
   /** "theme": the theme's own accent. */
   accent: AccentPreset | "theme";
   surface: Surface;
-  /** The image itself is with the core at `path` (an upload), for every window, and in IndexedDB (background.ts);
-   *  this is its name and framing. No path: one chosen before images were shared, or one the core wouldn't take. */
-  background: ({ name: string; path?: string } & Framing) | null;
+  background: BackgroundImage | null;
   backgroundEffect: BackgroundEffect;
+  /** The last images used, newest first (the one in use among them), each with the framing and effect it was
+   *  left with, so going back to one needs no setting up again. */
+  recentBackgrounds: (BackgroundImage & { effect: BackgroundEffect })[];
+  /** Played instead of an image; never set alongside `background`. */
+  backgroundAnimation: BackgroundAnimation | null;
   reduceMotion: ReduceMotion;
   pauseInBackground: boolean;
   uiFont: string;
@@ -165,6 +174,8 @@ export const DEFAULTS: Prefs = {
   surface: "theme",
   background: null,
   backgroundEffect: "none",
+  recentBackgrounds: [],
+  backgroundAnimation: null,
   reduceMotion: "system",
   pauseInBackground: false,
   uiFont: "Geist",

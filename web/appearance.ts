@@ -1,9 +1,10 @@
 // Settings → Appearance (Zeron's settings/appearance.rs): colour scheme cards, light and dark themes, accent,
 // glass, the new-thread background, motion, then fonts, sizes and conversation width.
-import { EFFECTS, loadSource, openAdjust, removeImage, setImage } from "./background";
+import { adjustImage, ANIMATIONS, clearBackground, EFFECTS, forgetRecent, imageUrl, loadSource, openAdjust, setImage, useRecent } from "./background";
 import { el } from "./dom";
-import type { IconName } from "./icons";
-import { DEFAULTS, prefs, setPrefs, type CodeColors, type ReduceMotion, type Scheme, type Surface } from "./prefs";
+import { icon, type IconName } from "./icons";
+import { contextMenu, menuHeading, menuItem, menuPoint, type MenuEntry } from "./popover";
+import { DEFAULTS, prefs, setPrefs, type BackgroundEffect, type BackgroundImage, type CodeColors, type ReduceMotion, type Scheme, type Surface } from "./prefs";
 import { refresh } from "./settings";
 import { ACCENTS, activeTheme, css, deriveTheme, sidebarTone, systemReducesMotion, THEMES, themeFor, type Appearance, type Theme } from "./theme";
 import { action, card, errorStrip, optionCard, pageColumn, pageHeader, row, rowText, section, select, toggle, type Option } from "./widgets";
@@ -155,29 +156,39 @@ function materialRows(): HTMLElement[] {
   );
 
   const bg = prefs.background;
+  const animation = ANIMATIONS.find((a) => a.id === prefs.backgroundAnimation);
   const r = el("div", "s-row");
-  if (bg) {
+  if (bg || animation) {
     const tile = el("span", "bg-tile");
-    void loadSource().then((s) => {
-      if (!s) return;
-      const img = el("img");
-      img.src = s.url;
-      img.alt = "";
-      tile.append(img);
-    });
+    if (animation) tile.append(icon(animation.icon, 18));
+    else
+      void loadSource().then((s) => {
+        if (!s) return;
+        const img = el("img");
+        img.src = s.url;
+        img.alt = "";
+        tile.append(img);
+      });
     r.append(tile);
   }
-  r.append(rowText("New thread background", [bg ? bg.name : "No image selected"]));
+  r.append(rowText("New thread background", [animation ? `${animation.label}: ${animation.description}` : bg ? bg.name : "No background selected"]));
   const actions = el("div", "s-actions");
-  const choose = () => pickImage();
-  if (bg) actions.append(action("Adjust", "filled", () => void openAdjust()), action("Replace image", "filled", choose), action("Remove", "danger", () => void removeImage().then(refresh)));
-  else actions.append(action("Choose image", "filled", choose));
+  // An image from a file, one used before (as it was left), or one of the animations.
+  const choose: HTMLButtonElement = action(bg || animation ? "Replace" : "Choose", "filled", () => {
+    const recent: MenuEntry[] = prefs.recentBackgrounds.length ? [menuHeading("Recent"), ...prefs.recentBackgrounds.map(recentRow)] : [];
+    const animations = ANIMATIONS.map((a) => ({ label: a.label, icon: a.icon, hint: "Animation", run: () => (clearBackground(a.id), refresh()) }));
+    contextMenu(menuPoint(undefined, choose), [{ label: "Image…", icon: "image", run: pickImage }, ...recent, "-", ...animations], { trigger: choose, className: "bg-menu" });
+  });
+  choose.setAttribute("aria-haspopup", "menu");
+  if (bg) actions.append(action("Adjust", "filled", () => void openAdjust()));
+  actions.append(choose);
+  if (bg || animation) actions.append(action("Remove", "danger", () => (clearBackground(), refresh())));
   r.append(actions);
   const rows = [glass, r];
 
   if (bg) {
     const effect = EFFECTS.find((e) => e.id === prefs.backgroundEffect) ?? EFFECTS[0];
-    rows.push(row("Background effect", [effect.description], select({ options: EFFECTS.map((e) => ({ label: e.label })), selected: EFFECTS.indexOf(effect), width: 128, onSelect: (i) => change({ backgroundEffect: EFFECTS[i].id }) })));
+    rows.push(row("Background effect", [effect.description], select({ options: EFFECTS.map((e) => ({ label: e.label })), selected: EFFECTS.indexOf(effect), width: 128, onSelect: (i) => (adjustImage(null, EFFECTS[i].id), refresh()) })));
   }
   if (backgroundError) {
     const strip = el("div", "s-row-strip");
@@ -185,6 +196,35 @@ function materialRows(): HTMLElement[] {
     rows.push(strip);
   }
   return rows;
+}
+
+/** A remembered image in the background menu: its thumbnail, its name and effect, and a button to forget it. */
+function recentRow(bg: BackgroundImage & { effect: BackgroundEffect }): HTMLElement {
+  const inUse = !prefs.backgroundAnimation && prefs.background?.id === bg.id && prefs.background?.name === bg.name;
+  const effect = EFFECTS.find((e) => e.id === bg.effect);
+  const row = menuItem({ label: bg.name, hint: inUse ? "In use" : effect && effect.id !== "none" ? effect.label : undefined, run: () => (useRecent(bg), refresh()) });
+  const thumb = el("span", "bg-thumb");
+  void imageUrl(bg).then((url) => {
+    if (!url) return;
+    const img = el("img");
+    img.alt = "";
+    img.src = url;
+    if (url.startsWith("blob:")) img.onload = img.onerror = () => URL.revokeObjectURL(url);
+    thumb.append(img);
+  });
+  row.prepend(thumb);
+  const drop = el("button", "bg-forget");
+  drop.title = "Forget";
+  drop.setAttribute("aria-label", `Forget ${bg.name}`);
+  drop.append(icon("x"));
+  drop.onclick = (e) => {
+    e.stopPropagation();
+    forgetRecent(bg);
+    row.remove();
+    refresh();
+  };
+  row.append(drop);
+  return row;
 }
 
 function pickImage() {

@@ -965,7 +965,14 @@ html.paused *, html.paused *::before, html.paused *::after { animation-play-stat
 .swatch .sample.theme i:nth-child(3) { height: 11px; }
 
 .bg-tile { width: 36px; height: 36px; flex: none; border-radius: 10px; overflow: hidden; border: 1px solid var(--hairline-12); display: flex; align-items: center; justify-content: center; }
+.bg-tile > .icon { color: var(--muted); }
 .bg-tile img { width: 34px; height: 34px; border-radius: 9px; object-fit: cover; }
+.bg-menu .bg-thumb { width: 26px; height: 18px; flex: none; margin-left: -2px; border-radius: 4px; overflow: hidden; background: rgba(var(--ink-rgb), 0.06); }
+.bg-menu .bg-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.bg-menu .bg-forget { width: 20px; height: 20px; flex: none; margin-right: -4px; display: flex; align-items: center; justify-content: center; border-radius: 5px; color: var(--muted); opacity: 0; transition: opacity 0.15s, background-color 0.15s; }
+.bg-menu .bg-forget .icon { width: 13px; height: 13px; }
+.bg-menu .menu-row:hover .bg-forget, .bg-menu .bg-forget:focus-visible { opacity: 1; }
+.bg-menu .bg-forget:hover { background: rgba(var(--ink-rgb), 0.08); color: var(--text); }
 
 /* sliders: a 4px track with a 14px accent knob */
 .s-slider { position: relative; height: 28px; cursor: pointer; touch-action: none; border-radius: 6px; }
