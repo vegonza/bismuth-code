@@ -49,7 +49,10 @@ export async function buildUI(): Promise<{ ok: true; meta: BuildMeta } | { ok: f
     if (!res.success) throw new AggregateError(res.logs, "build failed");
     // What only some views need (diagrams, workbooks) is bundled apart and imported on first use (web/lazy.ts), so
     // the window doesn't load it. (Bun's HTML builds can't split: with `splitting` the page loads the wrong chunk.)
-    const lazy = await Bun.build({ entrypoints: readdirSync(join(ROOT, "web", "lazy")).map((f) => join(ROOT, "web", "lazy", f)), outdir: join(outdir, "lazy"), minify: true, format: "esm", target: "browser" });
+    // `root` pins each file to lazy/<name>.js, where web/lazy.ts imports it: left to itself Bun sometimes nests
+    // the outputs under their source path (lazy/web/lazy/<name>.js) and every lazy import 404s.
+    const lazyDir = join(ROOT, "web", "lazy");
+    const lazy = await Bun.build({ entrypoints: readdirSync(lazyDir).map((f) => join(lazyDir, f)), root: lazyDir, outdir: join(outdir, "lazy"), minify: true, format: "esm", target: "browser" });
     if (!lazy.success) throw new AggregateError(lazy.logs, "build failed");
   } catch (err: any) {
     rmSync(outdir, { recursive: true, force: true });
