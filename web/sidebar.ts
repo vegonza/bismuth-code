@@ -9,6 +9,7 @@ import { displayCombo, heldModifiers, modifiersOf, recording } from "./keymap";
 import { openPalette } from "./palette";
 import { pickerOpen } from "./picker";
 import { prefs } from "./prefs";
+import { initLimits } from "./limits";
 import { setSettingsJumpHints, settingsOpen, toggleSettings } from "./settings";
 import { contextMenu, menuPoint, onPopoverClosed, openPopovers, type Popover } from "./popover";
 import { edgePeek, type EdgePeek } from "./edgepeek";
@@ -750,7 +751,7 @@ export function initSidebar(refocus: () => void) {
   settings.setAttribute("aria-label", "Settings");
   settings.append(icon("settings"));
   settings.onclick = () => toggleSettings();
-  $("sidebar-footer").replaceChildren(settings);
+  $("sidebar-footer").replaceChildren(initLimits(), settings);
   void document.fonts.ready.then(() => fitFades($("sidebar")));
   new ResizeObserver(() => {
     fitFades($("sidebar"));

@@ -12,7 +12,7 @@ import { action, errorStrip, metaLine } from "./widgets";
 
 const WARN = 0.8;
 const CRITICAL = 0.95;
-const level = (f: number) => (f >= CRITICAL ? "critical" : f >= WARN ? "warn" : "normal");
+export const level = (f: number) => (f >= CRITICAL ? "critical" : f >= WARN ? "warn" : "normal");
 
 /** What the sign-in dialog says while the browser finishes — one sentence per provider. */
 const LOGIN_COPY: Record<HarnessId, string> = {
@@ -30,6 +30,11 @@ let actionError: string | null = null;
 let lastForced = 0;
 let generation = 0;
 const views = new Set<{ h: HarnessId; box: HTMLElement }>();
+/** Others showing the accounts (the sidebar's limits, limits.ts), told whenever the list changes. */
+const watchers = new Set<() => void>();
+export const accountsSnapshot = () => snapshot;
+export const watchAccounts = (fn: () => void) => void watchers.add(fn);
+export const loadAccounts = (force: boolean) => load(force);
 
 /** The Accounts block for one provider; the first one mounted in a while asks for fresh usage. */
 export function accountsSection(h: HarnessId): HTMLElement {
@@ -72,6 +77,7 @@ async function load(force: boolean) {
 }
 
 function repaint() {
+  watchers.forEach((fn) => fn());
   for (const v of [...views]) {
     // A section that was on the page and left it (page closed, row collapsed) is done; one not attached yet isn't.
     if (v.box.isConnected) v.box.dataset.attached = "1";
@@ -177,9 +183,9 @@ function missingNote(a: AgentAccount): string {
   return refreshing ? "Checking usage…" : "Usage unavailable";
 }
 
-/** Label, a short bar, percent; the reset moment rides the row's tooltip. */
-function meter(w: UsageWindow): HTMLElement {
-  const f = Math.min(1, Math.max(0, w.usedPercent / 100));
+/** Label, a short bar, percent; the reset moment rides the row's tooltip. A window past its reset reads empty. */
+export function meter(w: UsageWindow): HTMLElement {
+  const f = w.resetsAt && w.resetsAt <= Date.now() ? 0 : Math.min(1, Math.max(0, w.usedPercent / 100));
   const m = el("div", `meter ${level(f)}`);
   const bar = el("span", "bar");
   if (f > 0) {

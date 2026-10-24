@@ -6,7 +6,7 @@ import { store } from "./store";
 const groupDigits = (n: number) => n.toLocaleString("en-US");
 
 /** The 16px progress ring: a faint full track under an arc from twelve o'clock. */
-function ring(): { svg: SVGSVGElement; set: (f: number) => void } {
+export function ring(): { svg: SVGSVGElement; set: (f: number) => void } {
   const ns = "http://www.w3.org/2000/svg";
   const svg = document.createElementNS(ns, "svg");
   svg.setAttribute("viewBox", "0 0 16 16");
@@ -51,13 +51,13 @@ function ringChip(): Chip {
 
 // ---------------- reset times ----------------
 
-/** "resets 3:40 PM" within the day, the weekday within the week, else the date. */
+/** How long until the window resets: "resets in 2d 4h", "3h 12m", "14m". */
 export function resetText(at: number) {
-  const d = new Date(at);
-  const hours = (at - Date.now()) / 3_600_000;
-  if (hours < 22) return `resets ${d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}`;
-  if (hours < 24 * 7) return `resets ${d.toLocaleDateString("en-US", { weekday: "short" })}`;
-  return `resets ${d.toLocaleDateString("en-US", { month: "short", day: "numeric" })}`;
+  const mins = Math.max(0, Math.ceil((at - Date.now()) / 60_000));
+  const [d, h, m] = [Math.floor(mins / 1440), Math.floor((mins % 1440) / 60), mins % 60];
+  if (d) return `resets in ${d}d${h ? ` ${h}h` : ""}`;
+  if (h) return `resets in ${h}h${m ? ` ${m}m` : ""}`;
+  return mins ? `resets in ${m}m` : "resets now";
 }
 
 /** The ring's full mark: where the session auto-compacts, else the model's window. */

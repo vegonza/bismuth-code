@@ -211,6 +211,41 @@ html.traffic-lights :is(.popover, body > :not(#app)) { -webkit-app-region: no-dr
 .footer-btn { width: 28px; height: 28px; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: var(--muted); }
 .footer-btn:hover { background: var(--hover); }
 .footer-btn .icon { width: 15px; height: 15px; }
+/* The plan limits left of the gear (limits.ts): per account a ring round its initial, its logo on the rim. */
+.footer-limits { flex: 1; min-width: 0; height: 28px; display: flex; align-items: center; gap: 10px; padding-left: 8px; overflow: hidden; }
+.footer-limits[hidden] { display: none; }
+.limit-chip { flex: none; display: flex; align-items: center; gap: 4px; cursor: default; font-size: calc(11px * var(--fs)); color: var(--muted); font-variant-numeric: tabular-nums; --arc: rgba(var(--accent-rgb), 0.85); }
+.limit-chip.warn { --arc: var(--warning); color: var(--warning); }
+.limit-chip.critical { --arc: var(--danger); color: var(--danger); }
+.limit-chip.none { color: var(--faint); }
+.limit-face { position: relative; width: 24px; height: 24px; flex: none; display: flex; align-items: center; justify-content: center; }
+.limit-face .ring { position: absolute; inset: 0; width: 100%; height: 100%; transform: rotate(-90deg); }
+.limit-face .ring circle { fill: none; stroke-width: 1.4; }
+.limit-face .ring .track { stroke: rgba(var(--faint-rgb), 0.25); }
+.limit-face .ring .arc { stroke: var(--arc); }
+.limit-initial { font-size: calc(10.5px * var(--fs)); font-weight: 500; color: var(--text); }
+/* The logo sits on the rim at the bottom right, cut out of the ring by the sidebar's colour. */
+.limit-logo { position: absolute; right: -3px; bottom: -3px; width: 10px; height: 10px; padding: 1px; box-sizing: content-box; border-radius: 50%; background: var(--sidebar); }
+.limit-chip, .limits-card { cursor: pointer; }
+/* The hover card over the footer: each account, then its windows with their resets. */
+.limits-card { position: fixed; z-index: 60; width: 336px; padding: 6px 0; display: flex; flex-direction: column; }
+.lc-head { height: 28px; padding: 0 14px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.lc-title { font-size: calc(12px * var(--fs)); font-weight: 600; color: var(--text); }
+.lc-when { font-size: calc(11px * var(--fs)); color: var(--faint); }
+.lc-account { padding: 8px 14px 10px; display: flex; flex-direction: column; gap: 4px; }
+.lc-account + .lc-account { border-top: 1px solid var(--border); }
+.lc-who { display: flex; align-items: center; gap: 10px; min-width: 0; margin-bottom: 2px; }
+.lc-who .limit-face { width: 28px; height: 28px; }
+.lc-account.warn .limit-face { --arc: var(--warning); }
+.lc-account.critical .limit-face { --arc: var(--danger); }
+.lc-account .limit-face { --arc: rgba(var(--accent-rgb), 0.85); }
+.lc-text { flex: 1; min-width: 0; }
+.lc-email { font-size: calc(12.5px * var(--fs)); color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lc-meta { font-size: calc(11px * var(--fs)); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lc-window { display: flex; align-items: center; gap: 8px; padding-left: 38px; }
+.lc-window .meter .bar { width: 72px; }
+.lc-reset { flex: 1; min-width: 0; text-align: right; font-size: calc(11px * var(--fs)); color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lc-note { padding-left: 38px; font-size: calc(11.5px * var(--fs)); color: var(--faint); }
 
 
 /* Symbols file artwork (fileicons.ts): an image filling whatever box its glyph is given. */
