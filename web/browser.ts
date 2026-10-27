@@ -836,16 +836,18 @@ function pageMenu(p: Page, at: any) {
 
 // ---------------- links in the app ----------------
 
-/** A web address from the app (a link in a reply, the terminal) in a new tab; without the desktop app's browser, in
- *  the system's. */
+/** A web address from the app (a link in a reply, the terminal) in the system's browser, or with Open links in the
+ *  app on (and the desktop app's browser there), in a new tab. */
 export function openWebLink(url: string, background = false) {
-  if (api && hooks) hooks.open(url, null, background);
+  if (api && hooks && prefs.linksInApp) hooks.open(url, null, background);
   else openExternally(url);
 }
 
-/** Web links the app renders (Markdown's, marked `data-web`) open as tabs: a click in front, a middle click behind.
- *  Right-click offers the other ways. `open` makes the tab (a side chat's frame asks the window around it). */
-export function wireLinks(open: (url: string, background: boolean) => void) {
+/** Web links the app renders (Markdown's, marked `data-web`) open in the system's browser, or with Open links in the
+ *  app on, as tabs: a click in front, a middle click behind. Right-click offers both. `open` makes the tab (a side
+ *  chat's frame asks the window around it). */
+export function wireLinks(tab: (url: string, background: boolean) => void) {
+  const open = (url: string, background: boolean) => (prefs.linksInApp ? tab(url, background) : openExternally(url));
   const linkAt = (e: MouseEvent) => (e.target as Element | null)?.closest?.<HTMLAnchorElement>("a[data-web]") ?? null;
   document.addEventListener("click", (e) => {
     const a = linkAt(e);
@@ -865,7 +867,7 @@ export function wireLinks(open: (url: string, background: boolean) => void) {
     e.preventDefault();
     const url = a.href;
     contextMenu({ x: e.clientX, y: e.clientY }, [
-      { icon: "globe", label: "Open in new tab", run: () => open(url, false) },
+      { icon: "globe", label: "Open in new tab", run: () => tab(url, false) },
       { icon: "externalLink", label: "Open in default browser", run: () => openExternally(url) },
       { icon: "clipboardCopy", label: "Copy link address", run: () => copy(url) },
     ]);

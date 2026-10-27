@@ -1,6 +1,7 @@
 // Settings → General: where New project's folder browser opens, and what Enter and Ctrl+Enter do with a prompt
 // while the agent is working (queue it for when the turn ends, or steer it in now), how the file explorer orders files,
-// whether the file editor takes Vim's keys, and (in the desktop app) whether browser tabs are signed in as Zen is.
+// whether the file editor takes Vim's keys, and (in the desktop app) whether web links open in its browser tabs and
+// whether those are signed in as Zen is.
 import { canSync, onSyncStatus, setSync, syncStatus } from "./browser";
 import { el, timeAgo } from "./dom";
 import { displayCombo } from "./keymap";
@@ -127,6 +128,12 @@ function zenSync(): HTMLElement {
   return syncRow;
 }
 
+/** Where a click on a web link (in a reply, the terminal) opens; right-click still offers the other place. */
+function linksInApp(): HTMLElement {
+  const meta = ["Links in replies and the terminal open as browser tabs instead of in your default browser", "Right-click a link for the other"];
+  return row("Open links in the app", meta, toggle(prefs.linksInApp, "Open links in the app", (on) => setPrefs({ linksInApp: on })));
+}
+
 export function renderGeneral(): HTMLElement {
   const page = pageColumn();
   const folders = section("Projects", card(...baseFolder()));
@@ -134,6 +141,6 @@ export function renderGeneral(): HTMLElement {
   const sending = section("While the agent works", card(sendKey("enter"), sendKey("mod-enter")));
   const files = section("Files", card(fileSort(), vimKeys()));
   page.append(pageHeader("General"), folders, sending, files);
-  if (canSync()) page.append(section("Browser", card(zenSync())));
+  if (canSync()) page.append(section("Browser", card(linksInApp(), zenSync())));
   return page;
 }

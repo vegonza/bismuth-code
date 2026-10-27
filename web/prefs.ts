@@ -155,6 +155,8 @@ export type Prefs = {
   wrapCode: boolean;
   /** Long lines in the file editor wrap instead of scrolling sideways (the palette's Toggle line wrapping in files). */
   wrapFiles: boolean;
+  /** Web links (in replies, the terminal) open as the app's browser tabs instead of in the system's browser. */
+  linksInApp: boolean;
 };
 
 export type CodeColors = "one-dark-pro" | "theme";
@@ -205,6 +207,7 @@ export const DEFAULTS: Prefs = {
   changesScope: "uncommitted",
   wrapCode: false,
   wrapFiles: false,
+  linksInApp: false,
 };
 
 /** The key that does `what` while the agent works. */
