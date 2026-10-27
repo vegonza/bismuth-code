@@ -1,7 +1,8 @@
 // A provider's Accounts (Zeron's settings/accounts.rs, embedded in an expanded Providers row): every saved login
-// of that CLI — the live one ringed and "In use" — with usage meters, a ⋯ menu (Switch / Remove), click-to-switch,
-// and the one sign-in dialog every provider shares. The list is cached across visits and revalidated in place;
-// switches and removals are optimistic, and the core's reply (the fresh list) replaces them.
+// of that CLI with usage meters, a ⋯ menu (Remove), and the one sign-in dialog every provider shares. Which one a
+// turn runs on is the model picker's choice, not this page's; Codex's machine login (switched when a turn picks
+// another) is ringed and "In use". The list is cached across visits and revalidated in place; removals are
+// optimistic, and the core's reply (the fresh list) replaces them.
 import type { AgentAccount, AgentAccountsSnapshot, HarnessId, UsageWindow } from "../shared/model";
 import { el, miniSpinner } from "./dom";
 import { HARNESS_NAMES, icon } from "./icons";
@@ -16,8 +17,8 @@ export const level = (f: number) => (f >= CRITICAL ? "critical" : f >= WARN ? "w
 
 /** What the sign-in dialog says while the browser finishes — one sentence per provider. */
 const LOGIN_COPY: Record<HarnessId, string> = {
-  claude: "Finish signing in to Claude in your browser. The new login is saved next to your current one — nothing changes until you switch.",
-  codex: "Finish signing in to ChatGPT in your browser. The new login is saved next to your current one — nothing changes until you switch.",
+  claude: "Finish signing in to Claude in your browser. The account is saved in bismuth for the model picker; Claude Code's own login is untouched.",
+  codex: "Finish signing in to ChatGPT in your browser. The account is saved next to Codex's current one; picking it in the model picker switches Codex to it.",
   cursor: "Finish signing in to Cursor in your browser. This mints a bismuth-named API key you can revoke any time from Cursor's dashboard.",
 };
 
@@ -25,7 +26,7 @@ let snapshot: AgentAccountsSnapshot | null = null;
 let loadError: string | null = null;
 /** A list is in flight over painted rows. */
 let refreshing = false;
-/** The last Switch/Remove refusal or failed revalidation, shown until dismissed. */
+/** The last Remove refusal or failed revalidation, shown until dismissed. */
 let actionError: string | null = null;
 let lastForced = 0;
 let generation = 0;
@@ -140,19 +141,12 @@ function list(h: HarnessId, s: AgentAccountsSnapshot): HTMLElement {
 }
 
 /**
- * One account. A single choice: the live one's avatar wears the accent ring and its meta reads "In use"; any
- * other row switches when clicked. Every row ends in the same ⋯ menu, so the trailing edge never changes shape.
+ * One account: Codex's machine login's avatar wears the accent ring and its meta reads "In use". Every row ends in
+ * the same ⋯ menu, so the trailing edge never changes shape.
  */
 function accountRow(a: AgentAccount): HTMLElement {
   const email = a.email ?? a.displayName ?? "Unknown account";
-  const canSwitch = !a.active && a.switchable;
-  const row = el("div", `account-row${canSwitch ? " switchable" : ""}`);
-  if (canSwitch) {
-    row.title = "Switch to this account";
-    row.onclick = (e) => {
-      if (!(e.target as HTMLElement).closest(".account-more")) void accountAction("activate", a);
-    };
-  }
+  const row = el("div", "account-row");
   const avatar = el("span", `avatar${a.active ? " active" : ""}`);
   avatar.append(el("span", "disc", email[0]?.toUpperCase() ?? "?"));
 
@@ -172,13 +166,13 @@ function accountRow(a: AgentAccount): HTMLElement {
   text.append(el("div", "s-row-title email", email), line);
 
   const slot = el("span", "account-action");
-  if (a.switchable) slot.append(moreButton(a, email, canSwitch));
+  slot.append(moreButton(a, email));
   row.append(avatar, text, usage, slot);
   return row;
 }
 
 function missingNote(a: AgentAccount): string {
-  if (!a.switchable) return a.harness === "claude" ? "Credentials unavailable" : "Couldn't identify this login";
+  if (a.unusable) return a.unusable;
   if (a.usageError) return a.usageError;
   return refreshing ? "Checking usage…" : "Usage unavailable";
 }
@@ -199,7 +193,7 @@ export function meter(w: UsageWindow): HTMLElement {
 
 let openMenu: Popover | null = null;
 
-function moreButton(a: AgentAccount, email: string, canSwitch: boolean): HTMLElement {
+function moreButton(a: AgentAccount, email: string): HTMLElement {
   const wrap = el("span", "account-more-wrap");
   const more = el("button", "s-icon-btn account-more");
   more.title = "Account actions";
@@ -209,9 +203,7 @@ function moreButton(a: AgentAccount, email: string, canSwitch: boolean): HTMLEle
   more.onclick = (e) => {
     e.stopPropagation();
     if (openMenu) return openMenu.close();
-    const items: MenuItem[] = [];
-    if (canSwitch) items.push({ label: "Switch to this account", run: () => void accountAction("activate", a) });
-    items.push({ label: "Remove account", danger: true, run: () => void accountAction("forget", a) });
+    const items: MenuItem[] = [{ label: "Remove account", danger: true, run: () => void forget(a) }];
     more.classList.add("open");
     more.setAttribute("aria-expanded", "true");
     openMenu = contextMenu(menuPoint(e, more), items, {
@@ -227,22 +219,16 @@ function moreButton(a: AgentAccount, email: string, canSwitch: boolean): HTMLEle
   return wrap;
 }
 
-/** Switch / Remove, optimistically: the rows change at once; a refusal restores them and says why. */
-async function accountAction(kind: "activate" | "forget", a: AgentAccount) {
+/** Remove, optimistically: the row goes at once; a refusal restores it and says why. */
+async function forget(a: AgentAccount) {
   if (!snapshot) return;
   const previous = snapshot;
-  snapshot = {
-    ...snapshot,
-    accounts:
-      kind === "activate"
-        ? snapshot.accounts.map((r) => (r.harness === a.harness ? { ...r, active: r.id === a.id } : r))
-        : snapshot.accounts.filter((r) => r.id !== a.id),
-  };
+  snapshot = { ...snapshot, accounts: snapshot.accounts.filter((r) => r.id !== a.id) };
   actionError = null;
   generation++; // a list in flight must not paint over this
   repaint();
   try {
-    snapshot = await call(kind === "activate" ? "accounts.activate" : "accounts.forget", { harness: a.harness, id: a.id });
+    snapshot = await call("accounts.forget", { harness: a.harness, id: a.id });
   } catch (err: any) {
     snapshot = previous;
     actionError = err.message;
@@ -397,7 +383,10 @@ function paintDialog() {
     code.placeholder = "Paste the authorization code";
     code.spellcheck = false;
     code.autocomplete = "off";
-    code.onkeydown = (e) => e.key === "Enter" && void submitCode();
+    // A block body: an `on…` handler returning false cancels the key, and nothing could be typed.
+    code.onkeydown = (e) => {
+      if (e.key === "Enter") void submitCode();
+    };
     scrim.append(card);
     scrim.onpointerdown = (e) => e.target === scrim && cancelLogin();
     document.body.append(scrim);
@@ -416,7 +405,7 @@ function paintDialog() {
       "div",
       "s-dialog-body",
       step.kind === "paste"
-        ? "Your browser opened Claude's sign-in page. Approve access, then paste the code Anthropic shows you below. Your current login is untouched until you switch."
+        ? "Your browser opened Claude's sign-in page. Approve access, then paste the code Anthropic shows you below. Claude Code's own login is untouched."
         : LOGIN_COPY[l.harness],
     ),
   );

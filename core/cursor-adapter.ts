@@ -7,7 +7,8 @@
 // - A turn is one shim process: `run` (with `resume` = the SDK agent id after the first turn), then the shim's
 //   `turn` frame ends it and closing stdin lets it exit. Steering writes `steer`; the shim acknowledges each one
 //   with `steered` once Cursor consumed it, which is when it joins the transcript.
-// - AUTH: the SDK's login (~/.cursor/sdk/auth.json, or CURSOR_API_KEY) is separate from `cursor-agent login`.
+// - AUTH: a turn runs on the API key of the saved account picked for it (CURSOR_API_KEY, which the SDK takes over its
+//   own login). The SDK's login (~/.cursor/sdk/auth.json) is separate from `cursor-agent login`.
 //   "Installed" means the cursor-agent CLI is present (Zeron's signal that the user uses Cursor).
 // - Cursor keeps no listing a terminal could share, so bismuth persists its own copy of each conversation
 //   (.bismuth/cursor-threads/<id>.json): the SDK holds the model-side state, the file the transcript.
@@ -46,6 +47,8 @@ type Run = {
   error: string | null;
   stderr: string[];
   timers: ReturnType<typeof setTimeout>[];
+  /** The saved account it runs on (null: none is saved, and the SDK runs on its own login). */
+  account: string | null;
 };
 
 /** How a model's typed parameters map onto bismuth's effort and fast settings. */
@@ -61,12 +64,21 @@ export class CursorAdapter implements Harness {
   readonly name = "Cursor";
   onEvent: (threadId: string, event: ThreadEvent) => void = () => {};
   onExit: (err: Error) => void = () => {};
-  onUsage: (windows: UsageWindow[]) => void = () => {};
+  onUsage: (windows: UsageWindow[], account: string | null) => void = () => {};
   /** What runs in a project get of the MCP servers (Ctrl+K → MCP servers): the ones another harness defines, passed
    *  inline (Cursor's own are switched in Cursor's own list). */
   mcpPlan: (cwd: string) => Promise<McpPlan> = async () => ({ off: [], on: [], add: {} });
   /** Servers a session's runs get of their own (`key`: the session's id, or a new one's key): the browser's. */
   sessionMcp: (cwd: string, key: string) => Record<string, McpDef> = () => ({});
+  /** The saved account a run in `cwd` goes on: `wanted`, else the project's default; throws when the project blocks it
+   *  (or it's gone). null: no account is saved. */
+  account: (cwd: string, wanted: string | null) => string | null = () => null;
+  /** The environment that puts a run on a saved account; throws when no turn may run on it. */
+  login: (account: string) => Record<string, string> = () => {
+    throw new Error("Cursor accounts aren't set up");
+  };
+  /** The saved account a session's last turn ran on. */
+  ranOn: (threadId: string) => string | null = () => null;
 
   private node: string | null = null;
   private shim = "";
@@ -118,10 +130,10 @@ export class CursorAdapter implements Harness {
     return shim;
   }
 
-  private spawnShim(args: string[], cwd = homedir()) {
+  private spawnShim(args: string[], cwd = homedir(), login: Record<string, string> = {}) {
     return Bun.spawn([this.node!, this.shim, ...args], {
       cwd,
-      env: { ...process.env, BISMUTH_CURSOR_STATE_DIR: join(this.stateDir, "cursor-state") },
+      env: { ...process.env, ...login, BISMUTH_CURSOR_STATE_DIR: join(this.stateDir, "cursor-state") },
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
@@ -252,7 +264,9 @@ export class CursorAdapter implements Harness {
     const parentAgent = this.agents.get(parentId);
     if (!parentAgent) throw new Error("Nothing to branch from yet: wait for the first answer");
     if (!this.node) throw new Error("Cursor is not available");
-    const proc = this.spawnShim(["fork", parentAgent]);
+    // Copied on the parent's account, as the side chat's turns go on.
+    const account = this.account(parent.cwd, this.ranOn(parentId));
+    const proc = this.spawnShim(["fork", parentAgent], undefined, account ? this.login(account) : {});
     proc.stdin.end();
     let agentId: string | null = null;
     for await (const line of lines(proc.stdout)) {
@@ -276,16 +290,21 @@ export class CursorAdapter implements Harness {
     const mcp: McpPlan = { ...plan, add: { ...plan.add, ...this.sessionMcp(thread.cwd, threadId) } };
     const run = this.runs.get(threadId);
     if (run && !run.finished) {
+      // A steer joins the turn on the account it runs on, which the project must still allow.
+      this.account(thread.cwd, run.account);
       run.steers.push(text);
       this.write(run, { op: "steer", prompt: text });
       return;
     }
     if (!this.node) throw new Error("Cursor is not available");
+    // The account the turn runs on; a project that blocks it refuses here.
+    const account = this.account(thread.cwd, settings.account ?? null);
+    const login = account ? this.login(account) : {};
 
     thread.model = settings.model ?? thread.model ?? "default";
     thread.effort = settings.effort;
     thread.serviceTier = settings.serviceTier;
-    const proc = this.spawnShim([], thread.cwd);
+    const proc = this.spawnShim([], thread.cwd, login);
     const turnId = randomUUID();
     const turn: Turn = { id: turnId, status: "inProgress", error: null, durationMs: null, startedAt: Date.now(), completedAt: null, items: [] };
     thread.turns.push(turn);
@@ -293,7 +312,7 @@ export class CursorAdapter implements Harness {
     thread.status = "running";
     thread.notice = null;
     thread.updatedAt = Date.now();
-    const next: Run = { proc, threadId, turnId, text: null, thinking: null, tools: new Map(), steers: [], interrupted: false, finished: false, error: null, stderr: [], timers: [] };
+    const next: Run = { proc, threadId, turnId, text: null, thinking: null, tools: new Map(), steers: [], interrupted: false, finished: false, error: null, stderr: [], timers: [], account };
     this.runs.set(threadId, next);
     this.emitTurn(threadId, turn);
     this.upsertItem(threadId, turnId, { id: randomUUID(), kind: "user", text, images: 0 });

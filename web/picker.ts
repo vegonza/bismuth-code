@@ -1,13 +1,15 @@
 // Zeron's compact model picker (crates/ui/src/pickers/compact.rs): a 256px card whose height glides between
 // the effort panel and the model list, an effort slider painted like Zeron's (accent glass fill, fast-mode
 // light flowing toward the thumb, quiet stops), a fast-mode bolt and a searchable, starrable model list.
-import type { HarnessId, ModelOption } from "../shared/model";
+import type { AgentAccount, HarnessId, ModelOption } from "../shared/model";
+import { accountsSnapshot, loadAccounts, watchAccounts } from "./accounts";
 import { effortLabel, el } from "./dom";
 import { HARNESS_NAMES, harnessIcon, icon } from "./icons";
 import { animator, reducedMotion, rollText, Tween } from "./motion";
 import { harnessEnabled } from "./prefs";
-import { persist, render, store } from "./store";
+import { call, persist, projectOf, render, store, targetProject } from "./store";
 import { accentChannels, activeTheme } from "./theme";
+import { showToast } from "./toast";
 
 // ---------------- settings ----------------
 
@@ -17,10 +19,46 @@ const lockedHarness = (): HarnessId | null => store.thread?.harness ?? null;
 const offered = (h: HarnessId) => lockedHarness() === h || harnessEnabled(h);
 const harnessModels = (h: HarnessId) => (offered(h) ? store.models.filter((m) => m.harness === h) : []);
 
+/** A harness on one of its accounts: what the model list groups by, and what a turn runs on. `account` null: none is
+ *  known (not signed in through it, or the list hasn't come yet), and the core runs it on its default. */
+type Login = { harness: HarnessId; account: AgentAccount | null };
+
+/** The accounts a turn can run on: every saved one (picking it is what puts a turn on it; Codex switches to it).
+ *  Codex's machine login first, as the footer has them. */
+function logins(h: HarnessId): Login[] {
+  const accounts = (accountsSnapshot()?.accounts ?? []).filter((a) => a.harness === h).sort((a, b) => Number(b.active) - Number(a.active));
+  return accounts.length ? accounts.map((account) => ({ harness: h, account })) : [{ harness: h, account: null }];
+}
+
+/** The project the next turn runs in: the open session's, or the one a new session starts in. */
+const pickerProject = () => (store.thread ? projectOf(store.thread.cwd) : targetProject());
+const blocked = (l: Login) => !!l.account && !!pickerProject()?.blocked.includes(l.account.id);
+/** No turn here can run on it: the project blocks it, or it needs signing in again (Settings → Providers says why). */
+const off = (l: Login) => blocked(l) || !!l.account?.unusable;
+const loginKey = (l: Login) => `${l.harness}:${l.account?.id ?? ""}`;
+
 export function currentHarness(): HarnessId {
-  const h = lockedHarness() ?? store.settings.harness;
-  // A harness that offers nothing (disabled, not installed, failed to start) falls back to one that does.
-  return harnessModels(h).length || lockedHarness() ? h : (store.models.find((m) => offered(m.harness))?.harness ?? h);
+  const locked = lockedHarness();
+  if (locked) return locked;
+  // A harness that offers nothing (disabled, not installed, failed to start, every account blocked in the project)
+  // falls back to one that does.
+  const open = (h: HarnessId) => harnessModels(h).length > 0 && logins(h).some((l) => !off(l));
+  const h = store.settings.harness;
+  return open(h) ? h : (store.models.find((m) => open(m.harness))?.harness ?? h);
+}
+
+/** The account the next turn runs on: the one picked while a turn here can run on it, else the harness's first one
+ *  that can (the core refuses a turn on a blocked one). */
+export function currentLogin(): Login {
+  const all = logins(currentHarness());
+  return all.find((l) => l.account?.id === store.settings.account && !off(l)) ?? all.find((l) => !off(l)) ?? all[0];
+}
+
+/** The account id a turn asks for: the current login's, or while the account list hasn't come yet, the one picked
+ *  (sending none would have the core run it on the project's default, and the session remember that instead). */
+export function turnAccountId(): string | null {
+  if (!accountsSnapshot()) return currentHarness() === store.settings.harness ? store.settings.account : null;
+  return currentLogin().account?.id ?? null;
 }
 
 export function currentModel(): ModelOption | undefined {
@@ -35,13 +73,14 @@ export function currentEffort(m = currentModel()): string | null {
 
 export const fastOn = (m = currentModel()) => !!m?.fastTier && store.settings.serviceTier === m.fastTier;
 
-function setModel(m: ModelOption) {
+function setModel(m: ModelOption, l: Login) {
   const effort = currentEffort();
   store.settings = {
     harness: m.harness,
     model: m.id,
     effort: effort && m.efforts.includes(effort) ? effort : m.defaultEffort,
     serviceTier: m.fastTier && fastOn() ? m.fastTier : null,
+    account: l.account?.id ?? null,
   };
   persist();
   render("composer");
@@ -64,6 +103,32 @@ function toggleFast() {
   updatePanel();
 }
 
+/** Block an account in the project the picker serves, or unblock it: shown at once, the core's projects confirm it. */
+function setBlocked(l: Login, on: boolean) {
+  const p = pickerProject();
+  const id = l.account?.id;
+  if (!p || !id) return;
+  const before = p.blocked;
+  p.blocked = on ? [...before, id] : before.filter((x) => x !== id);
+  render("composer");
+  void call("projects.block", { id: p.id, account: id, blocked: on }).catch((err) => {
+    p.blocked = before;
+    render("composer");
+    showToast(String(err?.message ?? err), { tone: "error", ms: 5000 });
+  });
+}
+
+/** A login's mark: its harness's, with the account's initial on it when the harness has more than one to tell apart. */
+function loginIcon(l: Login): HTMLElement {
+  const mark = harnessIcon(l.harness);
+  if (!l.account || logins(l.harness).length < 2) return mark;
+  const box = el("span", "login-icon");
+  box.append(mark, el("span", "login-badge", accountName(l.account)[0]?.toUpperCase() ?? "?"));
+  return box;
+}
+
+const accountName = (a: AgentAccount) => a.email ?? a.displayName ?? HARNESS_NAMES[a.harness];
+
 // ---------------- trigger ----------------
 
 let slot: HTMLElement;
@@ -76,13 +141,15 @@ let triggerIcon: HTMLElement;
 export function renderTrigger() {
   const m = currentModel();
   const effort = currentEffort(m);
-  const brand = harnessIcon(m?.harness ?? currentHarness());
-  if (triggerIcon.className !== brand.className) triggerIcon.replaceWith((triggerIcon = brand));
+  const l = currentLogin();
+  const brand = loginIcon(l);
+  if (triggerIcon.outerHTML !== brand.outerHTML) triggerIcon.replaceWith((triggerIcon = brand));
   rollText(triggerLabel, m?.name ?? (store.models.length ? "Select model" : "Loading models…"));
   triggerSuffix.hidden = !effort;
   if (effort) rollText(triggerSuffix, effortLabel(effort));
   triggerBolt.hidden = !fastOn(m);
-  trigger.title = `${m?.name ?? "Model"} · ${HARNESS_NAMES[m?.harness ?? currentHarness()]}${effort ? ` · ${effortLabel(effort)}` : ""}${fastOn(m) ? " · Fast" : ""}`;
+  const who = l.account ? ` · ${accountName(l.account)}` : "";
+  trigger.title = `${m?.name ?? "Model"} · ${HARNESS_NAMES[m?.harness ?? currentHarness()]}${who}${effort ? ` · ${effortLabel(effort)}` : ""}${fastOn(m) ? " · Fast" : ""}`;
 }
 
 // ---------------- card ----------------
@@ -103,8 +170,15 @@ export function togglePicker() {
   else openPicker();
 }
 
+let accountsAsked = 0;
+
 export function openPicker() {
   if (card) return void card.focus({ preventScroll: true });
+  // The accounts it offers, fresh enough (the sidebar footer keeps them so on a desktop; a phone has none).
+  if (!accountsSnapshot() || Date.now() - accountsAsked > 60_000) {
+    accountsAsked = Date.now();
+    void loadAccounts(false);
+  }
   page = "panel";
   card = el("div", "card picker menu-in");
   card.tabIndex = -1;
@@ -267,6 +341,7 @@ export function updatePanel() {
 export function refreshPicker() {
   renderTrigger();
   if (card && page === "panel") updatePanel();
+  if (card && page === "models") redrawList?.();
 }
 
 // Geometry: a 28px rail under a 44×32 thumb; stops and pointer share the thumb centre's 22px inset,
@@ -477,13 +552,14 @@ function paintSlider(now: number): boolean {
 
 // ---------------- model list ----------------
 
-const ROW_PITCH = 34;
+/** A model on one of its harness's accounts: a row of the list. */
+type Row = { m: ModelOption; l: Login };
 
 /** Harnesses share model ids (Opus on Claude and on Cursor), so a model is its harness and id together. */
 const modelKey = (m: ModelOption) => `${m.harness}:${m.id}`;
-const isCurrent = (m: ModelOption) => {
+const isCurrent = (r: Row) => {
   const c = currentModel();
-  return !!c && modelKey(c) === modelKey(m);
+  return !!c && modelKey(c) === modelKey(r.m) && loginKey(currentLogin()) === loginKey(r.l);
 };
 
 /** Favorites saved by bare id star that id on every harness that has it, as they showed before. */
@@ -499,8 +575,14 @@ function migrateFavorites() {
   persist();
 }
 
-/** Starred models first, then one run per harness (only the thread's own once a thread has started). Picking
- *  another harness's model on a new session moves the session to that harness. */
+/** Redraws the open list in place when what it shows changed (the accounts, the project's blocks). */
+let redrawList: (() => void) | null = null;
+const listKey = () => JSON.stringify([lockedHarness(), store.models.length, pickerProject()?.blocked, accountsSnapshot()?.accounts.map((a) => [a.id, a.active, a.unusable])]);
+
+/** Starred models first, then a run per harness and account (only the thread's harness once a thread has started),
+ *  each under a head naming the account, which blocks it in the project (its models hidden) or unblocks it. Picking
+ *  another harness's model on a new session moves the session to that harness; another account's, the next turn
+ *  to that account. */
 function modelList(): HTMLElement {
   panelRefs = null;
   const box = el("div", "list-page");
@@ -517,73 +599,111 @@ function modelList(): HTMLElement {
 
   const list = el("div", "mlist");
   let active = -1;
-  let rows: ModelOption[] = [];
-  // Tab strip: each tab jumps to its group, and the group at the top of the scroll lights its tab.
-  let groups: { tab: HTMLElement; start: number }[] = [];
+  let rows: Row[] = [];
+  // Tab strip: each tab jumps to its group's head, and the group at the top of the scroll lights its tab.
+  let groups: { tab: HTMLElement; head: HTMLElement }[] = [];
+  /** Where a row or head sits in the list's content, its 4px padding included. */
+  const top = (n: HTMLElement) => n.offsetTop - list.offsetTop;
   const lightTabs = () => {
-    const top = Math.round(list.scrollTop / ROW_PITCH);
-    const current = groups.findLast((g) => g.start <= top);
+    const current = groups.findLast((g) => top(g.head) - 4 <= list.scrollTop + 1) ?? groups[0];
     for (const g of groups) g.tab.classList.toggle("viewed", g === current);
   };
   const setActive = (i: number) => {
     active = i;
     list.querySelectorAll(".mrow").forEach((r, j) => r.classList.toggle("active", j === i));
   };
+  let drawn = "";
   const draw = () => {
+    drawn = listKey();
     const q = input.value.trim().toLowerCase();
     migrateFavorites();
     const starred = (m: ModelOption) => store.favorites.has(modelKey(m));
     const locked = lockedHarness();
-    const order = store.harnesses.map((h) => h.id);
-    const choices = store.models.filter((m) => (locked ? m.harness === locked : harnessEnabled(m.harness)));
-    const sorted = [...choices].sort((a, b) => Number(starred(b)) - Number(starred(a)) || order.indexOf(a.harness) - order.indexOf(b.harness));
-    rows = q ? sorted.filter((m) => m.name.toLowerCase().includes(q) || m.id.toLowerCase().includes(q) || HARNESS_NAMES[m.harness].toLowerCase().includes(q)) : sorted;
+    const harnesses = [...new Set(store.models.map((m) => m.harness))]
+      .filter((h) => (locked ? h === locked : harnessEnabled(h)))
+      .sort((a, b) => store.harnesses.findIndex((h) => h.id === a) - store.harnesses.findIndex((h) => h.id === b));
+    const groupsOf = harnesses.flatMap(logins);
+    const open = groupsOf.filter((l) => !off(l));
+    const models = (l: Login) => store.models.filter((m) => m.harness === l.harness);
+    const project = pickerProject();
 
+    rows = [];
     groups = [];
-    if (!q) {
-      rows.forEach((m, i) => {
-        const key = starred(m) ? "starred" : m.harness;
-        if (groups.length && groups[groups.length - 1].tab.dataset.key === key) return;
-        const tab = el("button", "sq-btn");
-        tab.dataset.key = key;
-        tab.title = key === "starred" ? "Starred" : HARNESS_NAMES[m.harness];
-        tab.append(key === "starred" ? icon("star", undefined, "", true) : harnessIcon(m.harness));
-        tab.onclick = () => list.scrollTo({ top: i * ROW_PITCH, behavior: "smooth" });
-        groups.push({ tab, start: i });
-      });
+    const nodes: HTMLElement[] = [];
+    const rowEl = (r: Row) => {
+      const i = rows.push(r) - 1;
+      const selected = isCurrent(r);
+      const row = el("div", `mrow${selected ? " selected" : ""}${i === active ? " active" : ""}`);
+      row.title = `${r.m.name} · ${HARNESS_NAMES[r.m.harness]}${r.l.account ? ` · ${accountName(r.l.account)}` : ""}`;
+      const fav = starred(r.m);
+      const star = el("button", `star${fav ? " on" : ""}`);
+      star.title = `${fav ? "Remove" : "Add"} ${r.m.name} ${fav ? "from" : "to"} favorites`;
+      star.append(icon("star", undefined, "", fav));
+      star.onclick = (e) => {
+        e.stopPropagation();
+        if (fav) store.favorites.delete(modelKey(r.m));
+        else store.favorites.add(modelKey(r.m));
+        persist();
+        draw();
+      };
+      row.append(loginIcon(r.l), el("span", "mlabel", r.m.name), star);
+      row.onmouseenter = () => setActive(i);
+      row.onclick = () => {
+        setModel(r.m, r.l);
+        show("panel");
+      };
+      return row;
+    };
+    const group = (key: string, title: string, mark: HTMLElement, label: HTMLElement[], l: Login | null) => {
+      const tab = el("button", `sq-btn${l && off(l) ? " blocked" : ""}`);
+      tab.dataset.key = key;
+      tab.title = title;
+      tab.append(mark);
+      const h = el("div", `mhead${l && off(l) ? " blocked" : ""}`);
+      h.title = title;
+      h.append(...label);
+      if (l?.account && project) {
+        const on = blocked(l);
+        const b = el("button", `mblock${on ? " on" : ""}`);
+        b.title = `${on ? "Unblock" : "Block"} ${accountName(l.account)} in ${project.name}`;
+        b.append(on ? el("span", "", "Unblock") : icon("ban"));
+        b.onclick = (e) => {
+          e.stopPropagation();
+          setBlocked(l, !on);
+        };
+        h.append(b);
+      }
+      tab.onclick = () => list.scrollTo({ top: top(h) - 4, behavior: "smooth" });
+      groups.push({ tab, head: h });
+      nodes.push(h);
+    };
+
+    if (q) {
+      // A flat list of what matches: by model, harness or account.
+      const hit = (r: Row) => [r.m.name, r.m.id, HARNESS_NAMES[r.m.harness], r.l.account?.email ?? ""].some((x) => x.toLowerCase().includes(q));
+      const all = open.flatMap((l) => models(l).map((m) => ({ m, l })));
+      for (const r of [...all.filter((r) => starred(r.m)), ...all.filter((r) => !starred(r.m))].filter(hit)) nodes.push(rowEl(r));
+    } else {
+      const favs = open.flatMap((l) => models(l).filter(starred).map((m) => ({ m, l })));
+      if (favs.length) {
+        group("starred", "Starred", icon("star", undefined, "", true), [icon("star", undefined, "", true), el("span", "mhead-label", "Starred")], null);
+        for (const r of favs) nodes.push(rowEl(r));
+      }
+      for (const l of groupsOf) {
+        const name = l.account ? accountName(l.account) : HARNESS_NAMES[l.harness];
+        const why = blocked(l) ? " · Blocked here" : l.account?.unusable ? ` · ${l.account.unusable}` : "";
+        group(loginKey(l), l.account ? `${HARNESS_NAMES[l.harness]} · ${name}${why}` : name, loginIcon(l), [harnessIcon(l.harness), el("span", "mhead-label", name)], l);
+        if (!off(l)) for (const m of models(l).filter((m) => !starred(m))) nodes.push(rowEl({ m, l }));
+      }
     }
-    head.replaceChildren(back, ...groups.map((g) => g.tab));
     if (active < 0 || active >= rows.length) active = Math.max(0, rows.findIndex(isCurrent));
-    list.replaceChildren(
-      ...(rows.length
-        ? rows.map((m, i) => {
-            const selected = isCurrent(m);
-            const row = el("div", `mrow${selected ? " selected" : ""}${i === active ? " active" : ""}`);
-            row.title = `${m.name} · ${HARNESS_NAMES[m.harness]}`;
-            const fav = starred(m);
-            const star = el("button", `star${fav ? " on" : ""}`);
-            star.title = `${fav ? "Remove" : "Add"} ${m.name} ${fav ? "from" : "to"} favorites`;
-            star.append(icon("star", undefined, "", fav));
-            star.onclick = (e) => {
-              e.stopPropagation();
-              if (fav) store.favorites.delete(modelKey(m));
-              else store.favorites.add(modelKey(m));
-              persist();
-              draw();
-            };
-            row.append(harnessIcon(m.harness), el("span", "mlabel", m.name), star);
-            row.onmouseenter = () => setActive(i);
-            row.onclick = () => {
-              setModel(m);
-              show("panel");
-            };
-            return row;
-          })
-        : [el("div", "empty", "No models match")]),
-    );
+    head.replaceChildren(back, ...groups.map((g) => g.tab));
+    list.replaceChildren(...(nodes.length ? nodes : [el("div", "empty", "No models match")]));
+    setActive(active);
     lightTabs();
     resize();
   };
+  redrawList = () => listKey() !== drawn && draw();
   list.onscroll = lightTabs;
   input.oninput = () => {
     active = 0;
@@ -596,7 +716,7 @@ function modelList(): HTMLElement {
       list.querySelector(".mrow.active")?.scrollIntoView({ block: "nearest" });
     } else if (e.key === "Enter" && rows[active]) {
       e.preventDefault();
-      setModel(rows[active]);
+      setModel(rows[active].m, rows[active].l);
       show("panel");
     } else if (e.key === "Escape") {
       e.preventDefault();
@@ -608,14 +728,12 @@ function modelList(): HTMLElement {
   draw();
   requestAnimationFrame(() => {
     input.focus({ preventScroll: true });
-    // Open on the current model: its group at the top when the model sits near its start, else centred.
+    // Open on the current model: its group's head at the top when the model sits near it, else the model centred.
     const sel = list.querySelector<HTMLElement>(".mrow.selected");
     if (!sel) return;
-    const ix = rows.findIndex(isCurrent);
-    const group = groups.findLast((g) => g.start <= ix);
-    const visible = Math.floor(list.clientHeight / ROW_PITCH);
-    if (group && ix - group.start < visible - 2) list.scrollTop = Math.max(0, (group.start - (group.start > 0 ? 1 : 0)) * ROW_PITCH);
-    else list.scrollTop = Math.max(0, sel.offsetTop - list.clientHeight / 2 + sel.offsetHeight / 2);
+    const group = groups.findLast((g) => top(g.head) <= top(sel));
+    if (group && top(sel) + sel.offsetHeight - top(group.head) < list.clientHeight - 2 * sel.offsetHeight) list.scrollTop = Math.max(0, top(group.head) - 4);
+    else list.scrollTop = Math.max(0, top(sel) - list.clientHeight / 2 + sel.offsetHeight / 2);
     lightTabs();
   });
   return box;
@@ -630,7 +748,7 @@ export function initPicker(into: HTMLElement, closed: () => void) {
   triggerLabel = el("span", "label");
   triggerSuffix = el("span", "suffix");
   triggerBolt = icon("zap", undefined, "bolt", true);
-  triggerIcon = harnessIcon(currentHarness());
+  triggerIcon = loginIcon(currentLogin());
   trigger.append(triggerIcon, triggerLabel, triggerSuffix, triggerBolt);
   trigger.onclick = (e) => {
     e.stopPropagation();
@@ -638,6 +756,7 @@ export function initPicker(into: HTMLElement, closed: () => void) {
   };
   slot.append(trigger);
   addEventListener("focus", () => kick()); // fast mode's shimmer pauses while the window is in the background
+  watchAccounts(refreshPicker);
   document.addEventListener("pointerdown", (e) => {
     if (card && !slot.contains(e.target as Node)) closePicker();
   });

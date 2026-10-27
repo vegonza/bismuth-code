@@ -1,6 +1,6 @@
 // Settings → Providers (Zeron's settings/harnesses.rs): one row per harness with its version, enable switch and
 // (when missing) Install; an enabled one expands to its update policy and its Accounts (accounts.ts) — every saved
-// login, switchable, plus sign-in for more. Claude Code and Codex also get their auto-compact point. A disabled provider's models leave the picker; threads already on it
+// login (the model picker chooses one per turn), plus sign-in for more. Claude Code and Codex also get their auto-compact point. A disabled provider's models leave the picker; threads already on it
 // keep working.
 import type { AutoCompactSnapshot, HarnessId, HarnessUpdatePolicy, HarnessUpdateStatus } from "../shared/model";
 import { accountsSection } from "./accounts";

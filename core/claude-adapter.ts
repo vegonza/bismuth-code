@@ -70,8 +70,11 @@ const COMMANDS = new Set(["compact", "goal"]);
 /** A prompt that's one of them: the CLI runs it without replaying it, so it joins the transcript as sent. */
 const isCommand = (text: string) => COMMANDS.has(/^\/([\w-]+)(?:\s|$)/.exec(text.trim())?.[1] ?? "");
 
+/** What Claude Code would sign in on over its config dir's login (code.claude.com/docs/en/authentication). */
+export const CLAUDE_AUTH_ENV = /^(ANTHROPIC_(API_KEY|AUTH_TOKEN|PROFILE|FEDERATION_RULE_ID|BASE_URL)|CLAUDE_CONFIG_DIR|CLAUDE_CODE_(USE_\w+|OAUTH_\w+|API_KEY_FILE_DESCRIPTOR|SUBSCRIPTION_TYPE|RATE_LIMIT_TIER|ORGANIZATION_UUID|ACCOUNT_UUID))$/;
+
 /** The installed CLI: CLAUDE_CODE_EXECUTABLE, PATH, then the installer's usual homes. */
-function findClaude(): string | null {
+export function findClaude(): string | null {
   const override = process.env.CLAUDE_CODE_EXECUTABLE;
   if (override) return existsSync(override) ? override : null;
   const home = homedir();
@@ -81,6 +84,9 @@ function findClaude(): string | null {
     null
   );
 }
+
+/** How a CLI runs on a saved account: the environment that puts it on that account's own config dir. */
+export type ClaudeLogin = { env: Record<string, string> };
 
 /** What a run's CLI was started with; a turn in a live process switches the ones it changes. */
 type Flags = { model: string | null; effort: string | null; fast: boolean };
@@ -100,6 +106,13 @@ type Run = {
   toolStarts: Map<string, number>;
   /** Steers written to stdin that the CLI hasn't replayed yet. */
   pendingSteers: Set<string>;
+  /** The turn's prompt until the CLI starts on it: a result before then ends something it ran first (a resumed
+   *  session's notice of background tasks the last process left behind), not this turn. */
+  prompt: string | null;
+  /** The saved account it runs on (null: none is saved, and the CLI runs as it's set up); `pinned`: on that account's
+   *  config dir (else the CLI's own login). Either way the CLI reads and refreshes its login itself. */
+  account: string | null;
+  pinned: boolean;
   /** Background tasks the CLI is running: subagents, whose reports the turn waits for, and shells. */
   agents: number;
   shells: number;
@@ -142,7 +155,7 @@ export class ClaudeAdapter implements Harness {
   readonly name = "Claude Code";
   onEvent: (threadId: string, event: ThreadEvent) => void = () => {};
   onExit: (err: Error) => void = () => {};
-  onUsage: (windows: UsageWindow[]) => void = () => {};
+  onUsage: (windows: UsageWindow[], account: string | null) => void = () => {};
 
   private exe: string | null = null;
   /** bismuth's auto-compact window (Settings → Providers), passed to every run; null follows Claude's own settings. */
@@ -152,6 +165,13 @@ export class ClaudeAdapter implements Harness {
   mcpPlan: (cwd: string) => Promise<McpPlan> = async () => ({ off: [], on: [], add: {} });
   /** Servers a session's runs get of their own (`key`: the session's id, or a new one's key): the browser's. */
   sessionMcp: (cwd: string, key: string) => Record<string, McpDef> = () => ({});
+  /** The saved account a run in `cwd` goes on: `wanted`, else the project's default; throws when the project blocks it
+   *  (or it's gone). null: no account is saved. */
+  account: (cwd: string, wanted: string | null) => string | null = () => null;
+  /** The environment that puts a CLI on a saved account; throws when no turn may run on it. */
+  login: (account: string) => ClaudeLogin = () => {
+    throw new Error("Claude Code accounts aren't set up");
+  };
   /** Each project's MCP servers as its last run reported them (names a config file doesn't hold: plugins,
    *  connectors). */
   private mcpSeen: Record<string, Record<string, ClaudeSeen>>;
@@ -211,9 +231,10 @@ export class ClaudeAdapter implements Harness {
 
   /** Control requests answered by a CLI that runs no turn, started in `cwd` (it loads that project's skills): each
    *  one's answer, or null where it refused. */
-  private async control(cwd: string, subtypes: string[]): Promise<any[]> {
+  private async control(cwd: string, subtypes: string[], login: ClaudeLogin | null = null): Promise<any[]> {
     const proc = Bun.spawn([this.exe!, "--print", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"], {
       cwd,
+      ...(login ? { env: loginEnv(login.env) } : {}),
       stdin: "pipe",
       stdout: "pipe",
       stderr: "ignore",
@@ -246,10 +267,15 @@ export class ClaudeAdapter implements Harness {
   invocables(cwd: string): Promise<Invocable[]> {
     let hit = this.invocableLists.get(cwd);
     if (!hit || Date.now() - hit.at > INVOCABLES_TTL_MS) {
-      const list = this.control(cwd, ["initialize", "reload_skills"]).then(([init, skills]) => {
-        if (!init) throw new Error("Claude Code didn't list its skills");
-        return toInvocables(init, skills);
-      });
+      // On the account the project's runs get by default: never one it blocks.
+      const list = Promise.resolve()
+        .then(() => this.account(cwd, null))
+        .then((account) => (account ? this.login(account) : null))
+        .then((login) => this.control(cwd, ["initialize", "reload_skills"], login))
+        .then(([init, skills]) => {
+          if (!init) throw new Error("Claude Code didn't list its skills");
+          return toInvocables(init, skills);
+        });
       hit = { at: Date.now(), list };
       this.invocableLists.set(cwd, hit);
       list.catch(() => this.invocableLists.get(cwd)?.list === list && this.invocableLists.delete(cwd));
@@ -468,37 +494,50 @@ export class ClaudeAdapter implements Harness {
     // Asked before anything else, so nothing else can start a run for the thread in between.
     const plan = await this.mcpPlan(thread.cwd).catch((): McpPlan => ({ off: [], on: [], add: {} }));
     const mcp: McpPlan = { ...plan, add: { ...plan.add, ...this.sessionMcp(thread.cwd, threadId) } };
-    const fork = this.forks[threadId];
-    if (fork && !this.runs.has(threadId)) await this.cutFork(threadId, fork);
     const live = this.runs.get(threadId);
     const uuid = randomUUID();
     const command = isCommand(text);
     if (live && !live.finished && !live.closed) {
       if (command) throw new Error("Wait for the turn to end to run a command");
+      // A steer joins the turn on the account it runs on, which the project must still allow.
+      this.account(thread.cwd, live.account);
       live.pendingSteers.add(uuid);
       this.write(live, { type: "user", uuid, message: { role: "user", content: text }, parent_tool_use_id: null });
       return;
     }
+    // The account the turn runs on, and how; a project that blocks it refuses here.
+    const account = this.account(thread.cwd, settings.account ?? null);
+    const login = account ? this.login(account) : null;
+    const fork = this.forks[threadId];
+    if (fork && !this.runs.has(threadId)) await this.cutFork(threadId, fork);
 
     thread.model = settings.model ?? thread.model;
     thread.effort = settings.effort;
     thread.serviceTier = settings.serviceTier;
     const flags: Flags = { model: thread.model, effort: settings.effort, fast: settings.serviceTier === "fast" };
     let run: Run;
+    // The last turn's process is up for its background shells: this turn runs in it too, unless it's on another
+    // account, or logged in another way (on the CLI's own login before an account was saved). Then its shells end with
+    // it, and the turn starts a process of its own.
+    const other = (r: Run) => r.account !== account || r.pinned !== !!login;
+    if (live && !live.closed && other(live)) {
+      this.close(live);
+      live.proc.kill("SIGTERM");
+    }
     if (live && !live.closed) {
-      // The last turn's process is up for its background shells: this turn runs in it too.
       run = live;
       this.reflag(run, flags);
-    } else run = this.spawn(thread, flags, mcp);
+    } else run = this.spawn(thread, flags, mcp, account, login);
 
     const turn: Turn = { id: randomUUID(), status: "inProgress", error: null, durationMs: null, startedAt: Date.now(), completedAt: null, items: [] };
     thread.turns.push(turn);
     this.activate(run, thread, turn);
     if (command) this.upsertItem(threadId, turn.id, { id: uuid, kind: "user", text: text.trim(), images: 0 });
+    else run.prompt = uuid;
     this.write(run, { type: "user", uuid, message: { role: "user", content: text }, parent_tool_use_id: null });
   }
 
-  private spawn(thread: Thread, flags: Flags, mcp: McpPlan): Run {
+  private spawn(thread: Thread, flags: Flags, mcp: McpPlan, account: string | null, login: ClaudeLogin | null): Run {
     if (!this.exe) throw new Error("Claude Code is not available");
     // Servers carried over from another harness go in a file only this user can read: they can hold credentials.
     const mcpFile = join(this.stateDir, "claude-mcp", `${thread.id}.json`);
@@ -521,11 +560,17 @@ export class ClaudeAdapter implements Harness {
       ...this.session(thread.id),
       ...(flags.model ? ["--model", flags.model] : []),
       ...(flags.effort ? ["--effort", flags.effort] : []),
-      ...runSettings(flags.fast, this.compactWindow(), mcp.off),
+      ...runSettings(flags.fast, this.compactWindow(), mcp.off, !!login),
       ...(Object.keys(mcp.add).length ? ["--mcp-config", mcpFile] : []),
     ];
     const run: Run = {
-      proc: Bun.spawn([this.exe, ...args], { cwd: thread.cwd, stdin: "pipe", stdout: "pipe", stderr: "pipe" }),
+      proc: Bun.spawn([this.exe, ...args], {
+        cwd: thread.cwd,
+        ...(login ? { env: loginEnv(login.env) } : {}),
+        stdin: "pipe",
+        stdout: "pipe",
+        stderr: "pipe",
+      }),
       threadId: thread.id,
       mcp,
       turnId: "",
@@ -535,6 +580,9 @@ export class ClaudeAdapter implements Harness {
       lastIndex: -1,
       toolStarts: new Map(),
       pendingSteers: new Set(),
+      prompt: null,
+      account,
+      pinned: !!login,
       agents: 0,
       shells: 0,
       background: new Map(),
@@ -727,6 +775,12 @@ export class ClaudeAdapter implements Harness {
     switch (f.type) {
       case "system":
         if (f.subtype === "init") {
+          // On anything but its account's token (managed settings outrank runSettings' blanking), it stops here.
+          if (run.pinned && typeof f.apiKeySource === "string" && f.apiKeySource !== "none") {
+            run.error = `Claude Code was set to run on ${f.apiKeySource} instead of this account: remove it from Claude Code's settings`;
+            run.proc.kill("SIGKILL");
+            return;
+          }
           run.model = f.model ?? run.model;
           this.onDisk.add(run.threadId);
           this.dropFork(run.threadId);
@@ -765,7 +819,10 @@ export class ClaudeAdapter implements Harness {
         this.rateLimit(run, f.rate_limit_info);
         return;
       case "result":
-        this.result(run, f);
+        if (!run.prompt) this.result(run, f);
+        return;
+      case "command_lifecycle":
+        if (f.command_uuid === run.prompt && f.state !== "queued") run.prompt = null;
         return;
       case "control_request":
         this.controlRequest(run, f);
@@ -858,7 +915,7 @@ export class ClaudeAdapter implements Harness {
       }
     }
     // A failed turn (usage limit, billing, auth, overload) carries only a terse code here.
-    if (f.error) run.error = assistantErrorText(f.error);
+    if (f.error) run.error = run.pinned && f.error === "authentication_failed" ? "This account's Claude sign-in was turned down — sign in to it again in Settings → Providers." : assistantErrorText(f.error);
   }
 
   private userFrame(run: Run, f: any) {
@@ -866,6 +923,7 @@ export class ClaudeAdapter implements Harness {
     if (f.isReplay) {
       // The CLI confirming a prompt joined its conversation: the first one, or a steer folded in.
       run.pendingSteers.delete(f.uuid);
+      if (f.uuid === run.prompt) run.prompt = null;
       const text = promptText(content);
       if (text === null) return;
       const images = blocksOf(content).filter((b) => b.type === "image").length;
@@ -900,7 +958,7 @@ export class ClaudeAdapter implements Harness {
         const w = unified[key];
         if (typeof w?.utilization === "number") windows.push({ label, usedPercent: w.utilization * 100, resetsAt: w.resetsAt ? w.resetsAt * 1000 : null });
       }
-      if (windows.length) this.onUsage(windows);
+      if (windows.length) this.onUsage(windows, run.account);
     }
     if (info?.status === "rejected") {
       const thread = this.threads.get(run.threadId);
@@ -1735,12 +1793,24 @@ async function readHistory(path: string, session: string, settled = true, sidech
   return { turns, title: title ?? agentName ?? (first?.kind === "user" ? titleFrom(first.text) : null), createdAt, branch, model, contextTokens, ended };
 }
 
-/** The run's --settings layer: fast mode, bismuth's auto-compact window and the MCP servers switched off, when set. */
-function runSettings(fast: boolean, compactWindow: number | null, mcpOff: string[]): string[] {
+/** The environment of a CLI on a saved account (`login`): that account's, and none of what Claude Code would pick
+ *  over it (code.claude.com/docs/en/authentication#authentication-precedence) or take for its account, so it can't
+ *  run on anything else. */
+function loginEnv(login: Record<string, string>): Record<string, string | undefined> {
+  const env: Record<string, string | undefined> = { ...process.env };
+  for (const name of Object.keys(env)) if (CLAUDE_AUTH_ENV.test(name)) delete env[name];
+  return { ...env, ...login };
+}
+
+/** The run's --settings layer: fast mode, bismuth's auto-compact window and the MCP servers switched off, when set;
+ *  on a saved account (`pinned`), the API keys and cloud providers Claude Code would pick over its token blanked, as
+ *  the user's or a project's settings can set them where loginEnv can't reach. */
+function runSettings(fast: boolean, compactWindow: number | null, mcpOff: string[], pinned: boolean): string[] {
   const layer = {
     ...(fast ? { fastMode: true } : {}),
     ...(compactWindow ? { autoCompactWindow: compactWindow } : {}),
     ...(mcpOff.length ? { deniedMcpServers: mcpOff.map((serverName) => ({ serverName })) } : {}),
+    ...(pinned ? { apiKeyHelper: "", env: { ANTHROPIC_API_KEY: "", ANTHROPIC_AUTH_TOKEN: "", CLAUDE_CODE_USE_BEDROCK: "", CLAUDE_CODE_USE_VERTEX: "", CLAUDE_CODE_USE_FOUNDRY: "" } } : {}),
   };
   return Object.keys(layer).length ? ["--settings", JSON.stringify(layer)] : [];
 }

@@ -3,9 +3,9 @@
 // The core is never hot-reloaded (changing it needs an app restart); the UI is swapped underneath it by `bun run apply`.
 import "./log";
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import type { ServerWebSocket } from "bun";
 import { AgentAccounts, detectConfig } from "./accounts";
 import { HarnessUpdates } from "./updates";
@@ -207,7 +207,24 @@ claude.compactWindow = () => autoCompact.get("claude");
 const mcp = new McpOverrides(ui.STATE);
 for (const h of [claude, codex, cursor]) (h.mcpPlan = (cwd) => mcpPlan(cwd, h.id)), (h.sessionMcp = (cwd, key) => sessionMcp(cwd, h.id, key));
 codex.onSessionKey = (key, id) => browser.alias(key, id);
-/** A thread as clients see it: settled or not, and where it auto-compacts (its context ring's full mark). */
+/** The saved account each session's last turn ran on (thread-accounts.json): the picker takes it up again with the
+ *  session, as it does its model. */
+const threadAccountsFile = join(ui.STATE, "thread-accounts.json");
+const threadAccounts: Record<string, string> = (() => {
+  try {
+    return JSON.parse(readFileSync(threadAccountsFile, "utf8"));
+  } catch {
+    return {};
+  }
+})();
+function ranOn(threadId: string, account: string | null) {
+  if ((threadAccounts[threadId] ?? null) === account) return;
+  if (account) threadAccounts[threadId] = account;
+  else delete threadAccounts[threadId];
+  writeFileSync(threadAccountsFile, JSON.stringify(threadAccounts));
+}
+/** A thread as clients see it: settled or not, where it auto-compacts (its context ring's full mark), and the account
+ *  its last turn ran on. */
 const decorated = <T extends Omit<Thread, "turns" | "requests">>(t: T): T => ({
   ...settled(t),
   compactAt:
@@ -216,10 +233,41 @@ const decorated = <T extends Omit<Thread, "turns" | "requests">>(t: T): T => ({
       : t.harness === "codex"
         ? codexCompactAt(codex.appliedLimit(t.id), codex.configLimit, t.contextWindow)
         : null,
+  account: threadAccounts[t.id] ?? null,
 });
-// Claude and Cursor read their login per run; Codex's app-server holds it, so a switch restarts it when idle.
+// Each turn runs on the account the model picker chose for it, which its project must allow: Claude Code's and
+// Cursor's on that account's own token, Codex's on its machine login, which its app-server holds: switched to the
+// picked one while Codex is idle.
 const accounts = new AgentAccounts(detectConfig(ui.STATE), (store) => cursor.loginArgv(store));
-accounts.onLiveChanged = (h) => h === "codex" && codex.restartWhenIdle();
+accounts.onLiveChanged = (h) => void (h === "codex" && codex.restartWhenIdle());
+accounts.onAdded = (_h, id) => void (projects.blockNew(id) && broadcastProjects());
+projects.migrateAccess((h) => accounts.savedIds(h));
+/** The saved account a turn of harness `h` in a session folder runs on: the model picker's `wanted`, else the
+ *  project's default. Throws when the project blocks it, or it can't run (see AgentAccounts.turnAccount). */
+function turnAccount(h: HarnessId, cwd: string, wanted: string | null) {
+  // A worktree made outside this core's listing yet: list them once to find whose it is.
+  if (!homes.has(cwd) && !projects.at(cwd)) sessionFolders();
+  const project = projects.at(homeOf(cwd));
+  return accounts.turnAccount(h, wanted, project?.blocked ?? [], project ? project.name || basename(project.path) : "this folder");
+}
+/** Codex's app-server onto account `id` before a turn: when it runs on another one (or its login changed on disk
+ *  under it), the machine login is switched and the app-server restarted, refused while a Codex turn runs, which
+ *  would carry on on the new one. */
+async function codexOn(id: string) {
+  const file = accounts.liveId("codex");
+  if (file === id && (codex.runsOn === undefined || codex.runsOn === id)) return;
+  const email = (x: string | null | undefined) => accounts.savedEmail("codex", x) ?? "another account";
+  if (!codex.idle) throw new Error(`Codex is working on ${email(codex.runsOn)} in another session: let it finish to switch Codex to ${email(id)}`);
+  if (file !== id) await accounts.activate("codex", id);
+  await codex.restartWhenIdle();
+  if (codex.runsOn !== undefined && codex.runsOn !== id) throw new Error(`Codex didn't switch to ${email(id)}: send again`);
+}
+claude.account = (cwd, wanted) => turnAccount("claude", cwd, wanted);
+claude.login = (account) => accounts.claudeLogin(account);
+cursor.account = (cwd, wanted) => turnAccount("cursor", cwd, wanted);
+cursor.login = (account) => accounts.cursorKey(account);
+cursor.ranOn = (threadId) => threadAccounts[threadId] ?? null;
+codex.loginNow = () => accounts.liveId("codex");
 const byId = (id: HarnessId) => harnesses.find((h) => h.id === id)!;
 // Each harness starts on its own; one that's missing or broken leaves the others usable.
 const status = new Map<HarnessId, { available: boolean; error: string | null }>(harnesses.map((h) => [h.id, { available: false, error: null }]));
@@ -243,7 +291,7 @@ updates.onChanged = (id) => void harnessReplaced(id);
 async function harnessReplaced(id: HarnessId) {
   const h = byId(id);
   if (status.get(id)!.available) {
-    if (id === "codex") codex.restartWhenIdle();
+    if (id === "codex") void codex.restartWhenIdle();
     return;
   }
   await startHarness(h);
@@ -287,6 +335,7 @@ for (const h of harnesses) {
           .then((ch) => ch.archive(child))
           .catch((err) => console.error(`[side chats] archiving ${child} failed:`, err?.message ?? err));
       sideChats.drop(threadId);
+      ranOn(threadId, null);
     }
     if (event.type === "turn.upsert" && event.turn.status === "inProgress" && event.turn.startedAt) runStarts.set(threadId, event.turn.startedAt);
     if (event.type === "thread.upsert") event = { ...event, thread: decorated(event.thread) };
@@ -301,7 +350,7 @@ for (const h of harnesses) {
     console.error(`[${h.id}] ${err.message}`);
     for (const c of clients) send(c, { type: "error", message: `${h.name}: ${err.message}` });
   };
-  h.onUsage = (windows) => accounts.noteLiveUsage(h.id, windows);
+  h.onUsage = (windows, account) => accounts.noteUsage(h.id, windows, account);
 }
 
 const startHarness = (h: Harness) =>
@@ -371,6 +420,8 @@ async function handle(ws: Client, msg: ClientMessage) {
         if (!status.get(h.id)!.available) throw new Error(`${h.name} is not available${status.get(h.id)!.error ? `: ${status.get(h.id)!.error}` : ""}`);
         const project = msg.projectId ? projects.get(msg.projectId) : null;
         if (!project) throw new Error("Pick a project for the new session first");
+        // Refused before there's a session (or a worktree) to leave behind.
+        turnAccount(h.id, project.path, msg.settings.account ?? null);
         projects.touch(project.id);
         let cwd = project.path;
         if (msg.worktree) {
@@ -470,6 +521,18 @@ async function announce(threadId: string) {
 
 /** Send a prompt: a new turn, or a steer into the running one. */
 async function sendTurn(h: Harness, threadId: string, text: string, settings: TurnSettings) {
+  // The account it runs on, refused here when the project blocks it: the one picked, else the session's last.
+  const cwd = cwds.get(threadId) ?? (await h.openThread(threadId)).cwd;
+  if (turnInFlight(threadId)) {
+    // A steer joins the turn on the account that runs it, which the project must still allow (Claude Code's and
+    // Cursor's adapters know theirs, and check it).
+    if (h.id === "codex") turnAccount("codex", cwd, codex.runsOn ?? null);
+  } else {
+    const account = turnAccount(h.id, cwd, settings.account ?? threadAccounts[threadId] ?? null);
+    if (h.id === "codex" && account) await codexOn(account);
+    settings = { ...settings, account };
+    ranOn(threadId, account);
+  }
   // A side chat's first prompt names it.
   if (sideChats.named(threadId, titleFrom(text))) await announce(threadId);
   // A new turn wakes a settled session (t3code clears the override on a user message).
@@ -570,8 +633,6 @@ async function rpc<M extends keyof RpcMethods>(method: M, params: RpcMethods[M][
   switch (method) {
     case "accounts.list":
       return accounts.list(!!p.forceUsage);
-    case "accounts.activate":
-      return accounts.activate(harness(p.harness), String(p.id));
     case "accounts.forget":
       return accounts.forget(harness(p.harness), String(p.id));
     case "accounts.login.start":
@@ -597,6 +658,11 @@ async function rpc<M extends keyof RpcMethods>(method: M, params: RpcMethods[M][
       return null;
     case "projects.add":
       return projects.add(String(p.path));
+    case "projects.block":
+      if (!/^[0-9a-f]{16}$/.test(String(p.account))) throw new Error("Unknown account");
+      projects.block(String(p.id), String(p.account), !!p.blocked);
+      broadcastProjects();
+      return null;
     case "projects.rename":
       projects.rename(String(p.id), p.name == null ? null : String(p.name));
       return null;
@@ -810,6 +876,8 @@ async function rpc<M extends keyof RpcMethods>(method: M, params: RpcMethods[M][
       const named = settled(summary(from)).title;
       const prompt = from.turns.flatMap((t) => t.items).find((i) => i.kind === "user")?.text ?? "";
       sideChats.add(thread.id, parent, h.id, { from: parent, title: named === UNTITLED ? titleFrom(prompt) || UNTITLED : named, turns: thread.turns.length });
+      // On its parent's account, whose prompt cache it shares.
+      ranOn(thread.id, threadAccounts[parent] ?? null);
       await announce(thread.id);
       return settled(summary(thread));
     }

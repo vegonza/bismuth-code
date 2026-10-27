@@ -766,7 +766,7 @@ html.wrap-code .code-block pre { white-space: pre-wrap; overflow-wrap: anywhere;
 .picker .mrow { height: 32px; flex: none; padding: 0 4px 0 8px; border-radius: 7px; display: flex; align-items: center; gap: 8px; border: 1px solid transparent; cursor: pointer; transition: background-color var(--wash); }
 .picker .mrow.active { background: rgba(var(--ink-rgb), 0.05); }
 .picker .mrow.selected { background: linear-gradient(rgba(var(--ink-rgb), 0.08), rgba(var(--ink-rgb), 0.05)); border-color: rgba(var(--ink-rgb), 0.09); box-shadow: inset 0 1px 0 rgba(var(--ink-rgb), 0.07), 0 1px 2px rgba(0, 0, 0, 0.16); }
-.picker .mrow > .icon { width: 14px; height: 14px; color: var(--muted); }
+.picker .mrow > .icon, .picker .mrow > .login-icon > .icon { width: 14px; height: 14px; color: var(--muted); }
 .picker .mrow .mlabel { flex: 1; min-width: 0; font-size: calc(12px * var(--fs)); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .picker .mrow .star { width: 24px; height: 24px; border-radius: 6px; display: flex; align-items: center; justify-content: center; color: var(--muted); opacity: 0; transition: opacity var(--wash), background-color var(--wash); }
 .picker .mrow.active .star, .picker .mrow .star.on { opacity: 1; }
@@ -774,6 +774,22 @@ html.wrap-code .code-block pre { white-space: pre-wrap; overflow-wrap: anywhere;
 .picker .mrow .star:hover { background: rgba(var(--ink-rgb), 0.08); }
 .picker .mrow .star .icon { width: 13px; height: 13px; }
 .picker .empty { padding: 10px 8px; font-size: calc(12px * var(--fs)); color: var(--faint); }
+/* A group's head: the account its models run on, and Block (on hover; a phone shows it) or Unblock for the project. */
+.picker .mhead { height: 26px; flex: none; padding: 0 4px 0 8px; display: flex; align-items: center; gap: 6px; font-size: calc(11px * var(--fs)); color: var(--faint); }
+.picker .mhead:not(:first-child) { margin-top: 6px; }
+.picker .mhead > .icon { width: 12px; height: 12px; color: var(--faint); }
+.picker .mhead-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.picker .mhead.blocked > .icon, .picker .mhead.blocked .mhead-label { opacity: 0.6; }
+.picker .mblock { width: 24px; height: 24px; flex: none; border-radius: 6px; display: flex; align-items: center; justify-content: center; color: var(--muted); opacity: 0; transition: opacity var(--wash), background-color var(--wash), color var(--wash); }
+.picker .mhead:hover .mblock, html.phone .picker .mblock, .picker .mblock.on { opacity: 1; }
+.picker .mblock:hover { background: rgba(var(--ink-rgb), 0.08); color: var(--text); }
+.picker .mblock .icon { width: 13px; height: 13px; }
+.picker .mblock.on { width: auto; padding: 0 8px; font-size: calc(11px * var(--fs)); font-weight: 500; color: var(--text); background: rgba(var(--ink-rgb), 0.06); }
+.picker .mblock.on:hover { background: rgba(var(--ink-rgb), 0.1); }
+.picker .sq-btn.blocked { opacity: 0.35; }
+/* A harness mark with the account's initial on its corner, where the harness has more than one account. */
+.login-icon { position: relative; flex: none; display: flex; }
+.login-badge { position: absolute; right: -4px; bottom: -4px; min-width: 10px; height: 10px; padding: 0 2px; box-sizing: border-box; border-radius: 5px; font-size: 7.5px; line-height: 10px; font-weight: 700; text-align: center; color: var(--main); background: var(--text); pointer-events: none; }
 
 /* transient banner (connection, core errors) */
 #banner { position: absolute; top: 44px; left: 50%; transform: translateX(-50%); z-index: 50; max-width: min(560px, calc(100% - 96px)); }
@@ -1102,8 +1118,6 @@ html.paused *, html.paused *::before, html.paused *::after { animation-play-stat
 .account-add .s-action { margin-left: -10px; }
 .account-row { margin: 0 -10px; padding: 10px; min-height: 56px; border-radius: 10px; display: flex; align-items: center; gap: 14px; }
 .account-list > .account-row + .account-row { border-top-left-radius: 0; border-top-right-radius: 0; }
-.account-row.switchable { cursor: pointer; transition: background-color 0.15s cubic-bezier(0.4, 0, 0.2, 1); }
-.account-row.switchable:hover { background: rgba(var(--wash-rgb), 0.04); }
 .account-row .s-row-text { flex: 1; min-width: 0; }
 .account-row .s-meta { flex-wrap: nowrap; white-space: nowrap; overflow: hidden; }
 .account-row .s-meta > span { flex: none; }

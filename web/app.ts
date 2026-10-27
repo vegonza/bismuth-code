@@ -218,7 +218,7 @@ function onMessage(msg: ServerMessage) {
       if (!creating && t.id !== wanted) break;
       // Already showing a kept copy: the composer's settings only follow if the thread's own changed meanwhile.
       const prev = store.thread?.id === t.id ? store.thread : null;
-      const adopt = !prev || t.model !== prev.model || t.effort !== prev.effort || t.serviceTier !== prev.serviceTier;
+      const adopt = !prev || t.model !== prev.model || t.effort !== prev.effort || t.serviceTier !== prev.serviceTier || t.account !== prev.account;
       store.thread = t;
       t.title = titled(t).title;
       store.summaries.set(t.id, summarize(t));
@@ -338,9 +338,12 @@ function open(id: string) {
 }
 
 function adoptSettings(t: Thread) {
+  // The account its last turn ran on, when the core knows it; else the one picked stays, if it's this harness's.
+  const account = t.account ?? (t.harness === store.settings.harness ? store.settings.account : null);
   if (t.model && store.models.some((m) => m.id === t.model))
-    store.settings = { harness: t.harness, model: t.model, effort: t.effort ?? store.settings.effort, serviceTier: t.serviceTier };
-  else if (store.settings.harness !== t.harness) store.settings = { ...store.settings, harness: t.harness, model: null };
+    store.settings = { harness: t.harness, model: t.model, effort: t.effort ?? store.settings.effort, serviceTier: t.serviceTier, account };
+  else if (store.settings.harness !== t.harness) store.settings = { ...store.settings, harness: t.harness, model: null, account };
+  else store.settings = { ...store.settings, account };
 }
 
 /** Threads that settle while not open read "Done" in the sidebar until visited. */
@@ -382,7 +385,7 @@ function applyEvent(threadId: string, ev: ThreadEvent) {
   switch (ev.type) {
     case "thread.upsert": {
       const wasRunning = !!t.activeTurnId;
-      const changed = t.model !== ev.thread.model || t.effort !== ev.thread.effort || t.serviceTier !== ev.thread.serviceTier;
+      const changed = t.model !== ev.thread.model || t.effort !== ev.thread.effort || t.serviceTier !== ev.thread.serviceTier || t.account !== ev.thread.account;
       Object.assign(t, ev.thread);
       if (changed) adoptSettings(t);
       render("header", "composer", "transcript");

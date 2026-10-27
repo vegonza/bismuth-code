@@ -5,11 +5,12 @@ import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import type { FolderListing, Project, Worktree } from "../shared/model";
+import type { FolderListing, HarnessId, Project, Worktree } from "../shared/model";
 
 // settleBefore: sessions whose last activity is older than this start settled (set when the project is added, so
 // a folder with a long history doesn't flood the active list; Settle all moves it to now).
-type Stored = { id: string; path: string; name: string | null; createdAt: number; lastUsedAt: number; settleBefore?: number };
+// blocked: saved accounts no turn there runs on (the model picker's Block).
+type Stored = { id: string; path: string; name: string | null; createdAt: number; lastUsedAt: number; settleBefore?: number; blocked?: string[] };
 
 // Project artwork, first match wins (Zeron's order, after Conductor's documented filename priority).
 const ICON_PATHS = [
@@ -49,6 +50,7 @@ export class Projects {
       icon: !!this.iconPath(s.id),
       createdAt: s.createdAt,
       lastUsedAt: s.lastUsedAt,
+      blocked: s.blocked ?? [],
       ...this.extras(s.id, s.path),
     }));
   }
@@ -63,6 +65,42 @@ export class Projects {
     this.save();
   }
   get = (id: string) => this.stored.find((s) => s.id === id) ?? null;
+  /** The registered project at a folder (a project folder, not one of its worktrees). */
+  at = (path: string) => this.stored.find((s) => s.path === path) ?? null;
+
+  /** The model picker's Block: no turn in the project runs on the saved account, or (`blocked` false) it may again. */
+  block(id: string, account: string, blocked: boolean) {
+    const s = this.require(id);
+    const next = new Set(s.blocked);
+    if (blocked) next.add(account);
+    else next.delete(account);
+    s.blocked = next.size ? [...next] : undefined;
+    this.save();
+  }
+
+  /** A newly saved account: blocked in every project that blocks any, which run only on accounts let in one by one.
+   *  True when one changed. */
+  blockNew(account: string): boolean {
+    const restricted = this.stored.filter((s) => s.blocked?.length && !s.blocked.includes(account));
+    for (const s of restricted) s.blocked = [...s.blocked!, account];
+    if (restricted.length) this.save();
+    return restricted.length > 0;
+  }
+
+  /** The per-harness allow rules an earlier build kept (`access`), as blocks: every saved account (`saved`) a rule left
+   *  out is blocked. */
+  migrateAccess(saved: (h: HarnessId) => string[]) {
+    let changed = false;
+    for (const s of this.stored as (Stored & { access?: Partial<Record<HarnessId, "off" | string[]>> })[]) {
+      if (!s.access) continue;
+      const blocked = new Set(s.blocked);
+      for (const [h, rule] of Object.entries(s.access)) for (const id of saved(h as HarnessId)) if (rule === "off" || !rule?.includes(id)) blocked.add(id);
+      s.blocked = blocked.size ? [...blocked] : undefined;
+      delete s.access;
+      changed = true;
+    }
+    if (changed) this.save();
+  }
 
   /** The registered project a folder is, adding it if it isn't one yet. */
   ensure(path: string): Stored {

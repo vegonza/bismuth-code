@@ -7,7 +7,7 @@ import { createEditor, fileChip, labelFile, mentionChip, type Editor } from "./e
 import { questionPanel, type QuestionPanel } from "./questions";
 import { icon } from "./icons";
 import { animator, EASE_OUT, reducedMotion } from "./motion";
-import { closePicker, currentEffort, currentHarness, currentModel, fastOn, initPicker, refreshPicker } from "./picker";
+import { closePicker, currentEffort, currentHarness, currentModel, fastOn, initPicker, refreshPicker, turnAccountId } from "./picker";
 import { getDraft, getDraftCaret, leaveDraft, openNewDraft, setDraft, setDraftCaret, setNewDraftProject } from "./drafts";
 import { displayCombo } from "./keymap";
 import { openPalette } from "./palette";
@@ -445,7 +445,7 @@ function measure(kind: "morph" | "route" = "morph", was: Painted = onScreen()) {
 
 const turnSettings = (): TurnSettings => {
   const m = currentModel();
-  return { harness: m?.harness ?? currentHarness(), model: m?.id ?? null, effort: currentEffort(m), serviceTier: fastOn(m) ? m!.fastTier : null };
+  return { harness: m?.harness ?? currentHarness(), model: m?.id ?? null, effort: currentEffort(m), serviceTier: fastOn(m) ? m!.fastTier : null, account: turnAccountId() };
 };
 
 /** `key`: Enter, which never stops a run (Zeron #406: a stray Enter right after sending stopped the turn it had just

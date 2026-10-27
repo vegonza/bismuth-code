@@ -54,6 +54,8 @@ export type Project = {
   worktrees: Worktree[];
   /** The worktree whose files the project folder shows now (Preview, core/preview.ts); null: its own. */
   preview: string | null;
+  /** Saved accounts (AgentAccount ids) blocked in it, from the model picker: no turn of its sessions runs on one. */
+  blocked: string[];
 };
 
 /** A git worktree bismuth made of a project's repository (core/worktrees.ts). `from`: the branch the project folder
@@ -139,6 +141,7 @@ export type Thread = ThreadSummary & {
   contextTokens: number | null;
   contextWindow: number | null; // the model's
   compactAt?: number | null; // where it auto-compacts (the core fills it in): what the context ring measures against
+  account?: string | null; // the saved account (AgentAccount id) its last turn ran on (the core fills it in)
   notice: string | null; // transient error / retry message
 };
 
@@ -202,7 +205,7 @@ export type Invocable = { name: string; kind: "skill" | "command"; text: string;
 // A plan rate-limit window ("Session", "Week", "Month") and how much of it is spent.
 export type UsageWindow = { label: string; usedPercent: number; resetsAt: number | null /* ms */ };
 
-// Agent accounts (Settings → Providers): every login a CLI has had on this device, one of them live.
+// Agent accounts (Settings → Providers): the logins turns run on, picked per turn in the model picker.
 export type AgentAccount = {
   id: string;
   harness: HarnessId;
@@ -211,11 +214,11 @@ export type AgentAccount = {
   organization: string | null;
   plan: string | null;
   authKind: "oauth" | "api-key";
-  active: boolean;
+  active: boolean; // Codex's machine login (its app-server runs on that one; a turn picked on another switches it)
   windows: UsageWindow[];
   usageFetchedAt: number | null; // ms; windows may be minutes old while a refresh runs
   usageError: string | null; // why the last probe failed ("Rate limited by Anthropic — retrying in 2m")
-  switchable: boolean; // false for a live login whose credentials couldn't be read
+  unusable: string | null; // why no turn runs on it until it's signed in again (a Cursor key expired, a mixed-up Claude login)
   savedAt: number | null;
 };
 export type AgentAccountsSnapshot = { accounts: AgentAccount[]; warnings: { harness: HarnessId; message: string }[] };
@@ -254,7 +257,6 @@ export type ThreadQueue = { items: QueuedMessage[]; paused: QueuePause | null };
 
 export type RpcMethods = {
   "accounts.list": { params: { forceUsage: boolean }; result: AgentAccountsSnapshot };
-  "accounts.activate": { params: { harness: HarnessId; id: string }; result: AgentAccountsSnapshot };
   "accounts.forget": { params: { harness: HarnessId; id: string }; result: AgentAccountsSnapshot };
   "accounts.login.start": { params: { harness: HarnessId }; result: AgentLoginStart };
   "accounts.login.poll": { params: { loginId: string }; result: AgentLoginPoll };
@@ -268,6 +270,8 @@ export type RpcMethods = {
   "projects.add": { params: { path: string }; result: Project };
   "projects.rename": { params: { id: string; name: string | null }; result: null };
   "projects.remove": { params: { id: string }; result: null };
+  // A saved account (AgentAccount id) blocked in a project, or no longer.
+  "projects.block": { params: { id: string; account: string; blocked: boolean }; result: null };
   "fs.list": { params: { path: string | null }; result: FolderListing };
   // A session folder's files (`root` is the folder; paths are relative to it): the right side's explorer and viewer.
   "files.list": { params: { root: string; path: string; all: boolean }; result: FileEntry[] };
@@ -407,8 +411,9 @@ export type McpServer = {
 export type McpSnapshot = { harnesses: HarnessId[]; servers: McpServer[] };
 export type McpScope = "project" | "all";
 
-// harness: which harness a new session starts on (an existing thread keeps its own).
-export type TurnSettings = { harness: HarnessId; model: string | null; effort: string | null; serviceTier: string | null };
+// harness: which harness a new session starts on (an existing thread keeps its own). account: the saved account
+// (AgentAccount id) the turn runs on, null for the session's last or the project's first allowed one.
+export type TurnSettings = { harness: HarnessId; model: string | null; effort: string | null; serviceTier: string | null; account: string | null };
 
 // A harness the core knows: available once its CLI started (or was found).
 export type HarnessInfo = { id: HarnessId; name: string; available: boolean; error: string | null };

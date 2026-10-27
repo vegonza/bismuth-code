@@ -3,6 +3,7 @@
 import circleCheck from "lucide-static/icons/circle-check.svg" with { type: "text" };
 import undo2 from "lucide-static/icons/undo-2.svg" with { type: "text" };
 import arrowLeft from "lucide-static/icons/arrow-left.svg" with { type: "text" };
+import ban from "lucide-static/icons/ban.svg" with { type: "text" };
 import arrowRight from "lucide-static/icons/arrow-right.svg" with { type: "text" };
 import arrowUp from "lucide-static/icons/arrow-up.svg" with { type: "text" };
 import arrowUpRight from "lucide-static/icons/arrow-up-right.svg" with { type: "text" };
@@ -99,7 +100,7 @@ import type { HarnessId } from "../shared/model";
 const ICONS = {
   box, calendar, clock, claude, cursor, ellipsis, laptop, list,
   bell, blocks, chartNoAxesColumn, info, image, fish, keyboard, moon, refreshCw, rotateCcw, rotateCw, layers, files, monitorSmartphone, slidersHorizontal, sun, x,
-  circleCheck, undo2, arrowLeft, arrowRight, arrowUp, arrowUpRight, bot, brain, check, chevronDown, chevronLeft, chevronRight, copy, file,
+  ban, circleCheck, undo2, arrowLeft, arrowRight, arrowUp, arrowUpRight, bot, brain, check, chevronDown, chevronLeft, chevronRight, copy, file,
   filePlus, fileDiff, folder, folderPlus, house, gitBranch, globe, monitor, openai, panelLeft, pencil, plug, plus, search, settings,
   squarePen, squareTerminal, star, triangleAlert, wrench, zap, maximize2, minimize2, gripVertical, trash2, messageCircle, messageCirclePlus, messagesSquare,
   panelRight, folderTree, eye, eyeClosed, bookOpen, download, code, minus, externalLink, folderOpen, copyPlus, clipboardCopy, save, arrowDown, listFilter,

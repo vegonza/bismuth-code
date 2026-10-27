@@ -1,4 +1,4 @@
-// The sidebar footer's plan limits, left of the gear: a ring per Claude Code account and Codex's live login, the window
+// The sidebar footer's plan limits, left of the gear: a ring per Claude Code and Codex account, the window
 // nearest its limit always in sight, every window in a card on hover. The list is the one Settings → Providers shows
 // (accounts.ts); turns feed it for free as they finish, and an occasional probe catches the accounts that sat idle. Cursor has no rate windows, only a month's bill.
 import type { AgentAccount, HarnessId, UsageWindow } from "../shared/model";
@@ -19,11 +19,10 @@ const PROBE_EVERY = 10 * 60_000;
 let box: HTMLElement;
 let painted = "";
 
-/** Every saved Claude account (projects run on them side by side), and Codex's live login. */
+/** Every saved Claude Code and Codex account (turns run on whichever the model picker puts them on), Codex's machine
+ *  login first. */
 function shownAccounts(accounts: AgentAccount[]): AgentAccount[] {
-  return SHOWN.flatMap((h) =>
-    accounts.filter((a) => a.harness === h && (h === "claude" || a.active)).sort((a, b) => Number(b.active) - Number(a.active)),
-  );
+  return SHOWN.flatMap((h) => accounts.filter((a) => a.harness === h).sort((a, b) => Number(b.active) - Number(a.active)));
 }
 
 /** How much of a window is used now: one past its reset is empty. */

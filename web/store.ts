@@ -50,7 +50,7 @@ export const store = {
   titles: new Map<string, string>(Object.entries(JSON.parse(localStorage.getItem("bismuth.titles") ?? "{}") as Record<string, string>)),
   /** When each running session was first seen running, for the sidebar's "Working 4m". */
   runningSince: new Map<string, number>(Object.entries(JSON.parse(localStorage.getItem("bismuth.runningSince") ?? "{}") as Record<string, number>)),
-  settings: { harness: "codex", model: null, effort: null, serviceTier: null, ...JSON.parse(localStorage.getItem("bismuth.settings") ?? "{}") } as TurnSettings,
+  settings: { harness: "codex", model: null, effort: null, serviceTier: null, account: null, ...JSON.parse(localStorage.getItem("bismuth.settings") ?? "{}") } as TurnSettings,
   sessionsOpen: localStorage.getItem("bismuth.sessionsOpen") !== "0",
   /** The Settled shelf under the active list (open by default, like Zeron's Archived). */
   settledOpen: localStorage.getItem("bismuth.settledOpen") !== "0",

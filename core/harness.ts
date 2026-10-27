@@ -23,8 +23,9 @@ export interface Harness {
   onEvent: (threadId: string, event: ThreadEvent) => void;
   /** The harness died; its threads can't run until the core restarts. */
   onExit: (err: Error) => void;
-  /** The live account's rate-limit windows, as a running turn reported them (folded into Accounts). */
-  onUsage: (windows: UsageWindow[]) => void;
+  /** A login's rate-limit windows, as a running turn reported them (folded into Accounts). `account`: the saved
+   *  account the turn ran on, null for the live login. */
+  onUsage: (windows: UsageWindow[], account: string | null) => void;
 
   start(): Promise<void>;
   listModels(): Promise<ModelOption[]>;

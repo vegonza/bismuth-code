@@ -70,7 +70,7 @@ export class CodexAdapter implements Harness {
   /** Called for every normalized change; the server fans these out to clients. */
   onEvent: (threadId: string, event: ThreadEvent) => void = () => {};
   onExit: (err: Error) => void = () => {};
-  onUsage: (windows: UsageWindow[]) => void = () => {};
+  onUsage: (windows: UsageWindow[], account: string | null) => void = () => {};
   private limits: C.RateLimitSnapshot | null = null;
   private lastList: ThreadSummary[] | null = null;
   private proc: Bun.Subprocess | null = null;
@@ -79,9 +79,13 @@ export class CodexAdapter implements Harness {
   private waking: Promise<JsonRpcPeer> | null = null;
   private parkTimer: ReturnType<typeof setTimeout> | null = null;
   private configs = new Map<string, { stamp: string; res: C.ConfigReadResponse }>();
-  /** The app-server is stale: the live login changed on disk (account switch) or the CLI was updated. */
+  /** The app-server is stale: the machine login changed on disk (account switch) or the CLI was updated. */
   private authStale = false;
-  private restarting = false;
+  private restarting: Promise<void> | null = null;
+  /** The saved account the machine login was when the app-server started: the one its turns run on. */
+  private launchedOn: string | null = null;
+  /** The machine login's saved account id, as it is on disk now. */
+  loginNow: () => string | null = () => null;
   /** bismuth's auto-compact override (Settings → Providers), passed to each session started or resumed. */
   compactLimit: () => number | null = () => null;
   /** What sessions in a project get of the MCP servers (Ctrl+K → MCP servers): Codex's own ones switched off or on,
@@ -138,8 +142,9 @@ export class CodexAdapter implements Harness {
   }
 
   private async launch(): Promise<JsonRpcPeer> {
-    // A fresh process reads the live login and the CLI as they are now.
+    // A fresh process reads the machine login and the CLI as they are now.
     this.authStale = false;
+    this.launchedOn = this.loginNow();
     // One app-server serves every project: each thread carries its own cwd.
     const proc = Bun.spawn(["codex", "app-server"], {
       cwd: homedir(),
@@ -770,7 +775,7 @@ export class CodexAdapter implements Harness {
         const next = (params as C.AccountRateLimitsUpdatedNotification).rateLimits;
         if (next.limitId && next.limitId !== "codex") return;
         this.limits = { ...(this.limits ?? next), primary: next.primary ?? this.limits?.primary ?? null, secondary: next.secondary ?? this.limits?.secondary ?? null };
-        this.onUsage(this.windows());
+        this.onUsage(this.windows(), this.launchedOn);
         return;
       }
       case "thread/started": {
@@ -1046,16 +1051,31 @@ export class CodexAdapter implements Harness {
    * the binary: restart — once no turn is running, never under one. Threads resume into the new process when next
    * opened or sent to.
    */
-  restartWhenIdle() {
+  restartWhenIdle(): Promise<void> {
     this.authStale = true;
-    void this.restartIfIdle();
+    return this.restartIfIdle();
   }
 
-  private async restartIfIdle() {
-    if (!this.authStale || this.restarting || !this.proc || [...this.threads.values()].some((t) => t.activeTurnId)) return;
-    this.restarting = true;
-    this.authStale = false;
+  /** The account the app-server's turns run on (null: an unsaved login, or none); undefined while none is up. */
+  get runsOn(): string | null | undefined {
+    return this.proc ? this.launchedOn : undefined;
+  }
+
+  /** No Codex turn runs. */
+  get idle() {
+    return ![...this.threads.values()].some((t) => t.activeTurnId);
+  }
+
+  private restartIfIdle(): Promise<void> {
+    // One already restarting may have read the login before it changed again: another goes after it.
+    if (this.restarting) return this.restarting.then(() => this.restartIfIdle());
     const old = this.proc;
+    if (!this.authStale || !old || !this.idle) return Promise.resolve();
+    return (this.restarting = this.restart(old).finally(() => (this.restarting = null)));
+  }
+
+  private async restart(old: Bun.Subprocess) {
+    this.authStale = false;
     this.proc = null;
     this.peer = null;
     old.kill();
@@ -1070,8 +1090,6 @@ export class CodexAdapter implements Harness {
       if (this.inUse) await this.rpc();
     } catch (err: any) {
       this.onExit(err instanceof Error ? err : new Error(String(err)));
-    } finally {
-      this.restarting = false;
     }
   }
 

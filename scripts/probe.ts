@@ -49,7 +49,7 @@ ws.onmessage = (ev) => {
         threadId: opt("--thread") ?? null,
         projectId,
         text: prompt,
-        settings: { harness: (opt("--harness") ?? "codex") as "codex" | "claude", model: opt("--model") ?? null, effort: opt("--effort") ?? "low", serviceTier: null },
+        settings: { harness: (opt("--harness") ?? "codex") as "codex" | "claude", model: opt("--model") ?? null, effort: opt("--effort") ?? "low", serviceTier: null, account: null },
       });
     else finish();
   } else if (m.type === "thread") {
@@ -57,7 +57,7 @@ ws.onmessage = (ev) => {
     console.log(`[thread] ${thread.id} turns=${thread.turns.length}`);
     if (opt("--open")) finish();
     else if (opt("--thread") && opt("--prompt") && !thread.activeTurnId)
-      send({ type: "send", threadId: thread.id, projectId: null, text: opt("--prompt")!, settings: { harness: thread.harness, model: opt("--model") ?? thread.model, effort: opt("--effort") ?? "low", serviceTier: null } });
+      send({ type: "send", threadId: thread.id, projectId: null, text: opt("--prompt")!, settings: { harness: thread.harness, model: opt("--model") ?? thread.model, effort: opt("--effort") ?? "low", serviceTier: null, account: null } });
   } else if (m.type === "event") {
     const e = m.event;
     if (!thread || m.threadId !== thread.id) return;
@@ -113,5 +113,5 @@ const sa = opt("--steer-after");
 if (sa)
   setTimeout(() => {
     console.log("[steering]");
-    if (thread) send({ type: "send", threadId: thread.id, projectId: null, text: opt("--steer") ?? "continue", settings: { harness: thread.harness, model: null, effort: "low", serviceTier: null } });
+    if (thread) send({ type: "send", threadId: thread.id, projectId: null, text: opt("--steer") ?? "continue", settings: { harness: thread.harness, model: null, effort: "low", serviceTier: null, account: null } });
   }, Number(sa));

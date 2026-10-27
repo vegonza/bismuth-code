@@ -1,42 +1,55 @@
-// Agent accounts (Zeron's engine/agent_accounts.rs, for Claude Code, Codex and Cursor): every login each CLI
-// has had on this device, saved as slots, one of them live.
+// Agent accounts (Zeron's engine/agent_accounts.rs, for Claude Code, Codex and Cursor): the logins turns run on,
+// saved as slots under `.bismuth/agent-accounts/<provider>/<slotId>.json` (0600, dirs 0700), in Zeron's format.
+// The model picker chooses one per turn; a project blocks the ones it must never run on.
 //
-// - Detect: each list reads the CLI's live login and snapshots it into a slot under
-//   `.bismuth/agent-accounts/<provider>/<slotId>.json` (0600, dirs 0700), so the session a switch replaces is
-//   always backed up and refreshed tokens stay current. Slot files use Zeron's format.
-// - Switch (`activate`): overwrite the CLI's credential store with a saved slot. Claude's blob also carries
-//   machine-shared MCP/plugin tokens next to the account login; the live copies of those are kept. Claude's
-//   identity (`oauthAccount`, `userID`) is merged back into `~/.claude.json`, nothing else there is touched.
-// - Add (`startLogin`): sign a NEW account in without touching the live one (unless it is the live account
-//   again, or there is no live login): Claude runs the CLI's PKCE flow against our own loopback callback
-//   (pasting the code is the fallback), Codex runs `codex login` against a throwaway CODEX_HOME, Cursor runs
-//   the SDK's browser login through the shim into a throwaway store file.
+// - Claude Code (Orca's way): each account is its own Claude Code config dir (`claudeHome`), signed in there by
+//   `claude auth login` and from then on Claude Code's alone: it refreshes the login under its own lock, as it does for
+//   every process sharing a config dir, and bismuth never writes it. A turn runs with CLAUDE_CONFIG_DIR set to it and
+//   no token of bismuth's (`claudeLogin`), once its login is checked to be that account's. Everything but the login
+//   and who it is links to the user's own config dir, so every account runs with the same config. The CLI's own login
+//   (`~/.claude/.credentials.json`, next to the identity in `~/.claude.json`) is neither used nor written.
+// - Codex: the machine's login (`~/.codex/auth.json`, identity and tokens in one file), which its app-server holds:
+//   each list snapshots it into a slot, and a turn picked on another one switches it (`activate`) while Codex is
+//   idle. Cursor: the SDK's store (one file too) is snapshotted likewise, but a turn runs on its slot's API key.
+// - Add (`startLogin`): sign a NEW account in: Claude runs the CLI's PKCE flow against our own loopback callback
+//   (pasting the code is the fallback), Codex runs `codex login` against a throwaway CODEX_HOME, Cursor runs the
+//   SDK's browser login through the shim into a throwaway store file. Codex's and Cursor's become the machine's
+//   only when it has none usable, or they are it again.
 // - Usage: the rate-limit views the CLIs show (`/usage`, `/status`, Cursor's dashboard), stale-while-revalidate:
 //   a list serves each account's last good probe (persisted in usage-cache.json); only a forced list probes,
 //   skipping accounts probed in the last 30s or backing off after a failure (Retry-After honoured).
 //
 // Linux/Windows-style file stores only: macOS keeps Claude's credentials in the Keychain, which isn't read here.
 import { createHash, randomBytes } from "node:crypto";
-import { chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, unlinkSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { CLAUDE_AUTH_ENV, findClaude } from "./claude-adapter";
 import type { AgentAccount, AgentAccountsSnapshot, AgentLoginPoll, AgentLoginStart, HarnessId, UsageWindow } from "../shared/model";
 
-const CLAUDE_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
-const CLAUDE_REDIRECT = "https://console.anthropic.com/oauth/code/callback";
-const CLAUDE_SCOPES = "org:create_api_key user:profile user:inference";
-const CLAUDE_TOKEN_URL = "https://console.anthropic.com/v1/oauth/token";
-const CLAUDE_PROFILE_URL = "https://api.anthropic.com/api/oauth/profile";
 const CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
-const CLAUDE_LOOPBACK_AUTHORIZE_URL = "https://claude.com/cai/oauth/authorize";
-const CLAUDE_LOOPBACK_TOKEN_URL = "https://platform.claude.com/v1/oauth/token";
-const CLAUDE_LOOPBACK_SUCCESS_URL = "https://platform.claude.com/oauth/code/success?app=claude-code";
-const CLAUDE_LOOPBACK_SCOPES = "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload user:plugins";
 const CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
 const CURSOR_DEFAULT_BACKEND = "https://api2.cursor.sh";
 const CURSOR_CURRENT_PERIOD_USAGE = "aiserver.v1.DashboardService/GetCurrentPeriodUsage";
-/** Machine-shared keys in Claude's credential blob (MCP OAuth, plugin secrets): on a switch the live copies win. */
-const CLAUDE_SHARED_KEYS = ["mcpOAuth", "mcpOAuthClientConfig", "mcpXaaIdp", "mcpXaaIdpConfig", "pluginSecrets"];
+
+/**
+ * Claude Code's config dir entries each account has its own of: its login (which Claude Code alone writes and
+ * refreshes), who it is, its organization's policies, and what the CLI caches and reports about it. Every other entry
+ * links to the user's own config dir, so every account runs with the same settings, skills, plugins, agents, commands,
+ * keybindings, transcripts and history. Claude Code saves settings only into a regular file, never through a link, so
+ * a linked file can't fork.
+ */
+const CLAUDE_OWN = ["backups", "statsig", "cache", "telemetry", "usage-data", "stats-cache.json", "mcp-needs-auth-cache.json", "mcp-discovery-cache", ".session_ingress_token", "hfi-auth.json", "antproto.json"];
+const CLAUDE_OWN_PREFIXES = [".credentials.json", ".claude.json", "policy-limits.json", "remote-settings.json"];
+/** Folders every account's runs share (Orca's list): made in the user's config dir before an account links to it, so a
+ *  CLI never makes one of its own. */
+const CLAUDE_SHARED_DIRS = [
+  "projects", "sessions", "session-env", "file-history", "shell-snapshots", "todos", "paste-cache", "tasks", "plans", "transcripts",
+  "skills", "plugins", "agents", "commands", "output-styles", "rules", "themes", "workflows",
+];
+/** The user's own state in `~/.claude.json` every account takes up (each project's MCP servers and settings, the user's
+ *  MCP servers): copied into each account's under Claude's own lock. */
+const CLAUDE_SHARED_CONFIG = ["projects", "mcpServers", "githubRepoPaths"];
 
 /** A forced list re-probes an account only past this (Anthropic's usage endpoint 429s eagerly). */
 const FORCED_MIN_INTERVAL = 30_000;
@@ -49,13 +62,14 @@ const SLUG: Record<HarnessId, string> = { claude: "claude-code", codex: "codex",
 const PROVIDERS: HarnessId[] = ["claude", "codex", "cursor"];
 const CLI: Record<HarnessId, string> = { claude: "claude", codex: "codex", cursor: "cursor-agent" };
 const VENDOR: Record<HarnessId, string> = { claude: "Anthropic", codex: "OpenAI", cursor: "Cursor" };
+const NAME: Record<HarnessId, string> = { claude: "Claude Code", codex: "Codex", cursor: "Cursor" };
 
 export type AccountsConfig = {
   /** Slots live under `{dataDir}/agent-accounts/`. */
   dataDir: string;
-  /** `$CLAUDE_CONFIG_DIR` or ~/.claude — holds `.credentials.json`. */
+  /** `$CLAUDE_CONFIG_DIR` or ~/.claude: what each Claude account's own config dir links to. */
   claudeConfigDir: string;
-  /** Claude's identity file: ~/.claude.json, or `$CLAUDE_CONFIG_DIR/.claude.json`. */
+  /** Claude Code's identity and settings file: ~/.claude.json, or `$CLAUDE_CONFIG_DIR/.claude.json`. */
   claudeConfigFile: string;
   /** `$CODEX_HOME` or ~/.codex — holds `auth.json`. */
   codexHome: string;
@@ -65,7 +79,8 @@ export type AccountsConfig = {
 
 export function detectConfig(dataDir: string): AccountsConfig {
   const env = (name: string) => process.env[name] || null;
-  const claudeDir = env("CLAUDE_CONFIG_DIR");
+  // Started from inside one of bismuth's own Claude runs, CLAUDE_CONFIG_DIR is that account's dir, not the user's.
+  const claudeDir = env("CLAUDE_CONFIG_DIR")?.includes(`${join("agent-accounts", "claude-homes")}`) ? null : env("CLAUDE_CONFIG_DIR");
   return {
     dataDir,
     claudeConfigDir: claudeDir ?? join(homedir(), ".claude"),
@@ -85,12 +100,11 @@ type Slot = {
   accountKey: string;
   profile: Profile;
   credentials: Json;
-  claudeConfig?: Json;
   savedAt: number;
   /** First save: the stable sort key (savedAt churns with every auto-snapshot). */
   createdAt?: number;
 };
-type Detected = { accountKey: string; profile: Profile; credentials: Json | null; claudeConfig?: Json };
+type Detected = { accountKey: string; profile: Profile; credentials: Json };
 
 type UsageSnapshot = { windows: UsageWindow[]; planLabel?: string | null };
 type ProbeError =
@@ -108,19 +122,28 @@ class Probe extends Error {
 }
 type UsageEntry = { usage?: UsageSnapshot; fetchedAt?: number; error?: ProbeError; checkedAt: number; retryAt?: number; credentials?: string };
 
-type Flow =
-  | { kind: "paste"; harness: "claude"; verifier: string; state: string; startedAt: number }
-  | { kind: "task"; harness: HarnessId; startedAt: number; url: string; outcome: { ok: true } | { ok: false; message: string } | null; stop: () => void }
-  | { kind: "spawned"; harness: "codex" | "cursor"; startedAt: number; proc: Bun.Subprocess; home: string; output: { text: string }; exit: { code: number | null } | null; scan: (out: string) => string | null };
+type Flow = {
+  kind: "spawned";
+  harness: HarnessId;
+  startedAt: number;
+  proc: Bun.Subprocess<"pipe", "pipe", "pipe">;
+  /** Claude Code's, which takes a pasted code. */
+  stdin: Bun.FileSink | null;
+  home: string;
+  output: { text: string };
+  exit: { code: number | null } | null;
+  scan: (out: string, home: string) => { url: string; mode: AgentLoginStart["mode"] } | null;
+};
 
 export class AgentAccounts {
   private usage = new Map<string, UsageEntry>();
   private inflight = new Set<string>();
-  private refreshing = new Set<string>();
   private flows = new Map<string, Flow>();
   private ops: Promise<unknown> = Promise.resolve();
-  /** The live login of a harness changed (switch, sign-out, adopted sign-in): running CLIs may need to reload. */
+  /** The machine login of Codex or Cursor changed (switch, sign-out, adopted sign-in): running CLIs may need to reload. */
   onLiveChanged: (harness: HarnessId) => void = () => {};
+  /** An account saved for the first time: projects that block any account block it too, until it's unblocked. */
+  onAdded: (harness: HarnessId, id: string) => void = () => {};
 
   constructor(
     private config: AccountsConfig,
@@ -145,40 +168,20 @@ export class AgentAccounts {
   }
 
   private async listLocked(forceUsage: boolean): Promise<AgentAccountsSnapshot> {
-    const warnings: AgentAccountsSnapshot["warnings"] = [];
-    const active = new Map<HarnessId, string>();
-    const unreadable: [HarnessId, Detected][] = [];
-
-    const claude = this.detectClaude();
-    if (claude) {
-      active.set("claude", claude.accountKey);
-      if (claude.credentials) this.snapshot("claude", claude);
-      else unreadable.push(["claude", claude]);
-    }
+    // Codex's and Cursor's machine logins, saved as they are (one file each: the identity can't drift from the tokens).
     const codex = this.detectCodex();
-    if (codex) {
-      active.set("codex", codex.accountKey);
-      this.snapshot("codex", codex);
-    }
+    if (codex) this.snapshot("codex", codex);
     const cursor = this.detectCursor();
-    if (cursor) {
-      active.set("cursor", cursor.accountKey);
-      this.snapshot("cursor", cursor);
-      // Minted keys expire (90 days by default): an expired live key fails every run, so say so up front.
-      if (!this.cursorLiveUsable()) warnings.push({ harness: "cursor", message: "The connected Cursor login's API key has expired — connect again." });
-    }
+    if (cursor) this.snapshot("cursor", cursor);
 
     const slots = new Map(PROVIDERS.map((h) => [h, this.readSlots(h)] as const));
-    if (forceUsage) {
-      await this.refreshUsage(PROVIDERS.flatMap((h) => slots.get(h)!.map((slot) => ({ harness: h, slot, active: active.get(h) === slot.accountKey }))));
-    }
+    if (forceUsage) await this.refreshUsage(PROVIDERS.flatMap((h) => slots.get(h)!.map((slot) => ({ harness: h, slot }))));
     const now = Date.now();
     const accounts: AgentAccount[] = [];
     for (const h of PROVIDERS) {
-      const list = slots.get(h)!;
-      for (const slot of list) {
-        const isActive = active.get(h) === slot.accountKey;
+      for (const slot of slots.get(h)!) {
         const entry = this.usage.get(usageKey(h, slot.accountKey));
+        const machine = h === "codex" && codex?.accountKey === slot.accountKey;
         accounts.push({
           id: slot.id,
           harness: h,
@@ -188,40 +191,21 @@ export class AgentAccounts {
           // A live plan from the probe (Codex's plan_type) beats the login-time snapshot.
           plan: entry?.usage?.planLabel ?? slot.profile.plan ?? null,
           authKind: slot.profile.authKind,
-          active: isActive,
+          active: machine,
           windows: entry?.usage?.windows ?? [],
           usageFetchedAt: entry?.fetchedAt ?? null,
-          usageError: entry?.error ? usageErrorMessage(h, isActive, entry.error, entry, now) : null,
-          switchable: true,
+          usageError: entry?.error ? usageErrorMessage(h, machine, entry.error, entry, now) : null,
+          unusable: this.unusable(h, slot),
           savedAt: slot.savedAt,
         });
       }
-      // A live login whose credentials couldn't be read has no slot: shown, active, never switchable.
-      for (const [uh, d] of unreadable) {
-        if (uh !== h || list.some((s) => s.accountKey === d.accountKey)) continue;
-        accounts.push({
-          id: slotId(h, d.accountKey),
-          harness: h,
-          email: d.profile.email,
-          displayName: d.profile.displayName ?? null,
-          organization: d.profile.organization ?? null,
-          plan: d.profile.plan ?? null,
-          authKind: d.profile.authKind,
-          active: true,
-          windows: [],
-          usageFetchedAt: null,
-          usageError: null,
-          switchable: false,
-          savedAt: null,
-        });
-      }
     }
-    return { accounts, warnings };
+    return { accounts, warnings: [] };
   }
 
-  /** Windows a running turn reported for the live login: fresher than any probe, and free. */
-  noteLiveUsage(harness: HarnessId, windows: UsageWindow[]) {
-    const key = this.liveAccountKey(harness);
+  /** Windows a running turn reported for the saved account it ran on: fresher than any probe, and free. */
+  noteUsage(harness: HarnessId, windows: UsageWindow[], account: string | null) {
+    const key = account ? (this.readSlots(harness).find((s) => s.id === account)?.accountKey ?? null) : null;
     if (!key || !windows.length) return;
     const k = usageKey(harness, key);
     const prev = this.usage.get(k);
@@ -229,17 +213,169 @@ export class AgentAccounts {
     this.usage.set(k, { ...prev, usage: { windows, planLabel: prev?.usage?.planLabel }, fetchedAt: at, checkedAt: prev?.checkedAt ?? 0, error: undefined, retryAt: undefined, credentials: undefined });
   }
 
+  // ---------------- the account a turn runs on ----------------
+
+  /** Codex's or Cursor's machine login's account id (saved or not yet); Claude Code's is none of bismuth's. */
+  liveId(harness: HarnessId): string | null {
+    const live = this.liveAccountKey(harness);
+    return live ? slotId(harness, live) : null;
+  }
+
+  /** A saved account's email, for what a refusal says. */
+  savedEmail(harness: HarnessId, id: string | null | undefined): string | null {
+    return (id && this.readSlots(harness).find((s) => s.id === id)?.profile.email) || null;
+  }
+
+  /** Each account's id, the machine login's (saved or not yet) among them: what a project can block. */
+  savedIds(harness: HarnessId): string[] {
+    const live = this.liveId(harness);
+    return [...new Set([...(live ? [live] : []), ...this.readSlots(harness).map((s) => s.id)])];
+  }
+
+  /**
+   * The saved account a turn of `harness` runs on in a project (`where`, which blocks `blocked`): `wanted` (the model
+   * picker's, or the session's last), else Codex's or Cursor's machine login, else the first saved one the project
+   * allows. Throws when it can't run: it's blocked there, no longer saved or needs signing in again, or nothing is
+   * saved while the project blocks accounts (it runs only on ones bismuth can name). null: nothing is saved, and the
+   * CLI runs as it's set up.
+   */
+  turnAccount(harness: HarnessId, wanted: string | null, blocked: string[], where: string): string | null {
+    const slots = this.readSlots(harness);
+    const live = this.liveId(harness);
+    const ids = [...new Set([...(live ? [live] : []), ...slots.map((s) => s.id)])];
+    const slot = (id: string) => slots.find((s) => s.id === id);
+    if (!ids.length) {
+      if (blocked.length) throw new Error(`${where} runs only on accounts saved in bismuth: add a ${NAME[harness]} one in Settings → Providers`);
+      return null;
+    }
+    const allowed = (id: string) => !blocked.includes(id) && !(slot(id) && this.unusable(harness, slot(id)!));
+    const id = wanted ?? ids.find(allowed);
+    if (!id) throw new Error(`No ${NAME[harness]} account can run in ${where}: unblock one in the model picker, or sign in again in Settings → Providers`);
+    if (!ids.includes(id)) throw new Error(`That ${NAME[harness]} account is no longer saved: pick another in the model picker`);
+    const who = slot(id)?.profile.email ?? `The ${NAME[harness]} account`;
+    if (blocked.includes(id)) throw new Error(`${who} is blocked in ${where}: pick another account in the model picker`);
+    const why = slot(id) && this.unusable(harness, slot(id)!);
+    if (why) throw new Error(`${who} can't run turns: ${why}`);
+    return id;
+  }
+
+  /**
+   * The environment a Claude Code CLI runs on saved account `id` in: the account's own config dir, whose login Claude
+   * Code reads and refreshes itself. Throws when no turn may run on it: signed out, or its login is another account's.
+   */
+  claudeLogin(id: string): { env: Record<string, string> } {
+    const slot = this.readSlots("claude").find((s) => s.id === id);
+    if (!slot) throw new Error("That Claude Code account is no longer saved: pick another in the model picker");
+    const why = this.unusable("claude", slot);
+    if (why) throw new Error(`${slot.profile.email} can't run turns: ${why}`);
+    return { env: { CLAUDE_CONFIG_DIR: this.claudeHome(slot) } };
+  }
+
+  /**
+   * Why no turn runs on a saved account until it's signed in again, or null. Cursor's minted keys run out (90 days by
+   * default). A Claude account's dir must hold a login Claude Code can still refresh, and Claude Code's word on whose
+   * it is must be the account's.
+   */
+  private unusable(harness: HarnessId, slot: Slot): string | null {
+    if (harness === "cursor") return cursorKeyUsable(slot.credentials) ? null : "API key expired — connect again";
+    if (harness !== "claude") return null;
+    const { oauth, who } = this.claudeState(slot.id);
+    if (!str(oauth?.accessToken)) return "Signed out — sign in again";
+    if (who?.accountUuid !== slot.accountKey) return `Its sign-in is ${str(who?.emailAddress) ?? "another account"}'s — sign in again`;
+    const live = Number(oauth!.expiresAt) > Date.now() || (str(oauth!.refreshToken) && !(Number(oauth!.refreshTokenExpiresAt) <= Date.now()));
+    return live ? null : "Sign-in expired — sign in again";
+  }
+
+  /** Claude account `id`'s own config dir (CLAUDE_CONFIG_DIR). */
+  private claudeDir = (id: string) => join(this.root(), "claude-homes", id);
+
+  /** What Claude account `id`'s config dir holds: Claude Code's login (`.credentials.json`) and whose it is (the
+   *  identity in `.claude.json`, which Claude Code re-reads from Anthropic with the login's own token). */
+  private claudeState(id: string): { oauth: Json | null; who: Json | null } {
+    const dir = this.claudeDir(id);
+    return { oauth: readJson(join(dir, ".credentials.json"))?.claudeAiOauth ?? null, who: readJson(join(dir, ".claude.json"))?.oauthAccount ?? null };
+  }
+
+  /**
+   * Claude account `slot`'s config dir, ready for a run: every entry but its own (CLAUDE_OWN) links to the user's
+   * config dir, and the user's own state in `~/.claude.json` is copied into the account's. Its login is never touched.
+   */
+  private claudeHome(slot: Slot): string {
+    const home = this.claudeDir(slot.id);
+    privateDir(home);
+    const real = this.config.claudeConfigDir;
+    for (const dir of CLAUDE_SHARED_DIRS) mkdirSync(join(real, dir), { recursive: true });
+    const own = (name: string) => CLAUDE_OWN.includes(name) || CLAUDE_OWN_PREFIXES.some((p) => name.startsWith(p));
+    // Links whose target went go too.
+    for (const name of readdirSync(home)) if (lstatSync(join(home, name)).isSymbolicLink() && !existsSync(join(home, name))) unlinkSync(join(home, name));
+    for (const name of readdirSync(real)) {
+      if (own(name) || lstatSync(join(home, name), { throwIfNoEntry: false })) continue;
+      try {
+        symlinkSync(join(real, name), join(home, name));
+      } catch (err: any) {
+        if (err?.code !== "EEXIST") throw err; // another run of this account linked it first
+      }
+    }
+    const file = join(home, ".claude.json");
+    const theirs = readJson(this.config.claudeConfigFile) ?? {};
+    const share = (mine: Json) => {
+      const next: Json = { ...mine };
+      for (const key of CLAUDE_SHARED_CONFIG) {
+        if (key in theirs) next[key] = theirs[key];
+        else delete next[key];
+      }
+      return next;
+    };
+    const mine = readJson(file);
+    // Under Claude Code's own lock on the file (proper-lockfile's `<file>.lock` dir), which a CLI of this account may
+    // hold: then it's left for the next run. Never a file it couldn't read: that would wipe its login's identity.
+    if (mine && JSON.stringify(share(mine)) !== JSON.stringify(mine)) {
+      try {
+        mkdirSync(`${file}.lock`);
+        try {
+          const now = readJson(file);
+          if (now) writeAtomic(file, JSON.stringify(share(now), null, 2), true);
+        } finally {
+          rmSync(`${file}.lock`, { recursive: true, force: true });
+        }
+      } catch (err: any) {
+        if (err?.code !== "EEXIST") throw err;
+      }
+    }
+    return home;
+  }
+
+  /** Drop a Claude account's own config dir: its links (never what they point at), then its own files. */
+  private dropClaudeHome(id: string) {
+    const home = join(this.root(), "claude-homes", id);
+    if (!existsSync(home)) return;
+    for (const name of readdirSync(home)) {
+      const at = join(home, name);
+      if (lstatSync(at).isSymbolicLink()) unlinkSync(at);
+      else rmSync(at, { recursive: true, force: true });
+    }
+    rmSync(home, { recursive: true, force: true });
+  }
+
+  /** The environment a Cursor run goes on saved account `id` with: its API key, which the SDK takes over its own login. */
+  cursorKey(id: string): Record<string, string> {
+    const slot = this.readSlots("cursor").find((s) => s.id === id);
+    if (!slot) throw new Error("That Cursor account is no longer saved: pick another in the model picker");
+    if (!cursorKeyUsable(slot.credentials)) throw new Error(`${slot.profile.email}'s Cursor API key has expired: connect it again in Settings → Providers`);
+    return { CURSOR_API_KEY: String(slot.credentials.apiKey) };
+  }
+
   // ---------------- switch / forget ----------------
 
-  /** Make a saved slot the CLI's live login. Detection runs first, so the current login is saved before it's replaced. */
-  activate(harness: HarnessId, id: string): Promise<AgentAccountsSnapshot> {
+  /** Make a saved slot Codex's machine login (a turn picked it; its app-server then restarts onto it). */
+  activate(harness: "codex", id: string): Promise<void> {
     return this.serial(async () => {
+      // The login it replaces is saved first.
       await this.listLocked(false);
       const slot = this.readSlots(harness).find((s) => s.id === id);
-      if (!slot) throw new Error("That saved login no longer exists — refresh and try again.");
+      if (!slot) throw new Error("That Codex account is no longer saved: pick another in the model picker");
       this.writeLive(harness, slot);
       this.onLiveChanged(harness);
-      return this.listLocked(false);
     });
   }
 
@@ -247,23 +383,21 @@ export class AgentAccounts {
     // The id becomes a path: only a slot id (16 lowercase hex) may reach the filesystem.
     if (!/^[0-9a-f]{16}$/.test(id)) return Promise.reject(new Error("Unknown account."));
     return this.serial(async () => {
-      const snapshot = await this.listLocked(false);
-      const row = snapshot.accounts.find((a) => a.harness === harness && a.id === id);
-      if (row?.active) {
-        // Removing the live login signs the CLI out — dropping only the slot would re-detect it on the next list.
-        const live = this.liveAccountKey(harness);
-        if (!live || slotId(harness, live) !== id) throw new Error("The live login changed while it was being removed — refresh and try again.");
+      await this.listLocked(false);
+      // Removing Codex's or Cursor's machine login signs it out: dropping only the slot would re-detect it on the next
+      // list. Claude Code's own login is never bismuth's to touch.
+      if (harness !== "claude" && this.liveId(harness) === id) {
         this.signOut(harness);
         this.onLiveChanged(harness);
       }
       rmSync(join(this.slotsDir(harness), `${id}.json`), { force: true });
+      if (harness === "claude") this.dropClaudeHome(id);
       return this.listLocked(false);
     });
   }
 
-  private writeLive(harness: HarnessId, slot: Slot) {
-    if (harness === "claude") this.activateClaude(slot);
-    else if (harness === "codex") {
+  private writeLive(harness: "codex" | "cursor", slot: Slot) {
+    if (harness === "codex") {
       mkdirSync(this.config.codexHome, { recursive: true });
       writeAtomic(join(this.config.codexHome, "auth.json"), JSON.stringify(slot.credentials, null, 2), true);
     } else {
@@ -272,59 +406,22 @@ export class AgentAccounts {
     }
   }
 
-  private activateClaude(slot: Slot) {
-    const live = readJson(this.claudeCredsFile());
-    this.writeClaudeCredentials(composeClaudeCredentials(slot.credentials, live));
-    // Merge the identity into ~/.claude.json. A file that exists but doesn't parse is left alone: writing only our
-    // fields would wipe the user's whole Claude config. Only a missing file may start from {}.
-    const file = this.config.claudeConfigFile;
-    const cfg = readJson(file);
-    if (!cfg && existsSync(file)) throw new Error("~/.claude.json exists but could not be parsed — not switching to avoid wiping it. Fix or remove the file and try again.");
-    const merged: Json = cfg ?? {};
-    merged.oauthAccount = slot.claudeConfig?.oauthAccount ?? {
-      accountUuid: slot.accountKey,
-      emailAddress: slot.profile.email,
-      organizationName: slot.profile.organization ?? null,
-      displayName: slot.profile.displayName ?? null,
-    };
-    if (typeof slot.claudeConfig?.userID === "string") merged.userID = slot.claudeConfig.userID;
-    else delete merged.userID;
-    // Atomic: Claude Code rewrites this file often; a torn write must never read as an empty config.
-    writeAtomic(file, JSON.stringify(merged), false);
+  private signOut(harness: "codex" | "cursor") {
+    rmSync(harness === "codex" ? join(this.config.codexHome, "auth.json") : this.config.cursorAuthFile, { force: true });
   }
 
-  private signOut(harness: HarnessId) {
-    if (harness === "claude") {
-      const live = readJson(this.claudeCredsFile());
-      if (live) {
-        // Only the account login goes; machine-shared MCP/plugin OAuth stays.
-        delete live.claudeAiOauth;
-        this.writeClaudeCredentials(live);
-      }
-      const cfg = readJson(this.config.claudeConfigFile);
-      if (cfg && "oauthAccount" in cfg) {
-        delete cfg.oauthAccount;
-        writeAtomic(this.config.claudeConfigFile, JSON.stringify(cfg), false);
-      }
-    } else if (harness === "codex") rmSync(join(this.config.codexHome, "auth.json"), { force: true });
-    else rmSync(this.config.cursorAuthFile, { force: true });
-  }
-
-  /** The live login's account key, from identity alone. */
+  /** Codex's or Cursor's machine login's account key. */
   private liveAccountKey(harness: HarnessId): string | null {
-    if (harness === "claude") {
-      const oauth = readJson(this.config.claudeConfigFile)?.oauthAccount;
-      return str(oauth?.accountUuid) ?? str(oauth?.emailAddress);
-    }
+    if (harness === "claude") return null;
     return (harness === "codex" ? this.detectCodex() : this.detectCursor())?.accountKey ?? null;
   }
 
   /**
-   * A fresh sign-in replaces the live login only when it IS the live account (otherwise the next list would
-   * snapshot the old, possibly revoked, tokens back over it) or when there is no usable live login at all —
-   * "add" must then mean "works". Any other live login stays: switching remains explicit.
+   * A fresh Codex or Cursor sign-in replaces the machine login only when it IS that account (otherwise the next list
+   * would snapshot the old, possibly revoked, tokens back over it) or when there is no usable one at all. Any other
+   * stays: Codex switches when a turn picks another account.
    */
-  private adoptIfLive(harness: HarnessId, slot: Slot) {
+  private adoptIfLive(harness: "codex" | "cursor", slot: Slot) {
     const live = this.liveAccountKey(harness);
     const usable = harness === "cursor" ? this.cursorLiveUsable() : live !== null;
     if (usable && live !== slot.accountKey) return;
@@ -338,12 +435,35 @@ export class AgentAccounts {
     this.sweepFlows();
     // A new start supersedes earlier ones (`codex login` holds a fixed loopback port; one flow is the sane state).
     for (const [id, f] of this.flows) if (f.harness === harness) this.cancelLogin(id);
-    if (harness === "claude") return this.startClaudeLogin();
+    if (harness === "claude") {
+      const claude = findClaude();
+      if (!claude) throw new Error("Claude Code was not found on this device — install it first.");
+      // Claude Code signs in into a dir of its own (Orca's way). The tab it opens through $BROWSER (its loopback sign-in,
+      // which finishes by itself) is caught and opened by the app; failing that, its printed page shows a code to paste.
+      const started = Date.now();
+      return this.spawnLogin(
+        "claude",
+        (home) => ({
+          argv: [claude, "auth", "login", "--claudeai"],
+          env: { CLAUDE_CONFIG_DIR: join(home, "claude"), BROWSER: this.browserScript(".capture-browser", '#!/bin/sh\nprintf \'%s\' "$1" > "$BISMUTH_LOGIN_URL"\n'), BISMUTH_LOGIN_URL: join(home, "url") },
+        }),
+        (out, home) => {
+          const url = existsSync(join(home, "url")) ? readFileSync(join(home, "url"), "utf8").trim() : null;
+          if (url) return { url, mode: "browser" };
+          const printed = /visit:\s*(https:\/\/\S+)/.exec(stripAnsi(out))?.[1];
+          return printed && Date.now() - started > 3000 ? { url: printed, mode: "paste-code" } : null;
+        },
+      );
+    }
+    const browser = (scan: (out: string) => string | null) => (out: string) => {
+      const url = scan(out);
+      return url ? { url, mode: "browser" as const } : null;
+    };
     if (harness === "codex") {
       const codex = Bun.which("codex");
       if (!codex) throw new Error("The `codex` CLI was not found on this device — install it first.");
       // The CLI opens the authorization tab itself and the app opens it too: a no-op $BROWSER keeps it to one.
-      return this.spawnLogin("codex", (home) => ({ argv: [codex, "login"], env: { CODEX_HOME: home, BROWSER: this.noopBrowser() } }), scanOpenAiUrl);
+      return this.spawnLogin("codex", (home) => ({ argv: [codex, "login"], env: { CODEX_HOME: home, BROWSER: this.browserScript(".noop-browser", "#!/bin/sh\nexit 0\n") } }), browser(scanOpenAiUrl));
     }
     return this.spawnLogin(
       "cursor",
@@ -352,163 +472,77 @@ export class AgentAccounts {
         if (!argv) throw new Error("Cursor isn't set up on this device yet (it needs Node.js and the Cursor SDK).");
         return { argv, env: {} };
       },
-      scanCursorUrl,
+      browser(scanCursorUrl),
     );
   }
 
-  /** Claude: the CLI's own automatic login — PKCE against a loopback /callback we serve. */
-  private startClaudeLogin(): AgentLoginStart {
-    const loginId = randomUUID();
-    const verifier = randomToken();
-    const challenge = createHash("sha256").update(verifier).digest("base64url");
-    // 32 random bytes like the CLI's own: Anthropic's authorize page rejects a shorter state.
-    const state = randomToken();
-    let server: ReturnType<typeof Bun.serve>;
-    let redirect = "";
-    try {
-      server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: (req) => this.claudeCallback(loginId, req, state, verifier, redirect) });
-    } catch {
-      return this.startClaudePasteLogin(loginId, verifier, challenge, state);
-    }
-    redirect = `http://localhost:${server.port}/callback`;
-    const url =
-      `${CLAUDE_LOOPBACK_AUTHORIZE_URL}?code=true&client_id=${CLAUDE_CLIENT_ID}&response_type=code` +
-      `&redirect_uri=${encodeURIComponent(redirect)}&scope=${encodeURIComponent(CLAUDE_LOOPBACK_SCOPES)}` +
-      `&code_challenge=${challenge}&code_challenge_method=S256&state=${state}`;
-    this.flows.set(loginId, { kind: "task", harness: "claude", startedAt: Date.now(), url, outcome: null, stop: () => server.stop(true) });
-    return { loginId, url, mode: "browser" };
-  }
-
-  /** The browser landing on the loopback: redeem its code, then send it to Claude's success page (or say why not). */
-  private async claudeCallback(loginId: string, req: Request, state: string, verifier: string, redirect: string): Promise<Response> {
-    const url = new URL(req.url);
-    const flow = this.flows.get(loginId);
-    // Strays (a favicon, someone else's state) are answered and ignored: they can neither finish nor kill the login.
-    if (url.pathname !== "/callback" || !flow || flow.kind !== "task" || flow.outcome) return new Response("", { status: 404 });
-    if (url.searchParams.get("state") !== state) return new Response("Unknown sign-in.", { status: 400 });
-    const code = url.searchParams.get("code");
-    let outcome: { ok: true } | { ok: false; message: string };
-    if (!code) outcome = { ok: false, message: `Claude sign-in failed: ${url.searchParams.get("error_description") ?? url.searchParams.get("error") ?? "no authorization code came back"}` };
-    else {
-      try {
-        await this.serial(() => this.redeemClaudeCode(CLAUDE_LOOPBACK_TOKEN_URL, code, state, verifier, redirect, CLAUDE_LOOPBACK_SCOPES));
-        outcome = { ok: true };
-      } catch (err: any) {
-        outcome = { ok: false, message: redact(String(err?.message ?? err)) };
-      }
-    }
-    flow.outcome = outcome;
-    setTimeout(() => flow.stop(), 1000);
-    if (outcome.ok) return Response.redirect(CLAUDE_LOOPBACK_SUCCESS_URL, 302);
-    return new Response(`<!doctype html><title>Sign-in failed</title><p>${escapeHtml(outcome.message)}</p><p>Return to bismuth to try again.</p>`, {
-      status: 400,
-      headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
-    });
-  }
-
-  /** Fallback when no loopback port can be bound: Anthropic's manual redirect shows a code to paste back. */
-  private startClaudePasteLogin(loginId: string, verifier: string, challenge: string, state: string): AgentLoginStart {
-    const url =
-      `https://claude.ai/oauth/authorize?code=true&client_id=${CLAUDE_CLIENT_ID}&response_type=code` +
-      `&redirect_uri=${encodeURIComponent(CLAUDE_REDIRECT)}&scope=${encodeURIComponent(CLAUDE_SCOPES)}` +
-      `&code_challenge=${challenge}&code_challenge_method=S256&state=${state}`;
-    this.flows.set(loginId, { kind: "paste", harness: "claude", verifier, state, startedAt: Date.now() });
-    return { loginId, url, mode: "paste-code" };
-  }
-
-  /** The pasted `code#state` for a paste-code sign-in. */
+  /** The code a Claude sign-in's page showed (`code#state`), typed into its `claude auth login`. Resolves once it's in. */
   async completeLogin(loginId: string, pasted: string): Promise<AgentAccountsSnapshot> {
     const flow = this.flows.get(loginId);
-    if (!flow || flow.kind !== "paste") throw new Error("This sign-in attempt expired — start again.");
-    const [code, state = flow.state] = pasted.trim().split("#");
-    if (state !== flow.state) throw new Error("That code belongs to a different sign-in — start again.");
-    if (!code) throw new Error("That code looks empty — paste the whole code.");
-    await this.serial(() => this.redeemClaudeCode(CLAUDE_TOKEN_URL, code, state, flow.verifier, CLAUDE_REDIRECT, CLAUDE_SCOPES));
-    this.flows.delete(loginId);
+    if (!flow || flow.harness !== "claude" || flow.exit) throw new Error("This sign-in attempt expired — start again.");
+    if (!pasted.trim()) throw new Error("That code looks empty — paste the whole code.");
+    flow.stdin?.write(`${pasted.trim()}\n`);
+    flow.stdin?.flush();
+    const deadline = Date.now() + 60_000;
+    while (!flow.exit && Date.now() < deadline) await Bun.sleep(200);
+    const poll = await this.pollLogin(loginId);
+    if (poll.status === "error") throw new Error(poll.message);
+    if (poll.status !== "done") throw new Error("Claude Code didn't finish signing in — start again.");
     return this.list(false);
   }
 
-  /** Exchange a Claude authorization code, save the account as a slot (and make it live when `adoptIfLive` says so). */
-  private async redeemClaudeCode(tokenUrl: string, code: string, state: string, verifier: string, redirect: string, scopes: string) {
-    const res = await fetch(tokenUrl, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ grant_type: "authorization_code", code, state, client_id: CLAUDE_CLIENT_ID, redirect_uri: redirect, code_verifier: verifier }),
-      signal: AbortSignal.timeout(15_000),
-    }).catch((err) => {
-      throw new Error(`token exchange failed: ${err?.message ?? err}`);
-    });
-    // Never echo the body: it can carry token material, and the loopback page shows this message.
-    if (!res.ok) throw new Error(`Anthropic rejected the code (${res.status}) — try again.`);
-    const token: Json = await res.json().catch(() => {
-      throw new Error("token exchange returned junk");
-    });
-    const accessToken = str(token.access_token);
-    const refreshToken = str(token.refresh_token);
-    if (!accessToken || !refreshToken) throw new Error("Anthropic returned no usable tokens — try signing in again.");
-    // Best effort, like Claude Code: the profile fills in plan and organization.
-    const profile: Json | null = await fetch(CLAUDE_PROFILE_URL, {
-      headers: { authorization: `Bearer ${accessToken}`, "anthropic-beta": "oauth-2025-04-20" },
-      signal: AbortSignal.timeout(HTTP_TIMEOUT),
-    })
-      .then((r) => (r.ok ? r.json() : null))
-      .catch(() => null);
-    const pAccount: Json = profile?.account ?? {};
-    const pOrg: Json = profile?.organization ?? {};
-    const tAccount: Json = token.account ?? {};
-    const tOrg: Json = token.organization ?? {};
-    const email = str(pAccount.email_address) ?? str(tAccount.email_address);
-    if (!email) throw new Error("Could not identify the signed-in account.");
-    const accountUuid = str(pAccount.uuid) ?? str(tAccount.uuid) ?? email;
-    const orgName = str(pOrg.name) ?? str(tOrg.name);
-    const orgType = str(pOrg.organization_type);
-    const tier = str(pOrg.rate_limit_tier);
-    const displayName = str(pAccount.display_name) ?? str(pAccount.full_name);
-    const subscriptionType = ({ claude_max: "max", claude_pro: "pro", claude_team: "team", claude_enterprise: "enterprise" } as Json)[orgType ?? ""];
-    const oauth: Json = {
-      accessToken,
-      refreshToken,
-      expiresAt: Date.now() + (Number(token.expires_in) || 3600) * 1000,
-      scopes: (str(token.scope) ?? scopes).split(" "),
-      ...(subscriptionType ? { subscriptionType } : {}),
-    };
-    const oauthAccount: Json = {
-      accountUuid,
-      emailAddress: email,
-      organizationUuid: str(pOrg.uuid) ?? str(tOrg.uuid),
-      organizationName: orgName,
-      displayName,
-      ...(orgType ? { organizationType: orgType } : {}),
-      ...(tier ? { organizationRateLimitTier: tier } : {}),
-    };
-    const slot: Slot = {
-      id: slotId("claude", accountUuid),
+  /**
+   * A finished `claude auth login` in `dir`: the account Claude Code names there gets the dir as its own (or, signed in
+   * again, just the new login, in place, where Claude Code takes it up) and a slot.
+   */
+  private adoptClaude(dir: string) {
+    const who: Json = readJson(join(dir, ".claude.json"))?.oauthAccount ?? {};
+    const oauth: Json = readJson(join(dir, ".credentials.json"))?.claudeAiOauth ?? {};
+    const accountUuid = str(who.accountUuid);
+    const email = str(who.emailAddress);
+    if (!accountUuid || !email || !str(oauth.accessToken)) throw new Error("The sign-in finished without credentials.");
+    const id = slotId("claude", accountUuid);
+    const home = this.claudeDir(id);
+    privateDir(dirname(home));
+    if (!existsSync(home)) renameSync(dir, home);
+    else {
+      renameSync(join(dir, ".credentials.json"), join(home, ".credentials.json"));
+      if (this.claudeState(id).who?.accountUuid !== accountUuid) renameSync(join(dir, ".claude.json"), join(home, ".claude.json"));
+    }
+    this.writeSlot("claude", {
+      id,
       harness: SLUG.claude,
       accountKey: accountUuid,
-      profile: { email, displayName, organization: orgName, plan: claudePlan(orgType, tier), authKind: "oauth" },
-      credentials: { claudeAiOauth: oauth },
-      claudeConfig: { oauthAccount },
+      profile: { email, displayName: str(who.displayName), organization: str(who.organizationName), plan: claudePlan(str(oauth.subscriptionType), str(oauth.rateLimitTier)), authKind: "oauth" },
+      credentials: {},
       savedAt: Date.now(),
-    };
-    this.writeSlot("claude", slot);
-    this.adoptIfLive("claude", slot);
+    });
+    this.usage.delete(usageKey("claude", accountUuid));
   }
 
-  /** Codex/Cursor: a login child signing in against a throwaway home; done once its auth.json appears there. */
-  private async spawnLogin(harness: "codex" | "cursor", command: (home: string) => { argv: string[]; env: Record<string, string> }, scan: (out: string) => string | null): Promise<AgentLoginStart> {
+  /** A login child signing in against a throwaway home: Codex's and Cursor's are done once their auth.json appears
+   *  there, Claude Code's once it exits having signed in. */
+  private async spawnLogin(
+    harness: HarnessId,
+    command: (home: string) => { argv: string[]; env: Record<string, string> },
+    scan: (out: string, home: string) => { url: string; mode: AgentLoginStart["mode"] } | null,
+  ): Promise<AgentLoginStart> {
     const loginId = randomUUID();
     const home = join(this.root(), "logins", loginId);
     privateDir(home);
-    let proc: Bun.Subprocess<"ignore", "pipe", "pipe">;
+    let proc: Bun.Subprocess<"pipe", "pipe", "pipe">;
     try {
       const { argv, env } = command(home);
-      proc = Bun.spawn(argv, { env: { ...process.env, ...env }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+      // Claude Code signs in on nothing but the login it's about to make.
+      const base = harness === "claude" ? Object.fromEntries(Object.entries(process.env).filter(([k]) => !CLAUDE_AUTH_ENV.test(k))) : process.env;
+      proc = Bun.spawn(argv, { env: { ...base, ...env }, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
     } catch (err: any) {
       rmSync(home, { recursive: true, force: true });
       throw new Error(`Could not start the ${CLI[harness]} sign-in: ${err?.message ?? err}`);
     }
     const output = { text: "" };
-    const flow: Flow = { kind: "spawned", harness, startedAt: Date.now(), proc, home, output, exit: null, scan };
+    const flow: Flow = { kind: "spawned", harness, startedAt: Date.now(), proc, stdin: harness === "claude" ? proc.stdin : null, home, output, exit: null, scan };
+    if (harness !== "claude") proc.stdin.end();
     // The url can land on either stream.
     for (const stream of [proc.stdout, proc.stderr]) {
       void (async () => {
@@ -520,34 +554,42 @@ export class AgentAccounts {
     this.flows.set(loginId, flow);
     // Wait briefly for the sign-in page; a page printed later reaches the app through a poll.
     const deadline = Date.now() + 5000;
-    let url = scan(output.text);
-    while (!url && !flow.exit && Date.now() < deadline) {
+    let found = scan(output.text, home);
+    while (!found && !flow.exit && Date.now() < deadline) {
       await Bun.sleep(100);
-      url = scan(output.text);
+      found = scan(output.text, home);
     }
-    return { loginId, url: url ?? "", mode: "browser" };
+    return { loginId, url: found?.url ?? "", mode: found?.mode ?? "browser" };
   }
 
   async pollLogin(loginId: string): Promise<AgentLoginPoll> {
     this.sweepFlows();
     const flow = this.flows.get(loginId);
     if (!flow) throw new Error("This sign-in attempt expired — start again.");
-    if (flow.kind === "paste") return { status: "pending" };
-    if (flow.kind === "task") {
-      if (!flow.outcome) return { status: "pending", url: flow.url };
-      this.flows.delete(loginId);
-      return flow.outcome.ok ? { status: "done" } : { status: "error", message: flow.outcome.message };
-    }
-    const auth = readJson(join(flow.home, "auth.json"));
-    const detected = auth ? (flow.harness === "codex" ? parseCodexAuth(auth) : parseCursorAuth(auth)) : null;
-    if (detected) {
-      await this.serial(async () => {
-        this.snapshot(flow.harness, detected);
-        const slot = this.readSlots(flow.harness).find((s) => s.id === slotId(flow.harness, detected.accountKey));
-        if (slot) this.adoptIfLive(flow.harness, slot);
-      });
-      this.cancelLogin(loginId);
-      return { status: "done" };
+    if (flow.harness === "claude") {
+      if (!flow.exit) return { status: "pending", url: flow.scan(flow.output.text, flow.home)?.url };
+      if (flow.exit.code === 0) {
+        try {
+          await this.serial(async () => this.adoptClaude(join(flow.home, "claude")));
+        } catch (err: any) {
+          this.cancelLogin(loginId);
+          return { status: "error", message: redact(String(err?.message ?? err)) };
+        }
+        this.cancelLogin(loginId);
+        return { status: "done" };
+      }
+    } else {
+      const auth = readJson(join(flow.home, "auth.json"));
+      const detected = auth ? (flow.harness === "codex" ? parseCodexAuth(auth) : parseCursorAuth(auth)) : null;
+      if (detected) {
+        await this.serial(async () => {
+          this.snapshot(flow.harness, detected);
+          const slot = this.readSlots(flow.harness).find((s) => s.id === slotId(flow.harness, detected.accountKey));
+          if (slot) this.adoptIfLive(flow.harness as "codex" | "cursor", slot);
+        });
+        this.cancelLogin(loginId);
+        return { status: "done" };
+      }
     }
     if (flow.exit) {
       this.cancelLogin(loginId);
@@ -556,17 +598,16 @@ export class AgentAccounts {
       const lines = stripAnsi(flow.output.text).trim().split("\n");
       return { status: "error", message: redact(scanShimFatal(flow.output.text) ?? lines[lines.length - 1] ?? "sign-in failed") };
     }
-    return { status: "pending", url: flow.scan(flow.output.text) ?? undefined };
+    return { status: "pending", url: flow.scan(flow.output.text, flow.home)?.url };
   }
 
-  /** Drop a flow: kill its login child or loopback listener and reclaim its throwaway home. Idempotent. */
+  /** Drop a flow: kill its login child and reclaim its throwaway home (an adopted Claude dir has moved out). Idempotent. */
   cancelLogin(loginId: string) {
     const flow = this.flows.get(loginId);
     this.flows.delete(loginId);
-    if (flow?.kind === "spawned") {
-      flow.proc.kill();
-      rmSync(flow.home, { recursive: true, force: true });
-    } else if (flow?.kind === "task") flow.stop();
+    if (!flow) return;
+    flow.proc.kill();
+    rmSync(flow.home, { recursive: true, force: true });
   }
 
   shutdown() {
@@ -577,10 +618,9 @@ export class AgentAccounts {
     for (const [id, f] of this.flows) if (Date.now() - f.startedAt > FLOW_TTL) this.cancelLogin(id);
   }
 
-  /** A $BROWSER that opens nothing: the app opens the one sign-in tab itself. */
-  private noopBrowser(): string {
-    const path = join(this.root(), ".noop-browser");
-    const script = "#!/bin/sh\nexit 0\n";
+  /** A $BROWSER script for login children: one that opens nothing (the app opens the tab), or catches the url. */
+  private browserScript(name: string, script: string): string {
+    const path = join(this.root(), name);
     if (!existsSync(path) || readFileSync(path, "utf8") !== script) {
       writeAtomic(path, script, false);
       chmodSync(path, 0o755);
@@ -589,29 +629,6 @@ export class AgentAccounts {
   }
 
   // ---------------- detection ----------------
-
-  private claudeCredsFile = () => join(this.config.claudeConfigDir, ".credentials.json");
-
-  private detectClaude(): Detected | null {
-    const cfg = readJson(this.config.claudeConfigFile);
-    const oauth = cfg?.oauthAccount;
-    const email = str(oauth?.emailAddress);
-    if (!email) return null;
-    const claudeConfig: Json = { oauthAccount: oauth };
-    if (typeof cfg!.userID === "string") claudeConfig.userID = cfg!.userID;
-    return {
-      accountKey: str(oauth.accountUuid) ?? email,
-      profile: {
-        email,
-        displayName: str(oauth.displayName),
-        organization: str(oauth.organizationName),
-        plan: claudePlan(str(oauth.organizationType), str(oauth.organizationRateLimitTier)),
-        authKind: "oauth",
-      },
-      credentials: readJson(this.claudeCredsFile()),
-      claudeConfig,
-    };
-  }
 
   private detectCodex = () => {
     const auth = readJson(join(this.config.codexHome, "auth.json"));
@@ -626,11 +643,6 @@ export class AgentAccounts {
   private cursorLiveUsable() {
     const auth = readJson(this.config.cursorAuthFile);
     return !!auth && cursorKeyUsable(auth);
-  }
-
-  private writeClaudeCredentials(credentials: Json) {
-    mkdirSync(this.config.claudeConfigDir, { recursive: true });
-    writeAtomic(this.claudeCredsFile(), JSON.stringify(credentials), true);
   }
 
   // ---------------- slots ----------------
@@ -669,9 +681,10 @@ export class AgentAccounts {
     const newest = Math.max(0, ...this.readSlots(harness).map((s) => (s.createdAt ?? s.savedAt) + 1));
     const createdAt = existing ? (existing.createdAt ?? existing.savedAt) : (slot.createdAt ?? Math.max(newest, slot.savedAt));
     writeAtomic(file, JSON.stringify({ ...slot, createdAt }, null, 2), true);
+    if (!existing) this.onAdded(harness, slot.id);
   }
 
-  /** Persist a detected live login into its slot (refreshing the stored tokens). */
+  /** Persist a detected machine login into its slot (refreshing the stored tokens). */
   private snapshot(harness: HarnessId, d: Detected) {
     if (!d.credentials) return;
     this.writeSlot(harness, {
@@ -680,7 +693,6 @@ export class AgentAccounts {
       accountKey: d.accountKey,
       profile: d.profile,
       credentials: d.credentials,
-      ...(d.claudeConfig ? { claudeConfig: d.claudeConfig } : {}),
       savedAt: Date.now(),
     });
   }
@@ -688,17 +700,18 @@ export class AgentAccounts {
   // ---------------- usage ----------------
 
   /** Probe every due account concurrently; failures keep the last good windows and back off. */
-  private async refreshUsage(targets: { harness: HarnessId; slot: Slot; active: boolean }[]) {
+  private async refreshUsage(targets: { harness: HarnessId; slot: Slot }[]) {
     const now = Date.now();
     const probes: Promise<void>[] = [];
-    for (const { harness, slot, active } of targets) {
+    for (const { harness, slot } of targets) {
       const key = usageKey(harness, slot.accountKey);
-      const fingerprint = credentialsFingerprint(slot.credentials);
+      // A Claude account's login is in its dir, where Claude Code refreshes it.
+      const fingerprint = credentialsFingerprint(harness === "claude" ? (this.claudeState(slot.id).oauth ?? {}) : slot.credentials);
       const entry = this.usage.get(key);
       if ((entry && !probeDue(entry, fingerprint, now)) || this.inflight.has(key)) continue;
       this.inflight.add(key);
       probes.push(
-        this.probe(harness, slot, active)
+        this.probe(harness, slot)
           .then(
             (usage) => ({ ok: true as const, usage }),
             (err) => ({ ok: false as const, error: err instanceof Probe ? err.error : ({ kind: "network", timeout: false } as ProbeError) }),
@@ -729,65 +742,22 @@ export class AgentAccounts {
     }
   }
 
-  private probe(harness: HarnessId, slot: Slot, active: boolean): Promise<UsageSnapshot> {
-    if (harness === "claude") return this.claudeUsage(slot, active);
+  private probe(harness: HarnessId, slot: Slot): Promise<UsageSnapshot> {
+    if (harness === "claude") return this.claudeUsage(slot);
     if (harness === "codex") return codexUsage(slot);
     return cursorUsage(slot);
   }
 
-  private async claudeUsage(slot: Slot, active: boolean): Promise<UsageSnapshot> {
-    const token = str(slot.credentials.claudeAiOauth?.accessToken);
-    if (!token) throw new Probe({ kind: "no-credentials", why: "missing" });
-    try {
-      return await claudeUsageRequest(token);
-    } catch (err) {
-      // Stored expiry metadata can lie, so rotate only after a real rejection (401/403) — a 429 or 5xx says nothing
-      // about the token, and refresh tokens are single-use. The live login is never rotated: the CLI owns it.
-      if (!(err instanceof Probe) || err.error.kind !== "unauthorized" || active) throw err;
-      const fresh = await this.refreshClaudeSlot(slot);
-      if (!fresh) throw err;
-      return claudeUsageRequest(fresh);
-    }
+  /** A Claude account's windows, read with its login's current token: Claude Code refreshes it when it next runs on the
+   *  account, never bismuth. */
+  private async claudeUsage(slot: Slot): Promise<UsageSnapshot> {
+    const { oauth } = this.claudeState(slot.id);
+    // Signed out, or signed in as another account: whose windows these would be is not this account's.
+    if (this.unusable("claude", slot) || !oauth!.scopes?.includes("user:profile")) throw new Probe({ kind: "no-credentials", why: "missing" });
+    if (!(Number(oauth!.expiresAt) > Date.now())) throw new Probe({ kind: "unauthorized", status: 401 });
+    return claudeUsageRequest(oauth!.accessToken);
   }
 
-  /** Refresh a saved (never the live) Claude slot's access token; single-flight per slot. */
-  private async refreshClaudeSlot(slot: Slot): Promise<string | null> {
-    if (this.refreshing.has(slot.id)) return null;
-    this.refreshing.add(slot.id);
-    try {
-      const oauth = slot.credentials.claudeAiOauth;
-      const refreshToken = str(oauth?.refreshToken);
-      if (!refreshToken) throw new Probe({ kind: "no-credentials", why: "missing" });
-      let body: Json;
-      try {
-        body = await probeJson(CLAUDE_TOKEN_URL, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ grant_type: "refresh_token", refresh_token: refreshToken, client_id: CLAUDE_CLIENT_ID }),
-        });
-      } catch (err) {
-        // A refused refresh (400 invalid_grant: revoked or used) means this login is dead: "Sign in again".
-        if (err instanceof Probe && err.error.kind === "http" && err.error.status === 400) throw new Probe({ kind: "unauthorized", status: 400 });
-        throw err;
-      }
-      const accessToken = str(body.access_token);
-      if (!accessToken) throw new Probe({ kind: "schema" });
-      const updated = {
-        ...oauth,
-        accessToken,
-        refreshToken: str(body.refresh_token) ?? refreshToken,
-        expiresAt: Date.now() + (Number(body.expires_in) || 3600) * 1000,
-      };
-      try {
-        this.writeSlot("claude", { ...slot, credentials: { ...slot.credentials, claudeAiOauth: updated }, savedAt: Date.now() });
-      } catch (err: any) {
-        console.error("[accounts] refreshed slot write failed:", err?.message ?? err);
-      }
-      return accessToken;
-    } finally {
-      this.refreshing.delete(slot.id);
-    }
-  }
 }
 
 // ---------------- probes ----------------
@@ -900,10 +870,11 @@ function usageErrorMessage(harness: HarnessId, active: boolean, e: ProbeError, e
     case "rate-limited":
       return `Rate limited by ${vendor}${retry}`;
     case "unauthorized":
-      // The CLI owns (and refreshes) the live token; it just hasn't yet.
+      // Codex owns (and refreshes) its machine login's token; it just hasn't yet.
       if (active) return `Session expired — it refreshes the next time ${CLI[harness]} runs`;
-      // Codex slots aren't refreshed in the background (their refresh tokens rotate); a switch refreshes on the next run.
-      return harness === "codex" ? "Session expired — switch to it to refresh" : "Signed out — sign in again";
+      // Codex's and Claude's saved logins aren't refreshed in the background (their refresh tokens rotate): their CLIs
+      // refresh them when a turn runs on them.
+      return harness === "cursor" ? "Signed out — sign in again" : "Session expired — it refreshes when a turn runs on it";
     case "http":
       return e.status >= 500 ? `${vendor} is having trouble (${e.status})${retry}` : `Usage check failed (${e.status})`;
     case "network":
@@ -959,18 +930,9 @@ function parseCursorAuth(auth: Json): Detected | null {
 
 const cursorKeyUsable = (auth: Json) => !!str(auth.apiKey) && !(Number(auth.apiKeyExpiresAtMs) > 0 && Number(auth.apiKeyExpiresAtMs) <= Date.now());
 
-/** The slot's account login with the machine's live shared fields (MCP/plugin OAuth), present or absent alike. */
-function composeClaudeCredentials(target: Json, live: Json | null): Json {
-  if (!live || !target.claudeAiOauth) return target;
-  const out: Json = {};
-  for (const [k, v] of Object.entries(target)) if (!CLAUDE_SHARED_KEYS.includes(k)) out[k] = v;
-  for (const k of CLAUDE_SHARED_KEYS) if (k in live) out[k] = live[k];
-  return out;
-}
-
-/** "Max 20×" from Claude's organization type and rate-limit tier. */
-function claudePlan(orgType: string | null, tier: string | null): string | null {
-  const base = ({ claude_max: "Max", claude_pro: "Pro", claude_team: "Team", claude_enterprise: "Enterprise" } as Json)[orgType ?? ""];
+/** "Max 20×" from Claude Code's subscription type and rate-limit tier. */
+function claudePlan(subscription: string | null, tier: string | null): string | null {
+  const base = ({ max: "Max", pro: "Pro", team: "Team", enterprise: "Enterprise" } as Json)[subscription ?? ""];
   if (!base) return null;
   const mult = tier?.match(/_(\d+)x$/)?.[1];
   return mult ? `${base} ${mult}×` : base;
@@ -1018,7 +980,6 @@ const slotId = (h: HarnessId, accountKey: string) => sha256(`${SLUG[h]}:${accoun
 const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
 /** A short digest telling "the token that was rejected" from "new credentials" — never the secret itself. */
 const credentialsFingerprint = (c: Json) => sha256(JSON.stringify(c)).slice(0, 16);
-const randomToken = () => randomBytes(32).toString("base64url");
 const randomUUID = () => crypto.randomUUID();
 const str = (v: unknown): string | null => (typeof v === "string" && v ? v : null);
 
@@ -1098,4 +1059,3 @@ function redact(text: string) {
     .replace(/[A-Za-z0-9_\-.=+/]{32,}/g, "[redacted]");
 }
 
-const escapeHtml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
