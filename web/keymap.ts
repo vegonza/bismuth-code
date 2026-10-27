@@ -164,12 +164,24 @@ export function shortcutFor(combo: string): ShortcutId | undefined {
   return bound.find((s) => TERMINAL_SCOPED.has(s) === terminal) ?? bound[0];
 }
 
-export function dispatchShortcut(e: KeyboardEvent): boolean {
-  if (recording.active) return false;
+/** The shortcut a keystroke acts on here, if any. */
+function actingShortcut(e: KeyboardEvent): ShortcutId | undefined {
+  if (recording.active) return;
   const combo = comboFromEvent(e);
-  if (!combo) return false;
+  if (!combo) return;
   const id = shortcutFor(combo);
-  if (!id || !handlers[id] || (TERMINAL_SCOPED.has(id) && !keyContext.drawerOpen()) || guards[id]?.() === false) return false;
+  if (!id || !handlers[id] || (TERMINAL_SCOPED.has(id) && !keyContext.drawerOpen()) || guards[id]?.() === false) return;
+  return id;
+}
+
+/** The fixed combos app.ts handles past the rebindable ones: the palette and Settings. */
+const FIXED = new Set(["mod-k", "mod-,"]);
+/** Whether the app has a use for a keystroke, so an editor (Vim's keys too) leaves it to the window. */
+export const appTakes = (e: KeyboardEvent) => !!actingShortcut(e) || FIXED.has(comboFromEvent(e) ?? "");
+
+export function dispatchShortcut(e: KeyboardEvent): boolean {
+  const id = actingShortcut(e);
+  if (!id) return false;
   e.preventDefault();
   handlers[id]!();
   return true;

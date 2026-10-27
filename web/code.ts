@@ -30,6 +30,7 @@ import { Decoration, drawSelection, EditorView, highlightActiveLine, highlightAc
 import { tags as t } from "@lezer/highlight";
 import { vim } from "@replit/codemirror-vim";
 import { gitChanges, reviewDiff } from "./gitdiff";
+import { appTakes } from "./keymap";
 import { prefs } from "./prefs";
 import { setUpVim, vimExtras, vimWrap } from "./vim";
 
@@ -400,8 +401,13 @@ export function codeState(text: string, path: string, hooks: CodeHooks): EditorS
   return EditorState.create({
     doc: text,
     extensions: [
-      // Ahead of Vim's keys, which would take it as Escape.
-      Prec.highest(EditorView.domEventHandlers({ keydown: (e) => e.key === "Escape" && e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey && (e.preventDefault(), hooks.leave(), true) })),
+      // Ahead of Vim's keys, which would take it as Escape. And the app's shortcuts come before the editor's (Vim's
+      // Ctrl+E, Ctrl+O, Ctrl+R): taken as handled here, neither sees them and they go on to the window's.
+      Prec.highest(
+        EditorView.domEventHandlers({
+          keydown: (e) => (e.key === "Escape" && e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey ? (e.preventDefault(), hooks.leave(), true) : appTakes(e)),
+        }),
+      ),
       keyMode.of(keysFor(prefs.vimKeys)),
       wrapMode.of(wrapFor(prefs.wrapFiles)),
       lineNumbers(),
