@@ -58,7 +58,8 @@ const SUGGEST_MAX = 50;
 
 /** `preview`: the tab a single click opened, replaced by the next one until it's kept (VS Code's preview editor).
  *  `seen`: the tabs most recently shown, newest first (the order Mod+Tab goes through them). */
-type SessionPanels = { files: boolean; surfaces: boolean; tabs: string[]; active: string | null; preview?: string | null; seen?: string[] };
+/** `expanded`: the host has the chat's room too (takeover), kept per session like the rest. */
+type SessionPanels = { files: boolean; surfaces: boolean; tabs: string[]; active: string | null; preview?: string | null; seen?: string[]; expanded?: boolean };
 /** `recent`: each folder's files most recently shown, newest first (Go to file lists them before anything's typed). */
 /** `view`: what the sidebar shows, the folder's files or its git changes. `changedOnly`: the tree shows only what
  *  changed (in the scope picked), for reviewing. */
@@ -91,8 +92,8 @@ function session(): SessionPanels | null {
 /** The folder the explorer shows. */
 const root = workFolder;
 
-/** Takeover: the surface host over the chat's room. Not kept: closing the host leaves it (Zeron). */
-let expanded = false;
+/** Takeover: the surface host over the chat's room, the session's own (closing the host leaves it, as Zeron). */
+const expanded = () => !!session()?.expanded;
 
 export const filesOpen = () => !!session()?.files;
 export const paneOpen = () => !!session()?.surfaces;
@@ -668,7 +669,7 @@ function setPane(open: boolean) {
   // Opened with nothing in it: a new tab, whose page offers the rest (and goes once something's picked).
   if (open && !s.tabs.length) return void openBrowser();
   s.surfaces = open;
-  if (!open) expanded = false;
+  if (!open) s.expanded = false;
   persist();
   layout();
   renderPane();
@@ -684,10 +685,11 @@ export function toggleExpand() {
   const s = session();
   if (!s) return;
   if (!s.surfaces) {
-    expanded = true;
+    s.expanded = true;
     return setPane(true);
   }
-  expanded = !expanded;
+  s.expanded = !s.expanded;
+  persist();
   if (followTimer) clearTimeout(followTimer);
   app.classList.add("rp-follow");
   followTimer = setTimeout(() => app.classList.remove("rp-follow"), RESIZE_MS + 40);
@@ -1220,23 +1222,46 @@ function markCurrent() {
   for (const row of treeEl.querySelectorAll<HTMLElement>(".ft-row.current")) if (row.dataset.path !== path) row.classList.remove("current"), (row.dataset.sig = "");
   const row = path ? treeEl.querySelector<HTMLElement>(`.ft-row[data-path="${CSS.escape(path)}"]:not(.ft-result)`) : null;
   if (row && !row.classList.contains("current")) row.classList.add("current"), (row.dataset.sig = "");
+  follow();
+}
+
+/** The shown file the tree last revealed. As in VS Code, it's revealed each time that changes, however it does (a
+ *  session switched to, a tab closed, back and forward), and a folder folded over it afterwards stays folded. */
+let followed = "";
+function follow() {
+  const r = root();
+  const path = currentFile();
+  if (!r || !explorerShown() || sidebarView() !== "files") return;
+  if (!path || isAbs(path)) return void (followed = "");
+  if (followed !== `${r}\n${path}`) reveal(path);
+}
+
+/** A row scrolled into the tree's view, by the tree alone. scrollIntoView scrolls every ancestor too, the page included
+ *  (overflow: hidden still scrolls from code): with the row in a peek still off the window's edge, the whole UI slid. */
+function showRow(row: HTMLElement | null) {
+  if (!row) return;
+  const box = treeEl.getBoundingClientRect();
+  const at = row.getBoundingClientRect();
+  if (at.top < box.top) treeEl.scrollTop += at.top - box.top;
+  else if (at.bottom > box.bottom) treeEl.scrollTop += at.bottom - box.bottom;
 }
 
 /** Show a path in the tree: its folders open, it selected. */
 function reveal(path: string) {
   const r = root();
-  const s = session();
-  if (!r || !s?.files) return;
+  if (!r || !explorerShown()) return;
+  if (path === currentFile()) followed = `${r}\n${path}`;
   const t = treeOf(r);
   const dirs: string[] = [];
   for (let dir = parentOf(path); dir; dir = parentOf(dir)) dirs.unshift(dir);
   for (const dir of dirs) t.expanded.add(dir);
   keepExpanded(r, t);
   t.selected = path;
-  void Promise.all(dirs.filter((d) => !t.children.has(d)).map((d) => load(r, d))).then(() => {
+  // A tree not listed yet (the app just opened) is first, so the row is there to scroll to.
+  void Promise.all(dirs.filter((d) => !t.children.has(d)).map((d) => load(r, d))).then(() => ready(r)).then(() => {
     if (root() !== r) return;
     renderExplorer();
-    treeEl.querySelector(".ft-row.selected")?.scrollIntoView({ block: "nearest" });
+    showRow(treeEl.querySelector(".ft-row.selected"));
   });
 }
 
@@ -1267,7 +1292,7 @@ function layout(snap = false) {
   const fwOpen = isPhone() ? avail : Math.max(Math.min(FILES_MIN, avail * 0.3), Math.min(saved.filesW, avail - CHAT_MIN - (showPane ? PANE_MIN : 0)));
   const fw = showFiles ? fwOpen : 0;
   const normal = !showPane ? 0 : isPhone() ? avail : Math.max(Math.min(PANE_MIN, avail * 0.4), Math.min(saved.paneW, avail - fw - CHAT_MIN));
-  const pw = showPane && expanded ? avail - fw : normal;
+  const pw = showPane && expanded() ? avail - fw : normal;
   // Content widths: kept while a column glides shut, so it slides away whole.
   const fpW = `${Math.round(fwOpen)}px`;
   if (app.style.getPropertyValue("--fp-w") !== fpW) {
@@ -1282,7 +1307,7 @@ function layout(snap = false) {
   if (snap) app.classList.add("snap");
   app.classList.toggle("files-open", showFiles);
   app.classList.toggle("pane-open", showPane);
-  app.classList.toggle("pane-expanded", showPane && expanded);
+  app.classList.toggle("pane-expanded", showPane && expanded());
   app.classList.toggle("has-panels", !!s);
   markCurrent();
   if (snap) {
@@ -1333,7 +1358,8 @@ function resizeHandle(which: "files" | "pane"): HTMLElement {
     else {
       const right = innerWidth - explorer.getBoundingClientRect().width;
       saved.paneW = Math.max(PANE_MIN, right - e.clientX);
-      expanded = false;
+      const s = session();
+      if (s) s.expanded = false;
     }
     layout();
   };
@@ -1530,8 +1556,8 @@ function renderBar() {
     controls.push(md);
   }
   const expand = el("button", "wc-btn rp-ctl rp-expand");
-  expand.title = hint(expanded ? "Collapse panel" : "Expand panel", "expandRightPane");
-  expand.append(icon(expanded ? "minimize2" : "maximize2"));
+  expand.title = hint(expanded() ? "Collapse panel" : "Expand panel", "expandRightPane");
+  expand.append(icon(expanded() ? "minimize2" : "maximize2"));
   expand.onclick = toggleExpand;
   const before = paneBar.querySelector<HTMLElement>(".rp-tabs")?.scrollLeft ?? 0;
   // A new tab, just past the last one (Codex's): its page offers the rest.
@@ -2378,6 +2404,7 @@ let holdDraws = 0;
 function renderExplorer() {
   const r = root();
   if (!r || !explorerShown()) return;
+  follow();
   const t = treeOf(r);
   if (!t.ready) return void ready(r);
   renderScope(r, t);
@@ -2490,7 +2517,7 @@ function select(t: Tree, path: string | null) {
   if (!row) return;
   row.classList.add("selected");
   row.dataset.sig = "";
-  row.scrollIntoView({ block: "nearest" });
+  showRow(row);
 }
 
 /** Open or close a folder. Opening waits for its listing (usually there already), its chevron turning at once; the
@@ -2681,7 +2708,7 @@ function searchKey(e: KeyboardEvent) {
     e.preventDefault();
     resultIx = Math.max(0, Math.min(results.length - 1, resultIx + (e.key === "ArrowDown" ? 1 : -1)));
     renderExplorer();
-    treeEl.querySelector(".ft-row.selected")?.scrollIntoView({ block: "nearest" });
+    showRow(treeEl.querySelector(".ft-row.selected"));
   } else if (e.key === "Enter") {
     e.preventDefault();
     openResult(results[resultIx]);
@@ -3089,7 +3116,7 @@ async function beginCreate(r: string, dir: string, kind: "file" | "dir") {
   const kids = dir ? treeEl.querySelector<HTMLElement>(`.ft-kids[data-dir="${CSS.escape(dir)}"]`) : treeEl;
   if (!kids) return;
   kids.prepend(row);
-  row.scrollIntoView({ block: "nearest" });
+  showRow(row);
   holdDraws++;
   nameInput(row, "", [0, 0], (name) => {
     holdDraws--;
@@ -3561,9 +3588,13 @@ export function initPanels(refocus: () => void, findFile: () => void) {
       reportOwners();
     }
     shown = id;
-    expanded = false;
     peek.end();
     clearSearch();
+    // Taken over by a file, the session has its editor focused: the chat (and its composer) is hidden under it.
+    const s0 = session();
+    const r0 = root();
+    const key0 = s0?.active && r0 ? docKey(r0, s0.active) : "";
+    pendingAt = s0?.surfaces && expanded() && key0 && !isBrowserTab(s0.active!) && !isSideTab(s0.active!) && !isReviewTab(s0.active!) && !docs.get(key0)?.rendered ? { key: key0, at: { line: -1, character: 0 }, focus: true } : null;
     // Another session's panels are simply there (or not), as Zeron's per-chat panels: no glide.
     layout(true);
     renderExplorer();
