@@ -63,6 +63,7 @@ const COMMANDS: Command[] = [
   { label: "Copy path of current file", icon: "clipboardCopy", combo: () => null, run: () => (closeSettings(), copyActivePath()) },
   { label: "Reveal current file in file manager", icon: "folderOpen", combo: () => bound("revealFile"), run: () => (closeSettings(), revealActiveFile()) },
   { label: "Toggle preview", icon: "bookOpen", combo: () => bound("togglePreview"), run: () => (closeSettings(), togglePreview()) },
+  { label: "Toggle line wrapping in files", icon: "wrapText", combo: () => null, run: () => (closeSettings(), setPrefs({ wrapFiles: !prefs.wrapFiles })) },
   { label: "Show or hide changes in files", icon: "gitCompare", combo: () => null, run: () => (closeSettings(), toggleChanges()) },
   { label: "Show uncommitted changes", icon: "gitCompare", combo: () => null, run: () => (closeSettings(), showChangesSince("uncommitted")) },
   { label: "Show last turn's changes", icon: "gitCompare", combo: () => null, run: () => (closeSettings(), showChangesSince("turn")) },

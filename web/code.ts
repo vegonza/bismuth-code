@@ -25,13 +25,13 @@ import { ruby } from "@codemirror/legacy-modes/mode/ruby";
 import { shell } from "@codemirror/legacy-modes/mode/shell";
 import { swift } from "@codemirror/legacy-modes/mode/swift";
 import { toml } from "@codemirror/legacy-modes/mode/toml";
-import { Compartment, EditorState, Facet, Prec, RangeSetBuilder, type Extension, type TransactionSpec } from "@codemirror/state";
+import { Compartment, EditorState, Facet, Prec, RangeSetBuilder, StateEffect, type Extension, type TransactionSpec } from "@codemirror/state";
 import { Decoration, drawSelection, EditorView, highlightActiveLine, highlightActiveLineGutter, highlightSpecialChars, keymap, lineNumbers, ViewPlugin, type DecorationSet, type ViewUpdate } from "@codemirror/view";
 import { tags as t } from "@lezer/highlight";
 import { vim } from "@replit/codemirror-vim";
 import { gitChanges, reviewDiff } from "./gitdiff";
 import { prefs } from "./prefs";
-import { setUpVim, vimExtras } from "./vim";
+import { setUpVim, vimExtras, vimWrap } from "./vim";
 
 /** Past this the editor shows the text without colours: parsing it would stall typing. */
 const HIGHLIGHT_MAX = 300_000;
@@ -56,6 +56,14 @@ function lineKeys(up: string, down: string): Extension {
 /** Vim keys (Settings → General), or the plain ones. Ahead of the other keymaps, which Vim's must come before. */
 const keyMode = new Compartment();
 const keysFor = (vimKeys: boolean): Extension => (vimKeys ? (setUpVim(definitionAtCaret), [vim(), vimExtras, lineKeys("k", "j")]) : lineKeys("ArrowUp", "ArrowDown"));
+
+/** Long lines wrapped or scrolled sideways (the wrapFiles pref). */
+const wrapMode = new Compartment();
+/** Wrapped, each row on screen is a line to the caret keys: Up, Down, Home and End go by rows (CodeMirror's own), and
+ *  so do Vim's (vimWrap). */
+const wrapFor = (wrap: boolean): Extension => (vimWrap(wrap), wrap ? EditorView.lineWrapping : []);
+/** A file editor's line wrapping brought to the setting. */
+export const wrapSpec = (): TransactionSpec => ({ effects: wrapMode.reconfigure(wrapFor(prefs.wrapFiles)) });
 
 /** A file editor's go to definition (its hooks'), for keys that aren't its own: Vim's gd. */
 const definitionHook = Facet.define<(pos: number) => void, ((pos: number) => void) | null>({ combine: (fs) => fs[0] ?? null });
@@ -350,15 +358,34 @@ function refsAt(view: EditorView): DecorationSet {
   return b.finish();
 }
 
+/** How long typing has to pause before the caret's word is boxed again, as VS Code waits, so the half-typed word
+ *  doesn't light up its every prefix as you go. A click or a caret move boxes at once. */
+const REFS_TYPING_WAIT = 500;
+const refsDue = StateEffect.define<null>();
+
 const wordRefs: Extension = [
   ViewPlugin.fromClass(
     class {
       decorations: DecorationSet;
+      timer = 0;
+      waiting = false;
       constructor(view: EditorView) {
         this.decorations = refsAt(view);
       }
       update(u: ViewUpdate) {
-        if (u.docChanged || u.selectionSet || u.viewportChanged || u.focusChanged) this.decorations = refsAt(u.view);
+        if (u.docChanged) {
+          clearTimeout(this.timer);
+          this.decorations = Decoration.none;
+          this.waiting = true;
+          this.timer = window.setTimeout(() => u.view.dispatch({ effects: refsDue.of(null) }), REFS_TYPING_WAIT);
+        } else if (u.selectionSet || u.focusChanged || u.transactions.some((tr) => tr.effects.some((e) => e.is(refsDue)))) {
+          clearTimeout(this.timer);
+          this.waiting = false;
+          this.decorations = refsAt(u.view);
+        } else if (u.viewportChanged && !this.waiting) this.decorations = refsAt(u.view);
+      }
+      destroy() {
+        clearTimeout(this.timer);
       }
     },
     { decorations: (v) => v.decorations },
@@ -376,6 +403,7 @@ export function codeState(text: string, path: string, hooks: CodeHooks): EditorS
       // Ahead of Vim's keys, which would take it as Escape.
       Prec.highest(EditorView.domEventHandlers({ keydown: (e) => e.key === "Escape" && e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey && (e.preventDefault(), hooks.leave(), true) })),
       keyMode.of(keysFor(prefs.vimKeys)),
+      wrapMode.of(wrapFor(prefs.wrapFiles)),
       lineNumbers(),
       gitChanges(hooks.changes),
       highlightActiveLineGutter(),

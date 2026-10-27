@@ -138,6 +138,25 @@ function yank() {
   });
 }
 
+/** With lines wrapped, each row on screen is a line: j, k, 0, ^, _, $ and g_ (and Home and End, which are 0 and $)
+ *  go by rows, as gj, gk, g0, g^ and g$, in normal and visual mode. Operators (dj, d$, D) still take whole lines. */
+const WRAP_ROWS: Map[] = (["normal", "visual"] as const).flatMap((ctx): Map[] => [
+  ["j", "gj", ctx],
+  ["k", "gk", ctx],
+  ["0", "g0", ctx],
+  ["^", "g^", ctx],
+  ["_", "g^", ctx],
+  ["$", "g$", ctx],
+  ["g_", "g$", ctx],
+]);
+let rows = false;
+/** Vim's j and k brought to the wrapFiles setting. */
+export function vimWrap(wrap: boolean) {
+  if (wrap === rows) return;
+  rows = wrap;
+  for (const [lhs, rhs, ctx] of WRAP_ROWS) wrap ? Vim.noremap(lhs, rhs, ctx as string) : Vim.unmap(lhs, ctx as string);
+}
+
 let set = false;
 /** `definition`: go to definition from an editor's caret, for gd (VSCodeVim's: Vim's own only searches the file). */
 export function setUpVim(definition: (view: EditorView) => void) {

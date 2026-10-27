@@ -153,6 +153,8 @@ export type Prefs = {
   changesScope: ChangesScope;
   /** Long lines in code blocks wrap instead of scrolling sideways (every block's wrap button). */
   wrapCode: boolean;
+  /** Long lines in the file editor wrap instead of scrolling sideways (the palette's Toggle line wrapping in files). */
+  wrapFiles: boolean;
 };
 
 export type CodeColors = "one-dark-pro" | "theme";
@@ -202,6 +204,7 @@ export const DEFAULTS: Prefs = {
   showChanges: false,
   changesScope: "uncommitted",
   wrapCode: false,
+  wrapFiles: false,
 };
 
 /** The key that does `what` while the agent works. */

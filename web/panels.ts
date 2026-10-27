@@ -12,7 +12,7 @@ import { Transaction, type TransactionSpec } from "@codemirror/state";
 import { isPhone } from "./phone";
 import { BRANCH, subagentOf, UNPUSHED, type FileContent, type FileEntry, type FileLocation, type FileRef, type GitStatus, type Item, type ServerMessage, type TurnSettings, type WriteResult } from "../shared/model";
 import { setAgentOpener } from "./transcript";
-import { codeState, codeView, EditorView, keyModeSpec, type CodeHooks, type EditorState } from "./code";
+import { codeState, codeView, EditorView, keyModeSpec, wrapSpec, type CodeHooks, type EditorState } from "./code";
 import { agentsView } from "./agents";
 import { changesStore, changesView, lineCounts, SCOPES, type ChangesStore } from "./changes";
 import { graphView } from "./graph";
@@ -3529,6 +3529,11 @@ export function initPanels(refocus: () => void, findFile: () => void) {
   onPrefs((prev) => {
     if (prev.vimKeys === prefs.vimKeys) return;
     for (const [key, d] of docs) changeDoc(key, d, keyModeSpec());
+  });
+  // Line wrapping turned on or off (here or in another window): every open file's editor follows.
+  onPrefs((prev) => {
+    if (prev.wrapFiles === prefs.wrapFiles) return;
+    for (const [key, d] of docs) changeDoc(key, d, wrapSpec());
   });
   // Changes against the other scope (here or in another window).
   onPrefs((prev) => prev.changesScope !== prefs.changesScope && rescope());
