@@ -17,7 +17,7 @@ import { draftChanged, projectArt } from "./sidebar";
 import { prefs, workingCombo, type WorkingSend } from "./prefs";
 import { offScreen } from "./phone";
 import { failed as queueFailed, initQueue, queueOf, renderQueue, steerLatest } from "./queue";
-import { call, net, on, persist, render, store, targetProject, tildePath } from "./store";
+import { call, net, on, render, store, targetProject, tildePath } from "./store";
 import { warnIfPreviewing } from "./worktrees";
 import { sideChat } from "./sidechat";
 import { initContext, renderContext } from "./usage";
@@ -479,6 +479,7 @@ function submit(key = false, mod = false) {
   else {
     // A new session in a repository goes to a worktree of its own when that's picked.
     const worktree = !store.thread && !!project && store.newWorktree && !!project.branch;
+    if (!store.thread) store.newWorktree = false;
     net.send({ type: "send", threadId: store.thread?.id ?? null, projectId: project?.id ?? null, text, settings: turnSettings(), ...(worktree ? { worktree } : {}) });
   }
   if (store.thread) warnIfPreviewing(store.thread.cwd);
@@ -629,7 +630,6 @@ function worktreeChip(): HTMLElement {
 export const canToggleWorktree = () => !store.thread && !store.opening && !!targetProject()?.branch;
 export function toggleWorktreeMode() {
   store.newWorktree = !store.newWorktree;
-  persist();
   render("composer");
 }
 

@@ -57,8 +57,9 @@ export const store = {
   /** Project groups folded shut in the sidebar (organized by project). */
   closedProjects: new Set<string>(JSON.parse(localStorage.getItem("bismuth.closedProjects") ?? "[]") as string[]),
   sidebarCollapsed: localStorage.getItem("bismuth.sidebarCollapsed") === "1",
-  /** New sessions get a worktree of their own (the new-session screen's Project folder / New worktree). */
-  newWorktree: localStorage.getItem("bismuth.newWorktree") === "1",
+  /** The next new session gets a worktree of its own (the new-session screen's Project folder / New worktree): picked
+   *  for each session, never remembered, so it's back to the project folder once one starts. */
+  newWorktree: false,
   error: null as string | null,
 };
 
@@ -115,7 +116,6 @@ export function persist() {
   localStorage.setItem("bismuth.settledOpen", store.settledOpen ? "1" : "0");
   localStorage.setItem("bismuth.closedProjects", JSON.stringify([...store.closedProjects]));
   localStorage.setItem("bismuth.sidebarCollapsed", store.sidebarCollapsed ? "1" : "0");
-  localStorage.setItem("bismuth.newWorktree", store.newWorktree ? "1" : "0");
   localStorage.setItem("bismuth.view", JSON.stringify(store.view));
 }
 
