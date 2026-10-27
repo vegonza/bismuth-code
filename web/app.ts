@@ -94,7 +94,7 @@ function connect() {
     // window once it's back.
     // (A side chat's frame leaves saying so to the window around it.)
     if (!isRestarting() && !sideChat) {
-      banner("Disconnected from the core — reconnecting…");
+      banner("Disconnected from the core — reconnecting…", true);
       connectionChanged(true);
     }
     setTimeout(connect, 1000);
@@ -551,10 +551,21 @@ function renderHeader() {
   bar.title = t.title;
 }
 
-function banner(text: string | null) {
+let bannerTimer: Timer | null = null;
+/** An error over the chat: it goes on its own after a while (not while hovered) or on a click; `sticky` ones
+ *  (the core gone) stay until replaced. */
+function banner(text: string | null, sticky = false) {
   const b = $("banner");
+  if (bannerTimer) clearTimeout(bannerTimer);
+  bannerTimer = null;
   b.hidden = !text;
   if (!text) return;
+  const dismiss = () => {
+    if (b.matches(":hover")) bannerTimer = setTimeout(dismiss, 2000);
+    else banner(null);
+  };
+  if (!sticky) bannerTimer = setTimeout(dismiss, 10_000);
+  b.onclick = sticky ? null : () => banner(null);
   const chip = el("div", "notice-chip");
   const head = el("div", "head");
   const tile = el("span", "tile");
